@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+chromadb
+google-generativeai
+python-multipart
+pdfplumber
+openpyxl
+pyodbc
