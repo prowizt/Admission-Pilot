@@ -22,58 +22,32 @@ app = FastAPI(
 # ==========================================
 # [0] AI 페르소나 및 시스템 프롬프트
 # ==========================================
-def get_system_prompt():
-    """
-    AI 챗봇의 역할(Persona)과 규칙을 정의하는 시스템 프롬프트 문자열을 반환합니다.
-    이 문자열은 Gemini API 호출 시 'system_instruction'으로 전달되어 일관된 답변 톤을 유지합니다.
-    """
-    
-    # 1. AI의 역할 정의 (Role Definition)
-    role_definition = """
-당신은 **대동대학교 입시처의 핵심 AI 업무 헬퍼(Sub-Assistant)**입니다.
-주 사용자는 복잡한 행정 절차와 규정 사이에서 신속하고 정확한 사실 확인이 필요한 입시처 공무원입니다.
-당신은 챗봇 인터페이스(프론트엔드)를 통해 이들에게 실시간으로 답변을 제공합니다.
-당신의 목표는 사람을 대체하는 것이 아니라, 수작업 처리 시간을 획기적으로 줄여주는 **유능한 조수(Buddy)**가 되는 것입니다.
-"""
-
-    # 2. 답변 스타일 및 톤앤매너 (Tone & Manners)
-    tone_definition = """
-[답변 스타일 및 톤앤매너]
-- **전문성(Professionalism):** 긍정적이고 적극적인 태도를 유지하되, 모든 정보는 사실에 기반해야 합니다.
-- **공감 및 협업:** 사용자가 "바쁘다", "헷갈린다" 등의 감정을 표현할 때는 공감하는 리액션을 먼저 취하세요.
-- **공식성(Formality):** '-습니다' 체를 사용하며, 문서는 항상 정확한 행정 용어와 격식을 갖춰 서술하십시오.
-- **친절함:** 딱딱한 말투보다는 따뜻하고 배려심 있는 어조를 사용하세요.
-"""
-
-    # 3. 핵심 답변 규칙 (Response Rules)
-    rules_definition = """
-[핵심 답변 규칙]
-1. **출처 및 우선순위 절대 규칙 (0순위):** - [시스템 DB 추출 데이터]와 [PDF 규정 문서]의 수치/내용이 충돌할 경우, **무조건 [시스템 DB 추출 데이터]가 최신 정답**입니다. PDF 숫자는 과거 자료이므로 완전히 무시하십시오.
-   - DB에서 수치를 가져왔다면 답변에 반드시 "최신 시스템 DB 확인 결과..." 라고 명시하십시오.
-
-2. **단계적 처리 프로세스:**
-   - **1단계(확인):** "해당 업무는 A 절차에 해당합니다."와 같이 분류하세요.
-   - **2단계(세부사항):** "관련 규정/데이터는 다음과 같습니다."라며 팩트를 나열하세요.
-
-3. **허용 불가 행동(Don'ts):**
-   - 절대 추측하지 마십시오. 데이터가 없으면 없다고 하세요.
-   - 법적 구속력이 있는 해석을 단정적으로 내리지 마세요.
-"""
-
-    # 4. 결론
-    conclusion = """
-위 규칙을 모두 준수하여, 사용자가 신뢰할 수 있고 효율적으로 업무를 처리할 수 있도록 최선을 다해 지원하십시오.
-"""
-
-    # 전체 프롬프트 조합
-    full_prompt = f"{role_definition}\n{tone_definition}\n{rules_definition}\n{conclusion}"
-    
-    return full_prompt
+def get_system_prompt(user_role: str = "staff"):
+    """권한(role)에 따라 AI의 보안 수준과 페르소나를 통제합니다."""
+    if user_role == "student":
+        return """
+        당신은 **대동대학교 입시 홍보처의 친절한 AI 입시 상담원**입니다.
+        주 사용자는 우리 대학에 지원하려는 수험생 및 학부모입니다.
+        [🚨 엄격한 보안 규칙]
+        1. 내부 행정 지침, 예산, 교직원 연락처 등 민감한 정보는 절대 유출하지 마십시오.
+        2. 제공된 데이터가 없다면, 지어내지 말고 "해당 정보는 확인이 어렵습니다. 입시처로 문의해주세요."라고 방어하십시오.
+        3. [시스템 DB 추출 데이터]가 있다면 반드시 그 수치를 우선적으로 대답하세요.
+        """
+    else:
+        return """
+        당신은 **대동대학교 입시처의 핵심 AI 업무 헬퍼(Sub-Assistant)**입니다.
+        주 사용자는 교직원입니다.
+        [🚨 핵심 보안 및 답변 규칙]
+        1. [시스템 DB 추출 데이터]와 [PDF 규정 문서]의 수치가 충돌할 경우, 무조건 [시스템 DB 추출 데이터]가 최신 정답입니다.
+        2. DB에서 수치를 가져왔다면 반드시 "최신 시스템 DB 확인 결과..." 라고 명시하십시오.
+        3. 절대 추측하지 마십시오. 데이터가 없으면 없다고 하세요.
+        """
 
 
 class ChatRequest(BaseModel):
     question: str
-    model_name: str = "gemini-2.5-flash"  # 기본값 설정
+    model_name: str = "gemini-2.5-flash"
+    user_role: str = "staff" # 권한: "staff"(교직원) 또는 "student"(일반학생)
 
 # ==========================================
 # [1] 하이브리드 DB 세팅 (Vector DB)
@@ -175,43 +149,45 @@ def get_mssql_connection():
         return None
 
 
-def get_dynamic_db_schema(conn):
+def get_dynamic_db_schema(conn, user_role="staff"):
     """
-    MS-SQL의 INFORMATION_SCHEMA와 함께 '실제 샘플 데이터 1건'을 조회하여 반환합니다.
-    (AI가 각 컬럼에 어떤 종류의 값이 들어가는지 완벽히 파악하도록 돕는 핵심 역할)
+    [데이터 카탈로그 기반 스키마 추출] 
+    사용자의 권한(user_role)을 확인하여, 학생일 경우 is_public='Y'인 컬럼만 추출하고, 
+    AI 이해를 돕기 위한 ai_description 힌트를 덧붙여 반환합니다.
     """
-    if not conn:
-        return "DB 연결 실패"
+    if not conn: return "DB 연결 실패"
     try:
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT TABLE_NAME, COLUMN_NAME 
-            FROM INFORMATION_SCHEMA.COLUMNS 
-            WHERE TABLE_SCHEMA = 'dbo'
-        """)
+        query = "SELECT table_name, column_name, ai_description FROM Sys_ColumnCatalog"
+        if user_role == "student":
+            query += " WHERE is_public = 'Y'" # 보안: 학생은 비공개 컬럼의 존재 자체를 모르게 차단
+            
+        cursor.execute(query)
         schema_dict = {}
         for row in cursor.fetchall():
-            t_name, c_name = row
+            t_name, c_name, ai_desc = row
             if t_name not in schema_dict:
                 schema_dict[t_name] = []
-            schema_dict[t_name].append(c_name)
             
-        schema_str = "[현재 MS-SQL 실시간 테이블 및 컬럼 구조 (데이터 샘플 포함)]\n"
+            # AI를 위한 힌트 조합 (예: [학번](설명: 학생 고유 식별번호))
+            col_str = f"[{c_name}]"
+            if ai_desc: col_str += f"(설명:{ai_desc})"
+            schema_dict[t_name].append(col_str)
+            
+        schema_str = "[현재 AI가 접근 가능한 MS-SQL 테이블 구조]\n"
         for t_name, cols in schema_dict.items():
-            cols_bracket = [f"[{c}]" for c in cols]
-            schema_str += f"- Table: [{t_name}] | Columns: {', '.join(cols_bracket)}\n"
-            
-            # [신규 로직] AI의 문맥 이해를 돕기 위해 데이터 샘플 1건 추출
+            schema_str += f"- Table: [{t_name}] | Columns: {', '.join(cols)}\n"
             try:
-                safe_cols = ", ".join(cols_bracket)
-                cursor.execute(f"SELECT TOP 1 {safe_cols} FROM [{t_name}]")
+                # 샘플 조회를 위해 (설명:~) 부분 제거
+                clean_cols = [c.split('(')[0] for c in cols]
+                cursor.execute(f"SELECT TOP 1 {', '.join(clean_cols)} FROM [{t_name}]")
                 sample_row = cursor.fetchone()
                 if sample_row:
-                    sample_dict = dict(zip(cols, sample_row))
+                    clean_col_names = [c.replace('[','').replace(']','') for c in clean_cols]
+                    sample_dict = dict(zip(clean_col_names, sample_row))
                     schema_str += f"  * 💡 데이터 샘플 힌트: {sample_dict}\n"
-            except Exception as sample_err:
-                pass # 샘플 추출에 실패해도 메인 스키마 로딩은 계속 진행
-                
+            except Exception:
+                pass
         return schema_str
     except Exception as e:
         print(f"스키마 추출 에러: {e}")
@@ -239,60 +215,70 @@ async def upload_knowledge(
     file: UploadFile = File(...),
     doc_type: str = Form(...),
     year: str = Form(...),
-    title: str = Form(...)
+    title: str = Form(...),
+    description: str = Form(None) # [NEW] 문서에 대한 관리자/AI 설명
 ):
     """
-    PDF 등 문서를 업로드 받아 텍스트를 추출, 개인정보를 마스킹한 후 지정된 벡터 DB에 저장합니다.
-    doc_type: 'rule' (팩트체크용) 또는 'reference' (기안문 양식 참고용)
+    PDF 등 문서를 업로드 받아 벡터 DB(ChromaDB)에 저장하고, 
+    동시에 거버넌스 통제를 위해 MS-SQL 카탈로그에 메타데이터를 기록합니다.
     """
     if doc_type not in ["rule", "reference"]:
         raise HTTPException(status_code=400, detail="doc_type은 'rule' 또는 'reference'여야 합니다.")
-
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="현재는 PDF 파일만 지원합니다.")
 
-    # 1. PDF 텍스트 및 표 추출 (Try-Except 방어 로직)
+    # 1. PDF 텍스트 및 표 추출
     try:
         content = await file.read()
         extracted_text = ""
         with pdfplumber.open(io.BytesIO(content)) as pdf:
             for page in pdf.pages:
-                # 일반 텍스트 추출
                 page_text = page.extract_text()
-                if page_text:
-                    extracted_text += page_text + "\n"
-                
-                # 표 데이터 추출 및 마크다운 변환
+                if page_text: extracted_text += page_text + "\n"
                 tables = page.extract_tables()
                 if tables:
                     for table in tables:
                         extracted_text += table_to_markdown(table)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"PDF 파싱 중 오류가 발생했습니다: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"PDF 파싱 오류: {str(e)}")
 
     if not extracted_text.strip():
-        raise HTTPException(status_code=400, detail="문서에서 텍스트를 추출할 수 없습니다. (이미지 기반 PDF일 수 있음)")
+        raise HTTPException(status_code=400, detail="텍스트 추출 불가 (이미지 PDF 등)")
 
-    # 2. 개인정보 마스킹 (Security First)
     safe_text = mask_personal_info(extracted_text)
-
-    # 3. DB 라우팅 및 저장
     doc_id = str(uuid.uuid4())
     metadata = {"year": year, "title": title, "doc_type": doc_type, "filename": file.filename}
 
+    # 2. Vector DB (ChromaDB) 저장
     try:
         if doc_type == "rule":
             rule_db.add(documents=[safe_text], metadatas=[metadata], ids=[doc_id])
         else:
             reference_db.add(documents=[safe_text], metadatas=[metadata], ids=[doc_id])
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"벡터 DB 저장 중 오류가 발생했습니다: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"벡터 DB 저장 오류: {str(e)}")
+
+    # 3. [NEW] 정형 DB (MS-SQL Sys_DocumentCatalog) 메타데이터 기록
+    conn = get_mssql_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            desc_val = description if description else ""
+            cursor.execute("""
+                INSERT INTO Sys_DocumentCatalog (doc_id, filename, doc_type, year, title, description, is_public)
+                VALUES (?, ?, ?, ?, ?, ?, 'Y')
+            """, (doc_id, file.filename, doc_type, year, title, desc_val))
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except Exception as catalog_err:
+            print(f"문서 카탈로그 등록 에러 (ChromaDB엔 저장됨): {catalog_err}")
 
     return {
         "status": "success",
-        "message": f"'{title}' 문서가 {doc_type} DB에 성공적으로 저장되었습니다.",
+        "message": f"'{title}' 문서가 DB 및 카탈로그에 성공적으로 저장되었습니다.",
         "doc_id": doc_id,
-        "extracted_preview": safe_text[:100] + "..." # 테스트 확인용 미리보기
+        "extracted_preview": safe_text[:100] + "..."
     }
 
 
@@ -334,83 +320,83 @@ async def get_documents(doc_type: str):
 
 @app.delete("/documents/{doc_type}/{doc_id}")
 async def delete_document(doc_type: str, doc_id: str):
-    """
-    지정된 벡터 DB(rule 또는 reference)에서 특정 문서(doc_id)를 삭제합니다.
-    오래된 규정이나 잘못 업로드된 지식을 정리할 때 사용합니다.
-    """
+    """지정된 벡터 DB와 MS-SQL 문서 카탈로그에서 문서를 동기화하여 완벽히 삭제합니다."""
     if doc_type not in ["rule", "reference"]:
         raise HTTPException(status_code=400, detail="doc_type은 'rule' 또는 'reference'여야 합니다.")
 
     try:
-        # 1. DB 라우팅
+        # 1. Vector DB (ChromaDB) 삭제
         target_db = rule_db if doc_type == "rule" else reference_db
-        
-        # 2. 문서 존재 여부 확인 및 삭제
-        # ChromaDB는 없는 ID를 삭제하려 해도 에러를 뱉지 않으므로 바로 delete 호출
         target_db.delete(ids=[doc_id])
         
+        # 2. 정형 DB (MS-SQL Sys_DocumentCatalog) 동기화 삭제
+        conn = get_mssql_connection()
+        if conn:
+            try:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM Sys_DocumentCatalog WHERE doc_id = ?", (doc_id,))
+                conn.commit()
+                cursor.close()
+                conn.close()
+            except Exception as catalog_err:
+                print(f"문서 카탈로그 삭제 에러: {catalog_err}")
+
         return {
             "status": "success",
-            "message": f"{doc_type} DB에서 문서({doc_id})가 성공적으로 삭제되었습니다."
+            "message": f"{doc_type} DB 및 카탈로그에서 문서({doc_id})가 성공적으로 삭제되었습니다."
         }
-        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"문서 삭제 중 오류가 발생했습니다: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"문서 삭제 중 오류 발생: {str(e)}")
 
 
 @app.post("/upload-dynamic-statistics")
 async def upload_dynamic_statistics(
     file: UploadFile = File(...),
-    table_name: str = Form(...) # 프론트엔드에서 테이블명(영문 권장)을 입력받음
+    table_name: str = Form(...),
+    table_name_kr: str = Form(None) # [NEW] 대시보드 표시용 한글 테이블명
 ):
-    """
-    [지능형 범용 엑셀 업로더] 
-    엑셀의 첫 행(한글/영문 헤더)을 읽어, MS-SQL에 테이블이 없으면 
-    즉석에서 생성(CREATE)하고 데이터를 동적으로 매핑하여 INSERT 합니다.
-    """
+    """엑셀 데이터를 올리면서 데이터 카탈로그에 한글 테이블명과 함께 자동 등록합니다."""
     if not file.filename.lower().endswith(('.xlsx', '.xls')):
         raise HTTPException(status_code=400, detail="엑셀 파일만 업로드 가능합니다.")
-        
     if not re.match(r"^[a-zA-Z0-9_]+$", table_name):
-        raise HTTPException(status_code=400, detail="테이블 이름은 영문, 숫자, 언더바(_)만 허용됩니다.")
+        raise HTTPException(status_code=400, detail="테이블 이름 오류")
 
     try:
         content = await file.read()
         wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
         sheet = wb.active
-        
         conn = get_mssql_connection()
-        if not conn:
-            raise HTTPException(status_code=500, detail="MS-SQL 서버 연결 실패")
-            
+        if not conn: raise HTTPException(status_code=500, detail="DB 연결 실패")
         cursor = conn.cursor()
         
-        # 1. 엑셀 1행에서 헤더 추출
         headers = [str(cell.value).strip() for cell in sheet[1] if cell.value is not None]
-        if not headers:
-            raise HTTPException(status_code=400, detail="엑셀 파일에 헤더(컬럼명)가 없습니다.")
+        if not headers: raise HTTPException(status_code=400, detail="헤더 없음")
 
-        # 2. 테이블 존재 여부 확인 및 자동 생성 (Auto DDL)
+        # 1. 실제 테이블 DDL 및 카탈로그 등록
         cursor.execute(f"SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = '{table_name}'")
         table_exists = cursor.fetchone()[0] > 0
         
         if not table_exists:
-            # 대괄호 []를 사용하여 한글 컬럼명 안전하게 생성
             cols_def = ", ".join([f"[{h}] NVARCHAR(255)" for h in headers])
-            create_query = f"CREATE TABLE [{table_name}] (id INT IDENTITY(1,1) PRIMARY KEY, {cols_def}, created_at DATETIME DEFAULT GETDATE())"
-            cursor.execute(create_query)
-            conn.commit()
-            print(f"✅ 신규 테이블 [{table_name}] 자동 생성 완료")
+            cursor.execute(f"CREATE TABLE [{table_name}] (id INT IDENTITY(1,1) PRIMARY KEY, {cols_def}, created_at DATETIME DEFAULT GETDATE())")
+            print(f"✅ 테이블 [{table_name}] 생성 완료")
+            
+        # [NEW] 테이블 카탈로그 등록 (한글명 포함)
+        kr_name = table_name_kr if table_name_kr else table_name
+        cursor.execute(f"IF NOT EXISTS (SELECT 1 FROM Sys_TableCatalog WHERE table_name = '{table_name}') INSERT INTO Sys_TableCatalog (table_name, table_name_kr, db_source) VALUES ('{table_name}', '{kr_name}', 'INTERNAL')")
+        
+        # [NEW] 컬럼 카탈로그 등록
+        for h in headers:
+            cursor.execute(f"IF NOT EXISTS (SELECT 1 FROM Sys_ColumnCatalog WHERE table_name = '{table_name}' AND column_name = '{h}') INSERT INTO Sys_ColumnCatalog (table_name, column_name, is_public) VALUES ('{table_name}', '{h}', 'Y')")
 
-        # 3. 데이터 INSERT 쿼리 조립
+        # 2. 데이터 INSERT
         columns_str = ", ".join([f"[{h}]" for h in headers])
         placeholders = ", ".join(["?"] * len(headers))
         insert_query = f"INSERT INTO [{table_name}] ({columns_str}) VALUES ({placeholders})"
         
         inserted_count = 0
         for row in sheet.iter_rows(min_row=2, values_only=True):
-            if all(cell is None or str(cell).strip() == "" for cell in row):
-                continue
+            if all(cell is None or str(cell).strip() == "" for cell in row): continue
             row_data = tuple(row[i] if i < len(row) else None for i in range(len(headers)))
             cursor.execute(insert_query, row_data)
             inserted_count += 1
@@ -418,14 +404,80 @@ async def upload_dynamic_statistics(
         conn.commit()
         cursor.close()
         conn.close()
-        
-        msg = f"[{table_name}] 테이블에 {inserted_count}건 저장 완료."
-        if not table_exists:
-            msg += " (신규 테이블 자동생성됨)"
-        return {"status": "success", "message": msg}
-        
+        return {"status": "success", "message": f"[{table_name}] 테이블에 {inserted_count}건 저장 및 카탈로그 등록 완료."}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"업로드 중 오류 발생: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"업로드 중 오류: {str(e)}")
+
+
+@app.post("/sync-external-table")
+async def sync_external_table(
+    table_name: str = Form(...), 
+    table_name_kr: str = Form(None), 
+    description: str = Form(None)
+):
+    """
+    [외부 연동 DB 스마트 동기화]
+    실제 뷰(View)의 삭제/컬럼 변경을 감지하여 메타데이터 카탈로그를 자동 동기화합니다.
+    - 뷰가 삭제되었으면 카탈로그에서 자동 제거
+    - 신규 컬럼은 '비공개(N)'로 추가, 삭제된 컬럼은 제거
+    """
+    if not re.match(r"^[a-zA-Z0-9_]+$", table_name):
+        raise HTTPException(status_code=400, detail="테이블 이름 오류")
+
+    conn = get_mssql_connection()
+    if not conn: raise HTTPException(status_code=500, detail="MS-SQL 연결 실패")
+
+    try:
+        cursor = conn.cursor()
+        
+        # 1. 실제 테이블/뷰 존재 여부 확인
+        cursor.execute(f"SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = '{table_name}'")
+        exists = cursor.fetchone()[0] > 0
+        
+        # 2. 뷰가 삭제되었으면 카탈로그 장부에서도 모두 영구 제거 (동기화)
+        if not exists:
+            cursor.execute(f"DELETE FROM Sys_ColumnCatalog WHERE table_name = '{table_name}'")
+            cursor.execute(f"DELETE FROM Sys_TableCatalog WHERE table_name = '{table_name}'")
+            conn.commit()
+            cursor.close()
+            conn.close()
+            return {"status": "success", "message": f"'{table_name}' 뷰가 원본에서 삭제되어 카탈로그에서도 영구 제거되었습니다."}
+
+        # 3. 뷰가 존재하면 테이블 카탈로그 등록/업데이트
+        kr_name = table_name_kr if table_name_kr else table_name
+        desc_val = description if description else ""
+        
+        cursor.execute(f"SELECT COUNT(*) FROM Sys_TableCatalog WHERE table_name = '{table_name}'")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute(f"INSERT INTO Sys_TableCatalog (table_name, table_name_kr, db_source, description) VALUES ('{table_name}', '{kr_name}', 'EXTERNAL', '{desc_val}')")
+        
+        # 4. 컬럼 스마트 동기화 (신규 추가 및 삭제 반영)
+        cursor.execute(f"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{table_name}'")
+        actual_cols = [row[0] for row in cursor.fetchall()]
+        
+        if actual_cols:
+            # (A) 원본 뷰에서 삭제된 컬럼 장부에서 제거
+            cols_format = ", ".join([f"'{c}'" for c in actual_cols])
+            cursor.execute(f"DELETE FROM Sys_ColumnCatalog WHERE table_name = '{table_name}' AND column_name NOT IN ({cols_format})")
+            
+            # (B) 신규 컬럼 장부에 추가 (기본 비공개 'N')
+            added_count = 0
+            for c_name in actual_cols:
+                cursor.execute(f"SELECT COUNT(*) FROM Sys_ColumnCatalog WHERE table_name = '{table_name}' AND column_name = '{c_name}'")
+                if cursor.fetchone()[0] == 0:
+                    cursor.execute(f"INSERT INTO Sys_ColumnCatalog (table_name, column_name, is_public) VALUES ('{table_name}', '{c_name}', 'N')")
+                    added_count += 1
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return {
+            "status": "success", 
+            "message": f"'{table_name}' 뷰 동기화 완료. (신규 발견 컬럼: {added_count}개 안전 등록)"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"동기화 중 오류 발생: {str(e)}")
 
 
 @app.post("/chat")
@@ -438,7 +490,7 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         
         # 1. MS-SQL 실시간 구조 파악 (데이터 사전 자동 생성)
         conn = get_mssql_connection()
-        dynamic_schema = get_dynamic_db_schema(conn) if conn else "DB 연결 불가"
+        dynamic_schema = get_dynamic_db_schema(conn, request.user_role) if conn else "DB 연결 불가"
         
         # =======================================================
         # [Step 1] NL2SQL: 사용자 질문 -> T-SQL 생성
@@ -505,7 +557,7 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         # =======================================================
         # [Step 4] 최종 하이브리드 답변 생성
         # =======================================================
-        final_model = genai.GenerativeModel(model_name=request.model_name, system_instruction=get_system_prompt())
+        final_model = genai.GenerativeModel(model_name=request.model_name, system_instruction=get_system_prompt(request.user_role))
         
         prompt = f"""
         너는 대동대학교 입시처 전문 AI 상담원이야.
