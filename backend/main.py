@@ -48,22 +48,16 @@ def get_system_prompt():
     # 3. 핵심 답변 규칙 (Response Rules)
     rules_definition = """
 [핵심 답변 규칙]
-1. **출처 제시 의무:** 
-   - 답변의 근거가 된 문서나 데이터가 있다면 반드시 **출처(Source)**를 명시하세요.
-   - 예: "2026학년도 정시모집요강 p.12에 따르면..." 또는 "2025학년도 데이터 기준..."
-   - (기술적 참고) 이는 백엔드의 ChromaDB 메타데이터를 통해 제공되는 정보에 기반해야 합니다.
+1. **출처 및 우선순위 절대 규칙 (0순위):** - [시스템 DB 추출 데이터]와 [PDF 규정 문서]의 수치/내용이 충돌할 경우, **무조건 [시스템 DB 추출 데이터]가 최신 정답**입니다. PDF 숫자는 과거 자료이므로 완전히 무시하십시오.
+   - DB에서 수치를 가져왔다면 답변에 반드시 "최신 시스템 DB 확인 결과..." 라고 명시하십시오.
 
 2. **단계적 처리 프로세스:**
-   - 사용자의 질문이 복잡할 경우, 단일 문장으로 답하려 하지 마십시오.
    - **1단계(확인):** "해당 업무는 A 절차에 해당합니다."와 같이 분류하세요.
-   - **2단계(세부사항):** "관련 규정은 다음과 같습니다."라며 관련 팩트를 나열하세요.
-   - **3단계(가이드):** "따라서 순서는 [1->2->3]으로 진행하시면 됩니다."라며 행동 지침을 제시하세요.
+   - **2단계(세부사항):** "관련 규정/데이터는 다음과 같습니다."라며 팩트를 나열하세요.
 
 3. **허용 불가 행동(Don'ts):**
-   - **절대 추측하지 마십시오.** 불확실한 정보는 "확인해보겠습니다" 또는 "자료를 찾아보겠습니다"라고 답하세요.
-   - **법규/규정 해석:** 법적 구속력이 있는 해석을 단정적으로 내리지 마세요. (단, 지침상 명확한 내용은 전달)
-   - **과거/미래 정보 혼용:** 사용자가 연도를 지정하지 않았더라도, 현재 유효한 최신 정보(Current Year)를 기준으로 답하세요.
-     - 단, 과거 자료를 참고해야 하는 맥락(예: "작년도와 비교하면?")에서는 명확히 연도를 구분하여 서술하세요.
+   - 절대 추측하지 마십시오. 데이터가 없으면 없다고 하세요.
+   - 법적 구속력이 있는 해석을 단정적으로 내리지 마세요.
 """
 
     # 4. 결론
@@ -138,24 +132,90 @@ def table_to_markdown(table):
 def get_mssql_connection():
     """
     MS-SQL 데이터베이스 연결 객체를 반환합니다.
-    실제 운영 서버(10.10.1.11) 설정 및 한글 인코딩(CP949)이 적용되어 있습니다.
+    IM002 에러 방지를 위해 OS에 설치된 ODBC 드라이버를 자동 검색하여 연결합니다.
     """
     try:
+        # 1. 시스템에 설치된 SQL Server 관련 드라이버 검색
+        available_drivers = [d for d in pyodbc.drivers() if 'SQL Server' in d]
+        
+        if not available_drivers:
+            print("❌ 오류: 시스템에 설치된 SQL Server ODBC 드라이버가 없습니다.")
+            return None
+            
+        # 2. 드라이버 우선순위 선택 (17 -> 18 -> 11 -> 기본 SQL Server)
+        driver_name = available_drivers[0] # 기본값으로 첫 번째 발견된 드라이버 사용
+        preferred_drivers = ["ODBC Driver 17 for SQL Server", "ODBC Driver 18 for SQL Server", "SQL Server Native Client 11.0", "SQL Server"]
+        
+        for pref in preferred_drivers:
+            if pref in available_drivers:
+                driver_name = pref
+                break
+                
+        print(f"✅ 선택된 MS-SQL 드라이버: {driver_name}")
+
+        # 3. 동적 드라이버 연결 문자열 구성 (ODBC 18 SSL 검증 에러 우회)
         conn_str = (
-            "DRIVER={ODBC Driver 17 for SQL Server};"
+            f"DRIVER={{{driver_name}}};"
             "SERVER=10.10.1.11,1433;"
             "DATABASE=DDU_ADMISSION;"
             "UID=admission_ai;"
             "PWD=fjk12#$;"
+            "TrustServerCertificate=yes;"
         )
+        
         conn = pyodbc.connect(conn_str, autocommit=True)
+        # cp949 인코딩으로 한글 깨짐 방지
         conn.setdecoding(pyodbc.SQL_CHAR, encoding='cp949')
         conn.setdecoding(pyodbc.SQL_WCHAR, encoding='cp949')
         conn.setencoding(encoding='cp949')
         return conn
+        
     except Exception as e:
         print(f"MS-SQL 연결 에러 발생: {e}")
         return None
+
+
+def get_dynamic_db_schema(conn):
+    """
+    MS-SQL의 INFORMATION_SCHEMA와 함께 '실제 샘플 데이터 1건'을 조회하여 반환합니다.
+    (AI가 각 컬럼에 어떤 종류의 값이 들어가는지 완벽히 파악하도록 돕는 핵심 역할)
+    """
+    if not conn:
+        return "DB 연결 실패"
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT TABLE_NAME, COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = 'dbo'
+        """)
+        schema_dict = {}
+        for row in cursor.fetchall():
+            t_name, c_name = row
+            if t_name not in schema_dict:
+                schema_dict[t_name] = []
+            schema_dict[t_name].append(c_name)
+            
+        schema_str = "[현재 MS-SQL 실시간 테이블 및 컬럼 구조 (데이터 샘플 포함)]\n"
+        for t_name, cols in schema_dict.items():
+            cols_bracket = [f"[{c}]" for c in cols]
+            schema_str += f"- Table: [{t_name}] | Columns: {', '.join(cols_bracket)}\n"
+            
+            # [신규 로직] AI의 문맥 이해를 돕기 위해 데이터 샘플 1건 추출
+            try:
+                safe_cols = ", ".join(cols_bracket)
+                cursor.execute(f"SELECT TOP 1 {safe_cols} FROM [{t_name}]")
+                sample_row = cursor.fetchone()
+                if sample_row:
+                    sample_dict = dict(zip(cols, sample_row))
+                    schema_str += f"  * 💡 데이터 샘플 힌트: {sample_dict}\n"
+            except Exception as sample_err:
+                pass # 샘플 추출에 실패해도 메인 스키마 로딩은 계속 진행
+                
+        return schema_str
+    except Exception as e:
+        print(f"스키마 추출 에러: {e}")
+        return "스키마 추출 오류"
 
 
 # ==========================================
@@ -298,140 +358,182 @@ async def delete_document(doc_type: str, doc_id: str):
         raise HTTPException(status_code=500, detail=f"문서 삭제 중 오류가 발생했습니다: {str(e)}")
 
 
-@app.post("/upload-statistics")
-async def upload_statistics(file: UploadFile = File(...)):
+@app.post("/upload-dynamic-statistics")
+async def upload_dynamic_statistics(
+    file: UploadFile = File(...),
+    table_name: str = Form(...) # 프론트엔드에서 테이블명(영문 권장)을 입력받음
+):
     """
-    [A열: 적용년도, B열: 모집구분, C열: 학과, D열: 전형명, E열: 모집정원] 형태의 
-    엑셀 파일을 읽어 MS-SQL 정형 DB(AdmissionStats 테이블)에 저장합니다.
+    [지능형 범용 엑셀 업로더] 
+    엑셀의 첫 행(한글/영문 헤더)을 읽어, MS-SQL에 테이블이 없으면 
+    즉석에서 생성(CREATE)하고 데이터를 동적으로 매핑하여 INSERT 합니다.
     """
     if not file.filename.lower().endswith(('.xlsx', '.xls')):
-        raise HTTPException(status_code=400, detail="엑셀 파일(.xlsx, .xls)만 업로드 가능합니다.")
+        raise HTTPException(status_code=400, detail="엑셀 파일만 업로드 가능합니다.")
         
+    if not re.match(r"^[a-zA-Z0-9_]+$", table_name):
+        raise HTTPException(status_code=400, detail="테이블 이름은 영문, 숫자, 언더바(_)만 허용됩니다.")
+
     try:
         content = await file.read()
-        # data_only=True로 수식 대신 결과값 추출
         wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
         sheet = wb.active
         
         conn = get_mssql_connection()
         if not conn:
-            raise HTTPException(status_code=500, detail="MS-SQL 서버에 연결할 수 없습니다. IP 및 계정 설정을 확인하세요.")
+            raise HTTPException(status_code=500, detail="MS-SQL 서버 연결 실패")
             
         cursor = conn.cursor()
         
+        # 1. 엑셀 1행에서 헤더 추출
+        headers = [str(cell.value).strip() for cell in sheet[1] if cell.value is not None]
+        if not headers:
+            raise HTTPException(status_code=400, detail="엑셀 파일에 헤더(컬럼명)가 없습니다.")
+
+        # 2. 테이블 존재 여부 확인 및 자동 생성 (Auto DDL)
+        cursor.execute(f"SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = '{table_name}'")
+        table_exists = cursor.fetchone()[0] > 0
+        
+        if not table_exists:
+            # 대괄호 []를 사용하여 한글 컬럼명 안전하게 생성
+            cols_def = ", ".join([f"[{h}] NVARCHAR(255)" for h in headers])
+            create_query = f"CREATE TABLE [{table_name}] (id INT IDENTITY(1,1) PRIMARY KEY, {cols_def}, created_at DATETIME DEFAULT GETDATE())"
+            cursor.execute(create_query)
+            conn.commit()
+            print(f"✅ 신규 테이블 [{table_name}] 자동 생성 완료")
+
+        # 3. 데이터 INSERT 쿼리 조립
+        columns_str = ", ".join([f"[{h}]" for h in headers])
+        placeholders = ", ".join(["?"] * len(headers))
+        insert_query = f"INSERT INTO [{table_name}] ({columns_str}) VALUES ({placeholders})"
+        
         inserted_count = 0
-        # 첫 번째 행(1)은 헤더이므로 두 번째 행(2)부터 읽음
         for row in sheet.iter_rows(min_row=2, values_only=True):
-            # A열(적용년도)이 없으면 데이터의 끝으로 간주하고 중단
-            if not row[0]: 
+            if all(cell is None or str(cell).strip() == "" for cell in row):
                 continue
-                
-            apply_year = str(row[0]).strip()
-            admission_term = str(row[1]).strip() if row[1] else ""
-            department = str(row[2]).strip() if row[2] else ""
-            admission_type = str(row[3]).strip() if row[3] else ""
-            quota = int(row[4]) if row[4] else 0
-            
-            # DB 삽입
-            cursor.execute("""
-                INSERT INTO AdmissionStats (apply_year, admission_term, department, admission_type, quota)
-                VALUES (?, ?, ?, ?, ?)
-            """, (apply_year, admission_term, department, admission_type, quota))
+            row_data = tuple(row[i] if i < len(row) else None for i in range(len(headers)))
+            cursor.execute(insert_query, row_data)
             inserted_count += 1
             
         conn.commit()
         cursor.close()
         conn.close()
         
-        return {
-            "status": "success", 
-            "message": f"총 {inserted_count}건의 모집정원 데이터가 MS-SQL에 성공적으로 저장되었습니다."
-        }
+        msg = f"[{table_name}] 테이블에 {inserted_count}건 저장 완료."
+        if not table_exists:
+            msg += " (신규 테이블 자동생성됨)"
+        return {"status": "success", "message": msg}
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"엑셀 데이터 업로드 중 오류 발생: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"업로드 중 오류 발생: {str(e)}")
 
 
 @app.post("/chat")
-async def chat_with_ai(
-    request: ChatRequest,
-    x_gemini_key: str = Header(None)
-):
-    """
-    사용자의 질문에 대해 Rule DB의 지식을 검색하고, Gemini를 통해 답변을 생성합니다.
-    디버깅 로그 출력, 엄격한 프롬프트 규칙 및 동적 모델 선택이 적용됩니다.
-    """
+async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
     if not x_gemini_key:
-        raise HTTPException(status_code=401, detail="Gemini API Key가 필요합니다. (Header: x-gemini-key)")
+        raise HTTPException(status_code=401, detail="Gemini API Key가 필요합니다.")
 
     try:
-        # 1. Rule DB에서 관련 지식 검색 (Top 3)
-        results = rule_db.query(
-            query_texts=[request.question],
-            n_results=3
-        )
-        
-        # 검색된 문서들을 하나의 컨텍스트로 결합
-        context = ""
-        if results and results.get("documents"):
-            context = "\n\n".join(results["documents"][0])
-
-        # [디버깅 로그 추가] 서버 관리자가 참조 텍스트를 확인할 수 있도록 터미널에 출력
-        print(f"=== [디버그] AI가 참조할 텍스트 ===\n{context}\n===========================")
-
-        if not context.strip():
-            return {
-                "status": "success",
-                "answer": "현재 등록된 규정 데이터가 없어 답변을 드릴 수 없습니다. 먼저 지식 문서를 업로드해 주세요.",
-                "references": []
-            }
-
-        # 2. Gemini 설정 및 답변 생성
         genai.configure(api_key=x_gemini_key)
-        # 프론트엔드에서 요청한 모델명(또는 기본값)으로 초기화
-        model = genai.GenerativeModel(request.model_name)
         
-        # [프롬프트 고도화] 더 엄격한 답변 규칙 적용
-        prompt = f"""
-    너는 대동대학교 입시처의 전문 AI 상담원이야.
-    [규칙 1] 반드시 아래 제공된 [참조 문서]의 내용만 바탕으로 답변해.
-    [규칙 2] 제공된 문서에 질문과 관련된 단어나 숫자가 아예 없다면, 절대 지어내지 말고 "제공된 문서에서는 해당 내용을 찾을 수 없습니다."라고만 답변해.
-    [규칙 3] 표(Table)가 텍스트로 변환되면서 행과 열이 섞여 있을 수 있어. 학과명과 숫자를 매칭할 때 문맥을 극도로 주의해서 읽어.
+        # 1. MS-SQL 실시간 구조 파악 (데이터 사전 자동 생성)
+        conn = get_mssql_connection()
+        dynamic_schema = get_dynamic_db_schema(conn) if conn else "DB 연결 불가"
+        
+        # =======================================================
+        # [Step 1] NL2SQL: 사용자 질문 -> T-SQL 생성
+        # =======================================================
+        sql_router_prompt = f"""
+        너는 대동대학교 입시처의 DB 아키텍트야. 
+        사용자의 [질문]에 답변하기 위해 정형 데이터(숫자/통계) 조회가 필요하다면, 
+        아래 [현재 MS-SQL 테이블 구조]를 보고 MS SQL Server용 T-SQL SELECT 쿼리를 작성해.
 
-    [참조 문서]
-    {context}
+        [가장 중요한 SQL 작성 규칙]
+        1. 컬럼명이 한글일 수 있으므로 대괄호 []를 반드시 사용해.
+        2. 문자열 조건은 무조건 `=` 대신 `LIKE`를 사용하되, **사용자의 단어에서 핵심 형태소만 아주 짧게 잘라서 검색해!**
+           - (예시) "대학교 전형" -> `LIKE '%대학%'`
+           - (예시) "일반고 전형" -> `LIKE '%일반고%'`
+        3. **[핵심] 최종 AI가 어떤 데이터인지 정확히 문맥을 파악할 수 있도록, 특정 컬럼 하나만 조회하지 말고 무조건 `SELECT * FROM [테이블명]` 형태로 모든 컬럼을 추출해!**
+           - (나쁜 예: SELECT [모집정원] FROM ...)
+           - (좋은 예: SELECT * FROM ...)
+        4. 정형 데이터 조회가 전혀 필요 없는 질문이면 오직 "NONE" 이라고만 출력해.
+        5. 마크다운 기호(```sql)나 설명은 절대 쓰지 마. 오직 SELECT 쿼리문만 출력해.
 
-    [사용자 질문]
-    {request.question}
-    """
+        {dynamic_schema}
+
+        [질문]
+        {request.question}
+        """
+        # SQL 생성용은 빠르고 논리적인 모델 사용
+        sql_model = genai.GenerativeModel("gemini-2.5-flash")
+        sql_response = sql_model.generate_content(sql_router_prompt)
+        sql_query = sql_response.text.strip().replace("```sql", "").replace("```", "").strip()
         
-        # [타임아웃 및 재시도(Retry) 로직]
-        max_retries = 2
-        response = None
-        
-        for attempt in range(max_retries + 1):
+        print(f"=== [NL2SQL 자동 생성 쿼리] ===\n{sql_query}\n===========================")
+
+        # =======================================================
+        # [Step 2] 생성된 쿼리 실행
+        # =======================================================
+        sql_context = ""
+        if sql_query.upper().startswith("SELECT") and conn:
             try:
-                # 타임아웃 15초 설정 및 답변 생성
-                response = model.generate_content(
-                    prompt,
-                    request_options={"timeout": 15}
-                )
-                break  # 성공 시 루프 탈출
-            except Exception as ai_err:
-                print(f"Gemini API 호출 시도 {attempt + 1} 실패: {ai_err}")
-                if attempt == max_retries:
-                    raise HTTPException(status_code=500, detail="AI API 통신 지연 또는 오류가 반복적으로 발생했습니다.")
+                cursor = conn.cursor()
+                cursor.execute(sql_query)
+                rows = cursor.fetchall()
+                if rows:
+                    columns = [column[0] for column in cursor.description]
+                    for row in rows:
+                        row_dict = dict(zip(columns, row))
+                        sql_context += f"- 시스템 DB 추출 데이터: {row_dict}\n"
+                
+                # [디버그 추가] MS-SQL에서 실제 가져온 데이터 확인용
+                print(f"=== [SQL 실제 실행 결과] ===\n{sql_context if sql_context else '데이터 없음 (0건 검색됨)'}\n===========================")
+                
+            except Exception as db_err:
+                print(f"SQL 실행 오류: {db_err}")
+            finally:
+                conn.close()
+        elif conn:
+            conn.close()
+
+        # =======================================================
+        # [Step 3] 비정형 DB (ChromaDB) 검색
+        # =======================================================
+        results = rule_db.query(query_texts=[request.question], n_results=3)
+        chroma_context = "\n\n".join(results["documents"][0]) if results.get("documents") else ""
+
+        # =======================================================
+        # [Step 4] 최종 하이브리드 답변 생성
+        # =======================================================
+        final_model = genai.GenerativeModel(model_name=request.model_name, system_instruction=get_system_prompt())
         
+        prompt = f"""
+        너는 대동대학교 입시처 전문 AI 상담원이야.
+
+        [🚨 0순위 절대 규칙 🚨]
+        1. 아래 [시스템 DB 데이터]와 [PDF 규정 문서]의 수치(정원, 인원, 금액 등)가 서로 다를 경우, 무조건!!! [시스템 DB 데이터]의 수치가 100% 정답이야. 
+        2. PDF의 수치는 변경되기 전의 '과거 자료'이므로 절대 답변에 사용하지 마.
+        3. 답변할 때 반드시 "최신 시스템 DB 확인 결과, 변경된 모집정원은 OO명입니다." 라는 식으로 강조해서 답변해.
+
+        [시스템 DB 데이터 (최신 팩트 - 무조건 이 숫자를 사용할 것)]
+        {sql_context if sql_context else "관련 DB 데이터 없음"}
+
+        [PDF 규정 문서 (참고용 - DB와 숫자가 다르면 이 문서의 숫자는 무시할 것)]
+        {chroma_context}
+
+        [사용자 질문]
+        {request.question}
+        """
+        
+        response = final_model.generate_content(prompt, request_options={"timeout": 15})
         return {
             "status": "success",
             "answer": response.text,
             "references": results.get("metadatas")[0] if results.get("metadatas") else []
         }
 
-    except HTTPException as he:
-        raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI 답변 생성 중 오류가 발생했습니다: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"AI 답변 생성 중 오류 발생: {str(e)}")
 
 
 if __name__ == "__main__":
