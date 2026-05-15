@@ -3,18 +3,21 @@ import { createPortal } from 'react-dom';
 import axios from 'axios';
 import { Plus, Database, FileText, Lock, Globe, Search, Filter, Eye, X } from 'lucide-react';
 import KnowledgeModal from '@/components/modals/KnowledgeModal';
+import CustomSwal from '@/utils/CustomSwal';
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('documents');
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [selectedDoc, setSelectedDoc] = useState<any>(null); // [NEW] 수정 모드용 선택 데이터
+  const [selectedDoc, setSelectedDoc] = useState<any>(null);
   
-  // 상태 관리 (검색, 필터, 데이터)
+  // 상태 관리 (검색, 다중 필터, 데이터)
   const [searchQuery, setSearchQuery] = useState('');
   const [docFilter, setDocFilter] = useState('all'); 
   const [tableFilter, setTableFilter] = useState('all'); 
+  const [publicFilter, setPublicFilter] = useState('all'); // [NEW] 전체/공개(Y)/비공개(N)
   
   const [documents, setDocuments] = useState<any[]>([]);
+  const [tables, setTables] = useState<any[]>([]); // [NEW] 정형 데이터 State
   const [isLoading, setIsLoading] = useState(false);
 
   // 뷰어 상태 관리
@@ -31,50 +34,50 @@ export default function Dashboard() {
         setPreviewOpen(true);
       }
     } catch (error) {
-      alert("본문을 불러오지 못했습니다.");
+      CustomSwal.fire({ icon: 'error', title: '오류', text: '본문을 불러오지 못했습니다.' });
     }
   };
 
-  // 정형 데이터는 아직 API가 없으므로 임시 Mock 유지
-  const mockTables = [
-    { table_name: 'UI_IPSI_M_V', table_name_kr: '종합학사 신입생 마스터 뷰', db_source: 'EXTERNAL', description: '실시간 지원자 통계 및 수치 데이터 제공용', is_public: 'Y', created_at: '2026-05-12' },
-  ];
-
-  // 백엔드 API에서 비정형 문서 목록 Fetch
-  const fetchDocuments = async () => {
+  // 백엔드 API에서 카탈로그 목록 Fetch
+  const fetchCatalogs = async () => {
     try {
       setIsLoading(true);
-      const res = await axios.get('http://127.0.0.1:8000/catalog/documents');
-      if (res.data.status === 'success') {
-        setDocuments(res.data.data);
+      if (activeTab === 'documents') {
+        const res = await axios.get('http://127.0.0.1:8000/catalog/documents');
+        if (res.data.status === 'success') setDocuments(res.data.data);
+      } else {
+        const res = await axios.get('http://127.0.0.1:8000/catalog/tables');
+        if (res.data.status === 'success') setTables(res.data.data);
       }
     } catch (error) {
-      console.error("문서 목록을 불러오는 중 오류 발생:", error);
+      console.error("데이터 목록 로딩 오류:", error);
     } finally {
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    if (activeTab === 'documents') {
-      fetchDocuments();
-    }
+    fetchCatalogs();
   }, [activeTab]);
 
-  // 필터링 및 검색 로직 적용 (안전한 문자열 처리 반영)
+  // 필터링 및 검색 로직 적용 (안전한 문자열 처리 및 다중 필터 반영)
   const filteredDocuments = documents.filter(doc => {
     const safeTitle = doc.title || '';
     const safeFilename = doc.filename || '';
     const matchSearch = safeTitle.toLowerCase().includes(searchQuery.toLowerCase()) || 
                         safeFilename.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchFilter = docFilter === 'all' || doc.doc_type === docFilter;
-    return matchSearch && matchFilter;
+    const matchType = docFilter === 'all' || doc.doc_type === docFilter;
+    const matchPublic = publicFilter === 'all' || doc.is_public === publicFilter;
+    return matchSearch && matchType && matchPublic;
   });
 
-  const filteredTables = mockTables.filter(table => {
-    const matchSearch = table.table_name.toLowerCase().includes(searchQuery.toLowerCase()) || table.table_name_kr.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchFilter = tableFilter === 'all' || table.db_source === tableFilter;
-    return matchSearch && matchFilter;
+  const filteredTables = tables.filter(table => {
+    const safeName = table.table_name || '';
+    const safeKr = table.table_name_kr || '';
+    const matchSearch = safeName.toLowerCase().includes(searchQuery.toLowerCase()) || safeKr.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchType = tableFilter === 'all' || table.db_source === tableFilter;
+    const matchPublic = publicFilter === 'all' || table.is_public === publicFilter;
+    return matchSearch && matchType && matchPublic;
   });
 
   return (
@@ -121,7 +124,7 @@ export default function Dashboard() {
           {/* 3. Control Bar (Filters, Search, Add Button) */}
           <div className="bg-white p-3 md:p-4 rounded-xl shadow-sm border border-gray-200 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 min-w-0">
             <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto min-w-0">
-              {/* Filter Buttons */}
+              {/* Type Filter Buttons */}
               <div className="flex bg-slate-100 p-1 rounded-lg shrink-0">
                 {activeTab === 'documents' ? (
                   <>
@@ -132,10 +135,17 @@ export default function Dashboard() {
                 ) : (
                   <>
                     <button onClick={() => setTableFilter('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${tableFilter === 'all' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>전체</button>
-                    <button onClick={() => setTableFilter('INTERNAL')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${tableFilter === 'INTERNAL' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>내부 (엑셀 등)</button>
-                    <button onClick={() => setTableFilter('EXTERNAL')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${tableFilter === 'EXTERNAL' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>종합학사 (외부 뷰)</button>
+                    <button onClick={() => setTableFilter('INTERNAL')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${tableFilter === 'INTERNAL' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>내부 (엑셀)</button>
+                    <button onClick={() => setTableFilter('EXTERNAL')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${tableFilter === 'EXTERNAL' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>종합학사</button>
                   </>
                 )}
+              </div>
+              
+              {/* Public/Private Filter Buttons */}
+              <div className="flex bg-slate-100 p-1 rounded-lg shrink-0">
+                <button onClick={() => setPublicFilter('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${publicFilter === 'all' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>모든 권한</button>
+                <button onClick={() => setPublicFilter('Y')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-1 ${publicFilter === 'Y' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Globe size={12}/> 대외공개</button>
+                <button onClick={() => setPublicFilter('N')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-1 ${publicFilter === 'N' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Lock size={12}/> 직원전용</button>
               </div>
               
               {/* Search Bar */}
@@ -334,7 +344,7 @@ export default function Dashboard() {
         onClose={() => setIsModalOpen(false)} 
         activeTab={activeTab} 
         editData={selectedDoc}
-        onSuccess={fetchDocuments} 
+        onSuccess={fetchCatalogs} 
       />
 
       {/* 미리보기 뷰어 팝업 */}
