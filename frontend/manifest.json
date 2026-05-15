@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Admission-Pilot AI Helper",
+  "version": "1.0.0",
+  "description": "대동대학교 입시처 AI 업무 헬퍼 및 카탈로그 관리자",
+  "action": {
+    "default_title": "AI 헬퍼 열기"
+  },
+  "side_panel": {
+    "default_path": "index.html"
+  },
+  "permissions": [
+    "sidePanel",
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*"
+  ],
+  "background": {
+    "service_worker": "src/background.ts",
+    "type": "module"
+  }
+}
