@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import axios from 'axios';
-import { Plus, Database, FileText, Lock, Globe, Search, Filter, Eye, X } from 'lucide-react';
+import { Plus, Database, FileText, Lock, Globe, Search, Filter, Eye, X, ShieldHalf } from 'lucide-react';
 import KnowledgeModal from '@/components/modals/KnowledgeModal';
 import CustomSwal from '@/utils/CustomSwal';
 
@@ -144,7 +144,8 @@ export default function Dashboard() {
               {/* Public/Private Filter Buttons */}
               <div className="flex bg-slate-100 p-1 rounded-lg shrink-0">
                 <button onClick={() => setPublicFilter('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${publicFilter === 'all' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>모든 권한</button>
-                <button onClick={() => setPublicFilter('Y')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-1 ${publicFilter === 'Y' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Globe size={12}/> 대외공개</button>
+                <button onClick={() => setPublicFilter('Y')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-1 ${publicFilter === 'Y' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Globe size={12}/> 전체공개</button>
+                <button onClick={() => setPublicFilter('P')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-1 ${publicFilter === 'P' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><ShieldHalf size={12}/> 부분공개</button>
                 <button onClick={() => setPublicFilter('N')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-1 ${publicFilter === 'N' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Lock size={12}/> 직원전용</button>
               </div>
               
@@ -278,7 +279,7 @@ export default function Dashboard() {
                         <tr><td colSpan={5} className="py-12 text-center text-slate-400 font-medium">조건에 맞는 데이터 뷰가 없습니다.</td></tr>
                       ) : (
                         filteredTables.map(table => (
-                          <tr key={table.table_name} className="border-b border-gray-100 hover:bg-indigo-50/30 transition-colors cursor-pointer group">
+                          <tr key={table.table_name} onClick={() => { setSelectedDoc(table); setIsModalOpen(true); }} className="border-b border-gray-100 hover:bg-indigo-50/30 transition-colors cursor-pointer group">
                             <td className="px-4 py-3 min-w-0 text-center">
                               <span className={`text-[10px] px-2 py-1 rounded font-bold block ${table.db_source === 'INTERNAL' ? 'bg-orange-50 text-orange-600' : 'bg-teal-50 text-teal-600'}`}>
                                 {table.db_source === 'INTERNAL' ? '내부(엑셀)' : '종합학사'}
@@ -292,11 +293,9 @@ export default function Dashboard() {
                               <p className="text-[11px] text-gray-500 truncate max-w-sm" title={table.description}>{table.description}</p>
                             </td>
                             <td className="px-4 py-3 text-center">
-                              {table.is_public === 'Y' ? (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded"><Globe size={12}/> 대외공개</span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded"><Lock size={12}/> 직원전용</span>
-                              )}
+                              {table.is_public === 'Y' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded"><Globe size={12}/> 전체공개</span>}
+                              {table.is_public === 'P' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded"><ShieldHalf size={12}/> 부분공개</span>}
+                              {table.is_public === 'N' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded"><Lock size={12}/> 직원전용</span>}
                             </td>
                             <td className="px-4 py-3 text-center text-[11px] text-gray-500 font-mono">
                               {table.created_at}
@@ -315,7 +314,7 @@ export default function Dashboard() {
                   <div className="py-8 text-center text-slate-400 font-medium text-sm">조건에 맞는 데이터 뷰가 없습니다.</div>
                 ) : (
                   filteredTables.map(table => (
-                    <div key={table.table_name} className="p-3 hover:bg-indigo-50/50 active:bg-indigo-50 transition-colors cursor-pointer flex flex-col gap-1.5 min-w-0">
+                    <div key={table.table_name} onClick={() => { setSelectedDoc(table); setIsModalOpen(true); }} className="p-3 hover:bg-indigo-50/50 active:bg-indigo-50 transition-colors cursor-pointer flex flex-col gap-1.5 min-w-0">
                       <div className="flex justify-between items-start min-w-0">
                         <div className="flex items-center gap-1.5 min-w-0 pr-2">
                           <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold shrink-0 ${table.db_source === 'INTERNAL' ? 'bg-orange-50 text-orange-600' : 'bg-teal-50 text-teal-600'}`}>
@@ -327,7 +326,11 @@ export default function Dashboard() {
                       <div className="text-[11px] text-gray-500 truncate mt-0.5">{table.description}</div>
                       <div className="flex items-center justify-between text-[11px] text-gray-400 min-w-0 mt-1 pt-1 border-t border-gray-50">
                         <div className="truncate font-mono">{table.table_name}</div>
-                        <span className="shrink-0 font-bold">{table.is_public === 'Y' ? '🟢 공개' : '🔴 보안'}</span>
+                        <span className="shrink-0 font-bold">
+                          {table.is_public === 'Y' && '🟢 전체공개'}
+                          {table.is_public === 'P' && '🔵 부분공개'}
+                          {table.is_public === 'N' && '🔴 직원전용'}
+                        </span>
                       </div>
                     </div>
                   ))
