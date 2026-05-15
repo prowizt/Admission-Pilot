@@ -1,30 +1,72 @@
-import { useState } from 'react';
-import { Plus, Database, FileText, Lock, Globe, Search, Filter } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
+import axios from 'axios';
+import { Plus, Database, FileText, Lock, Globe, Search, Filter, Eye, X } from 'lucide-react';
 import KnowledgeModal from '@/components/modals/KnowledgeModal';
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('documents');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedDoc, setSelectedDoc] = useState<any>(null); // [NEW] 수정 모드용 선택 데이터
   
-  // 1, 2번 요청: 검색 및 필터 상태 추가
+  // 상태 관리 (검색, 필터, 데이터)
   const [searchQuery, setSearchQuery] = useState('');
-  const [docFilter, setDocFilter] = useState('all'); // all, rule, reference
-  const [tableFilter, setTableFilter] = useState('all'); // all, INTERNAL, EXTERNAL
+  const [docFilter, setDocFilter] = useState('all'); 
+  const [tableFilter, setTableFilter] = useState('all'); 
+  
+  const [documents, setDocuments] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
 
-  // Mock Data (3번 요청: description 필드 추가)
-  const mockDocuments = [
-    { doc_id: 'uuid-1', filename: '2026_신입생_모집요강.pdf', doc_type: 'rule', year: '2026', title: '2026학년도 수시 모집요강', description: '2026년 수시 전형별 지원 자격 및 일정 팩트 체크용', is_public: 'Y', uploaded_at: '2026-05-10' },
-    { doc_id: 'uuid-2', filename: '고교방문_출장결과보고서.docx', doc_type: 'reference', year: '공통', title: '출장결과보고서 양식', description: '고교 방문 후 작성하는 내부 기안문 초안 작성용 레퍼런스', is_public: 'N', uploaded_at: '2026-05-11' },
-  ];
+  // 뷰어 상태 관리
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewContent, setPreviewContent] = useState('');
+  const [previewTitle, setPreviewTitle] = useState('');
 
+  const handlePreview = async (doc_type: string, doc_id: string, title: string) => {
+    try {
+      const res = await axios.get(`http://127.0.0.1:8000/documents/${doc_type}/${doc_id}`);
+      if (res.data.status === 'success') {
+        setPreviewContent(res.data.content);
+        setPreviewTitle(title);
+        setPreviewOpen(true);
+      }
+    } catch (error) {
+      alert("본문을 불러오지 못했습니다.");
+    }
+  };
+
+  // 정형 데이터는 아직 API가 없으므로 임시 Mock 유지
   const mockTables = [
     { table_name: 'UI_IPSI_M_V', table_name_kr: '종합학사 신입생 마스터 뷰', db_source: 'EXTERNAL', description: '실시간 지원자 통계 및 수치 데이터 제공용', is_public: 'Y', created_at: '2026-05-12' },
-    { table_name: 'EXCEL_BUDGET_2026', table_name_kr: '2026 입시홍보처 예산 엑셀', db_source: 'INTERNAL', description: '내부 행사 예산 및 지출 내역 기반 답변용', is_public: 'N', created_at: '2026-05-14' },
   ];
 
-  // 필터링 및 검색 로직 적용
-  const filteredDocuments = mockDocuments.filter(doc => {
-    const matchSearch = doc.title.toLowerCase().includes(searchQuery.toLowerCase()) || doc.filename.toLowerCase().includes(searchQuery.toLowerCase());
+  // 백엔드 API에서 비정형 문서 목록 Fetch
+  const fetchDocuments = async () => {
+    try {
+      setIsLoading(true);
+      const res = await axios.get('http://127.0.0.1:8000/catalog/documents');
+      if (res.data.status === 'success') {
+        setDocuments(res.data.data);
+      }
+    } catch (error) {
+      console.error("문서 목록을 불러오는 중 오류 발생:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'documents') {
+      fetchDocuments();
+    }
+  }, [activeTab]);
+
+  // 필터링 및 검색 로직 적용 (안전한 문자열 처리 반영)
+  const filteredDocuments = documents.filter(doc => {
+    const safeTitle = doc.title || '';
+    const safeFilename = doc.filename || '';
+    const matchSearch = safeTitle.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                        safeFilename.toLowerCase().includes(searchQuery.toLowerCase());
     const matchFilter = docFilter === 'all' || doc.doc_type === docFilter;
     return matchSearch && matchFilter;
   });
@@ -110,7 +152,7 @@ export default function Dashboard() {
             </div>
             
             <button
-              onClick={() => setIsModalOpen(true)}
+              onClick={() => { setSelectedDoc(null); setIsModalOpen(true); }}
               className="w-full lg:w-auto px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold shadow-md transition transform hover:-translate-y-0.5 flex items-center justify-center gap-1.5 shrink-0"
             >
               <Plus size={14} /> 신규 지식 등록
@@ -138,7 +180,7 @@ export default function Dashboard() {
                         <tr><td colSpan={5} className="py-12 text-center text-slate-400 font-medium">조건에 맞는 문서가 없습니다.</td></tr>
                       ) : (
                         filteredDocuments.map(doc => (
-                          <tr key={doc.doc_id} className="border-b border-gray-100 hover:bg-indigo-50/30 transition-colors cursor-pointer group">
+                          <tr key={doc.doc_id} onClick={() => { setSelectedDoc(doc); setIsModalOpen(true); }} className="border-b border-gray-100 hover:bg-indigo-50/30 transition-colors cursor-pointer group">
                             <td className="px-4 py-3 min-w-0 text-center">
                               <span className={`text-[10px] px-2 py-1 rounded font-bold block mb-1 ${doc.doc_type === 'rule' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
                                 {doc.doc_type.toUpperCase()}
@@ -146,7 +188,12 @@ export default function Dashboard() {
                               <span className="text-[11px] font-bold text-gray-400">{doc.year}</span>
                             </td>
                             <td className="px-4 py-3 min-w-0">
-                              <div className="font-bold text-gray-800 text-sm truncate">{doc.title}</div>
+                              <div className="flex items-center gap-2">
+                                <div className="font-bold text-gray-800 text-sm truncate">{doc.title}</div>
+                                <button onClick={(e) => { e.stopPropagation(); handlePreview(doc.doc_type, doc.doc_id, doc.title); }} className="px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded text-[10px] font-bold hover:bg-indigo-100 flex items-center gap-1 whitespace-nowrap">
+                                  <Eye size={10} /> 본문
+                                </button>
+                              </div>
                               <div className="text-[11px] text-gray-400 truncate mt-0.5">{doc.filename}</div>
                             </td>
                             <td className="px-4 py-3 min-w-0">
@@ -176,7 +223,7 @@ export default function Dashboard() {
                   <div className="py-8 text-center text-slate-400 font-medium text-sm">조건에 맞는 문서가 없습니다.</div>
                 ) : (
                   filteredDocuments.map(doc => (
-                    <div key={doc.doc_id} className="p-3 hover:bg-indigo-50/50 active:bg-indigo-50 transition-colors cursor-pointer flex flex-col gap-1.5 min-w-0">
+                    <div key={doc.doc_id} onClick={() => { setSelectedDoc(doc); setIsModalOpen(true); }} className="p-3 hover:bg-indigo-50/50 active:bg-indigo-50 transition-colors cursor-pointer flex flex-col gap-1.5 min-w-0">
                       <div className="flex justify-between items-start min-w-0">
                         <div className="flex items-center gap-1.5 min-w-0 pr-2">
                           <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold shrink-0 ${doc.doc_type === 'rule' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
@@ -282,7 +329,31 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <KnowledgeModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} activeTab={activeTab} />
+      <KnowledgeModal 
+        isOpen={isModalOpen} 
+        onClose={() => setIsModalOpen(false)} 
+        activeTab={activeTab} 
+        editData={selectedDoc}
+        onSuccess={fetchDocuments} 
+      />
+
+      {/* 미리보기 뷰어 팝업 */}
+      {previewOpen && createPortal(
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[85vh]">
+            <div className="bg-indigo-900 px-5 py-4 text-white flex justify-between items-center shrink-0">
+              <h3 className="font-bold text-sm tracking-wide flex items-center gap-2">
+                <FileText size={16}/> 본문 텍스트 추출 확인: {previewTitle}
+              </h3>
+              <button onClick={() => setPreviewOpen(false)} className="hover:bg-white/20 p-1.5 rounded-full transition-colors"><X size={18} /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 text-sm text-slate-700 whitespace-pre-wrap bg-slate-50 font-mono leading-relaxed custom-scrollbar">
+              {previewContent ? previewContent : "추출된 텍스트가 없습니다."}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }
