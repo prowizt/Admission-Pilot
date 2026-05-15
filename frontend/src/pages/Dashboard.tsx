@@ -49,25 +49,25 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Custom Tab Menu (모바일 최적화: 텍스트 숨김) */}
+        {/* Custom Tab Menu */}
         <div className="flex gap-1 overflow-x-auto min-w-0">
           <button
             onClick={() => { setActiveTab('documents'); setSearchQuery(''); }}
-            className={`px-4 sm:px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap flex items-center justify-center gap-2 ${
+            className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap flex items-center gap-2 ${
               activeTab === 'documents' ? 'bg-slate-50 text-indigo-900 font-bold' : 'bg-indigo-800/50 text-indigo-200 hover:bg-indigo-800 hover:text-white'
             }`}
           >
             <FileText size={16} className="shrink-0" /> 
-            <span className="hidden sm:inline">비정형 문서 관리</span>
+            <span>비정형 문서</span>
           </button>
           <button
             onClick={() => { setActiveTab('tables'); setSearchQuery(''); }}
-            className={`px-4 sm:px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap flex items-center justify-center gap-2 ${
+            className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap flex items-center gap-2 ${
               activeTab === 'tables' ? 'bg-slate-50 text-indigo-900 font-bold' : 'bg-indigo-800/50 text-indigo-200 hover:bg-indigo-800 hover:text-white'
             }`}
           >
             <Database size={16} className="shrink-0" /> 
-            <span className="hidden sm:inline">정형 데이터(DB) 관리</span>
+            <span>정형 데이터(DB)</span>
           </button>
         </div>
       </div>

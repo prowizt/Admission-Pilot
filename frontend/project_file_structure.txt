@@ -1,0 +1,51 @@
+=========================================
+ Admission-Pilot Structure Tree
+ Generated at: 2026-05-15 14:00:14
+=========================================
+.
+├── .gitignore
+├── README.md
+├── components.json
+├── db_schema_full.txt
+├── eslint.config.js
+├── index.html
+├── manifest.json
+├── package-lock.json
+├── package.json
+├── postcss.config.js
+├── public/
+│   ├── favicon.svg
+│   └── icons.svg
+├── src/
+│   ├── App.css
+│   ├── App.tsx
+│   ├── assets/
+│   │   ├── hero.png
+│   │   ├── react.svg
+│   │   └── vite.svg
+│   ├── background.ts  # 확장 프로그램 아이콘을 클릭하면 사이드 패널이 열리도록 설정합니다.
+│   ├── components/
+│   │   ├── modals/
+│   │   │   └── KnowledgeModal.tsx
+│   │   └── ui/
+│   │       ├── badge.tsx
+│   │       ├── button.tsx
+│   │       ├── card.tsx
+│   │       ├── dialog.tsx
+│   │       ├── input.tsx
+│   │       ├── sheet.tsx
+│   │       ├── table.tsx
+│   │       └── tabs.tsx
+│   ├── index.css
+│   ├── layouts/
+│   │   └── MainLayout.tsx
+│   ├── lib/
+│   │   └── utils.ts
+│   ├── main.tsx
+│   └── pages/
+│       └── Dashboard.tsx  # 1, 2번 요청: 검색 및 필터 상태 추가
+├── tailwind.config.js
+├── tsconfig.app.json
+├── tsconfig.json
+├── tsconfig.node.json
+└── vite.config.ts

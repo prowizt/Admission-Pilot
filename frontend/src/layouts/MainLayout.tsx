@@ -78,7 +78,10 @@ export default function MainLayout() {
                 <Menu size={24} />
               </Button>
             </SheetTrigger>
-            <SheetContent side="left" className="p-0 w-[260px] border-none bg-indigo-900">
+            <SheetContent 
+              side="left" 
+              className="p-0 w-[260px] border-none bg-indigo-900 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left duration-300 ease-in-out"
+            >
               <SheetTitle className="sr-only">모바일 네비게이션 메뉴</SheetTitle>
               <SidebarContent pathname={location.pathname} />
             </SheetContent>
