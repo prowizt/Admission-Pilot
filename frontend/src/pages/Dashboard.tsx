@@ -119,13 +119,12 @@ export default function Dashboard() {
     <div className="h-full flex flex-col min-w-0 pb-24 md:pb-6">
       
       {/* 1. Header & Tabs */}
-      <div className="bg-indigo-900 rounded-xl shadow-md pt-6 px-6 shrink-0 min-w-0 flex flex-col">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4 mb-6 min-w-0">
+      <div className="bg-indigo-900 rounded-xl shadow-md pt-4 px-6 shrink-0 min-w-0 flex flex-col">
+        <div className="flex justify-between items-center mb-4 min-w-0">
           <div className="min-w-0">
-            <h1 className="text-xl md:text-2xl font-extrabold text-white tracking-tight flex items-center gap-2">
-              <Database className="text-indigo-300" size={24} /> 지식 카탈로그 관리
+            <h1 className="text-lg md:text-xl font-extrabold text-white tracking-tight flex items-center gap-2">
+              <Database className="text-indigo-300" size={20} /> 지식 카탈로그 관리
             </h1>
-            <p className="text-xs text-indigo-200 mt-1">AI 챗봇이 참조할 비정형 문서와 정형 DB 뷰(View)를 통합 관리합니다.</p>
           </div>
         </div>
 
