@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import axios from 'axios';
-import { Plus, Database, FileText, Lock, Globe, Search, Filter, Eye, X, ShieldHalf } from 'lucide-react';
+import { Plus, Database, FileText, Lock, Globe, Search, Filter, Eye, X, ShieldHalf, ChevronLeft, ChevronRight } from 'lucide-react';
 import KnowledgeModal from '@/components/modals/KnowledgeModal';
 import CustomSwal from '@/utils/CustomSwal';
 
@@ -14,11 +14,20 @@ export default function Dashboard() {
   const [searchQuery, setSearchQuery] = useState('');
   const [docFilter, setDocFilter] = useState('all'); 
   const [tableFilter, setTableFilter] = useState('all'); 
-  const [publicFilter, setPublicFilter] = useState('all'); // [NEW] 전체/공개(Y)/비공개(N)
+  const [publicFilter, setPublicFilter] = useState('all');
   
   const [documents, setDocuments] = useState<any[]>([]);
-  const [tables, setTables] = useState<any[]>([]); // [NEW] 정형 데이터 State
+  const [tables, setTables] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+
+  // [NEW] 페이지네이션 상태
+  const [docPage, setDocPage] = useState(1);
+  const [tablePage, setTablePage] = useState(1);
+  const ITEMS_PER_PAGE = 10;
+
+  // 검색/필터 변경 시 페이지를 1로 리셋
+  useEffect(() => { setDocPage(1); }, [searchQuery, docFilter, publicFilter]);
+  useEffect(() => { setTablePage(1); }, [searchQuery, tableFilter, publicFilter]);
 
   // 뷰어 상태 관리
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -80,6 +89,32 @@ export default function Dashboard() {
     return matchSearch && matchType && matchPublic;
   });
 
+  // [NEW] 페이지네이션 계산
+  const docTotalPages = Math.ceil(filteredDocuments.length / ITEMS_PER_PAGE) || 1;
+  const paginatedDocuments = filteredDocuments.slice((docPage - 1) * ITEMS_PER_PAGE, docPage * ITEMS_PER_PAGE);
+
+  const tableTotalPages = Math.ceil(filteredTables.length / ITEMS_PER_PAGE) || 1;
+  const paginatedTables = filteredTables.slice((tablePage - 1) * ITEMS_PER_PAGE, tablePage * ITEMS_PER_PAGE);
+
+  // [NEW] 공통 페이지네이션 렌더링 함수
+  const renderPagination = (currentPage: number, totalPages: number, setPageFn: (page: number) => void) => (
+    <div className="flex justify-center items-center mt-6 mb-2 gap-1.5 min-w-0">
+      <button onClick={() => setPageFn(Math.max(1, currentPage - 1))} disabled={currentPage === 1} className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-300 text-gray-500 disabled:opacity-30 hover:bg-gray-50 transition-colors">
+        <ChevronLeft size={16} />
+      </button>
+      <div className="flex gap-1 min-w-0">
+        {Array.from({ length: totalPages }, (_, i) => i + 1).map(pageNum => (
+          <button key={pageNum} onClick={() => setPageFn(pageNum)} className={`w-7 h-7 rounded-md text-xs font-bold transition-all ${currentPage === pageNum ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-600 hover:bg-indigo-50 border border-transparent'}`}>
+            {pageNum}
+          </button>
+        ))}
+      </div>
+      <button onClick={() => setPageFn(Math.min(totalPages, currentPage + 1))} disabled={currentPage === totalPages} className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-300 text-gray-500 disabled:opacity-30 hover:bg-gray-50 transition-colors">
+        <ChevronRight size={16} />
+      </button>
+    </div>
+  );
+
   return (
     <div className="h-full flex flex-col min-w-0 pb-24 md:pb-6">
       
@@ -123,33 +158,38 @@ export default function Dashboard() {
           
           {/* 3. Control Bar (Filters, Search, Add Button) */}
           <div className="bg-white p-3 md:p-4 rounded-xl shadow-sm border border-gray-200 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 min-w-0">
+            {/* Left: Filters */}
             <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto min-w-0">
               {/* Type Filter Buttons */}
-              <div className="flex bg-slate-100 p-1 rounded-lg shrink-0">
+              <div className="flex bg-slate-100 p-1 rounded-lg shrink-0 overflow-x-auto custom-scrollbar">
                 {activeTab === 'documents' ? (
                   <>
-                    <button onClick={() => setDocFilter('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${docFilter === 'all' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>전체</button>
-                    <button onClick={() => setDocFilter('rule')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${docFilter === 'rule' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Rule (규정)</button>
-                    <button onClick={() => setDocFilter('reference')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${docFilter === 'reference' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Ref (양식)</button>
+                    <button onClick={() => setDocFilter('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${docFilter === 'all' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>전체</button>
+                    <button onClick={() => setDocFilter('rule')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${docFilter === 'rule' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Rule (규정)</button>
+                    <button onClick={() => setDocFilter('reference')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${docFilter === 'reference' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Ref (양식)</button>
                   </>
                 ) : (
                   <>
-                    <button onClick={() => setTableFilter('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${tableFilter === 'all' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>전체</button>
-                    <button onClick={() => setTableFilter('INTERNAL')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${tableFilter === 'INTERNAL' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>내부 (엑셀)</button>
-                    <button onClick={() => setTableFilter('EXTERNAL')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${tableFilter === 'EXTERNAL' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>종합학사</button>
+                    <button onClick={() => setTableFilter('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${tableFilter === 'all' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>전체</button>
+                    <button onClick={() => setTableFilter('INTERNAL')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${tableFilter === 'INTERNAL' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>내부 (엑셀)</button>
+                    <button onClick={() => setTableFilter('EXTERNAL')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${tableFilter === 'EXTERNAL' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>종합학사</button>
                   </>
                 )}
               </div>
               
               {/* Public/Private Filter Buttons */}
-              <div className="flex bg-slate-100 p-1 rounded-lg shrink-0">
-                <button onClick={() => setPublicFilter('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${publicFilter === 'all' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>모든 권한</button>
-                <button onClick={() => setPublicFilter('Y')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-1 ${publicFilter === 'Y' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Globe size={12}/> 전체공개</button>
-                <button onClick={() => setPublicFilter('P')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-1 ${publicFilter === 'P' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><ShieldHalf size={12}/> 부분공개</button>
-                <button onClick={() => setPublicFilter('N')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-1 ${publicFilter === 'N' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Lock size={12}/> 직원전용</button>
+              <div className="flex bg-slate-100 p-1 rounded-lg shrink-0 overflow-x-auto custom-scrollbar">
+                <button onClick={() => setPublicFilter('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${publicFilter === 'all' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>모든 권한</button>
+                <button onClick={() => setPublicFilter('Y')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap flex items-center gap-1 ${publicFilter === 'Y' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Globe size={12}/> {activeTab === 'documents' ? '대외공개' : '전체공개'}</button>
+                {activeTab === 'tables' && (
+                  <button onClick={() => setPublicFilter('P')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap flex items-center gap-1 ${publicFilter === 'P' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><ShieldHalf size={12}/> 부분공개</button>
+                )}
+                <button onClick={() => setPublicFilter('N')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap flex items-center gap-1 ${publicFilter === 'N' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Lock size={12}/> 직원전용</button>
               </div>
-              
-              {/* Search Bar */}
+            </div>
+            
+            {/* Right: Search Bar & Add Button */}
+            <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto shrink-0 items-center min-w-0">
               <div className="relative w-full sm:w-64 shrink-0">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                 <input
@@ -160,14 +200,13 @@ export default function Dashboard() {
                   className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all"
                 />
               </div>
+              <button
+                onClick={() => { setSelectedDoc(null); setIsModalOpen(true); }}
+                className="w-full sm:w-auto px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold shadow-md transition transform hover:-translate-y-0.5 flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap"
+              >
+                <Plus size={14} /> 신규 지식 등록
+              </button>
             </div>
-            
-            <button
-              onClick={() => { setSelectedDoc(null); setIsModalOpen(true); }}
-              className="w-full lg:w-auto px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold shadow-md transition transform hover:-translate-y-0.5 flex items-center justify-center gap-1.5 shrink-0"
-            >
-              <Plus size={14} /> 신규 지식 등록
-            </button>
           </div>
 
           {/* TAB 1: Documents List */}
@@ -182,15 +221,15 @@ export default function Dashboard() {
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-24">유형/연도</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-1/3">문서 제목 (파일명)</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700">AI 참조 설명 (Hint)</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-24 text-center">권한</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-24 text-center">등록일</th>
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">권한</th>
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">등록일</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredDocuments.length === 0 ? (
+                      {paginatedDocuments.length === 0 ? (
                         <tr><td colSpan={5} className="py-12 text-center text-slate-400 font-medium">조건에 맞는 문서가 없습니다.</td></tr>
                       ) : (
-                        filteredDocuments.map(doc => (
+                        paginatedDocuments.map(doc => (
                           <tr key={doc.doc_id} onClick={() => { setSelectedDoc(doc); setIsModalOpen(true); }} className="border-b border-gray-100 hover:bg-indigo-50/30 transition-colors cursor-pointer group">
                             <td className="px-4 py-3 min-w-0 text-center">
                               <span className={`text-[10px] px-2 py-1 rounded font-bold block mb-1 ${doc.doc_type === 'rule' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
@@ -210,14 +249,14 @@ export default function Dashboard() {
                             <td className="px-4 py-3 min-w-0">
                               <p className="text-[11px] text-gray-500 truncate max-w-sm" title={doc.description}>{doc.description}</p>
                             </td>
-                            <td className="px-4 py-3 text-center">
+                            <td className="px-4 py-3 text-center whitespace-nowrap">
                               {doc.is_public === 'Y' ? (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded"><Globe size={12}/> 대외공개</span>
+                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded whitespace-nowrap"><Globe size={12}/> 대외공개</span>
                               ) : (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded"><Lock size={12}/> 직원전용</span>
+                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded whitespace-nowrap"><Lock size={12}/> 직원전용</span>
                               )}
                             </td>
-                            <td className="px-4 py-3 text-center text-[11px] text-gray-500 font-mono">
+                            <td className="px-4 py-3 text-center text-[11px] text-gray-500 font-mono whitespace-nowrap">
                               {doc.uploaded_at}
                             </td>
                           </tr>
@@ -255,6 +294,7 @@ export default function Dashboard() {
                   ))
                 )}
               </div>
+              {filteredDocuments.length > 0 && renderPagination(docPage, docTotalPages, setDocPage)}
             </>
           )}
 
@@ -270,15 +310,15 @@ export default function Dashboard() {
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-24">출처</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-1/3">데이터명 (View/Table 명)</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700">AI 참조 설명 (Hint)</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-24 text-center">권한</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-24 text-center">연동일</th>
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">권한</th>
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">연동일</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredTables.length === 0 ? (
+                      {paginatedTables.length === 0 ? (
                         <tr><td colSpan={5} className="py-12 text-center text-slate-400 font-medium">조건에 맞는 데이터 뷰가 없습니다.</td></tr>
                       ) : (
-                        filteredTables.map(table => (
+                        paginatedTables.map(table => (
                           <tr key={table.table_name} onClick={() => { setSelectedDoc(table); setIsModalOpen(true); }} className="border-b border-gray-100 hover:bg-indigo-50/30 transition-colors cursor-pointer group">
                             <td className="px-4 py-3 min-w-0 text-center">
                               <span className={`text-[10px] px-2 py-1 rounded font-bold block ${table.db_source === 'INTERNAL' ? 'bg-orange-50 text-orange-600' : 'bg-teal-50 text-teal-600'}`}>
@@ -292,12 +332,12 @@ export default function Dashboard() {
                             <td className="px-4 py-3 min-w-0">
                               <p className="text-[11px] text-gray-500 truncate max-w-sm" title={table.description}>{table.description}</p>
                             </td>
-                            <td className="px-4 py-3 text-center">
-                              {table.is_public === 'Y' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded"><Globe size={12}/> 전체공개</span>}
-                              {table.is_public === 'P' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded"><ShieldHalf size={12}/> 부분공개</span>}
-                              {table.is_public === 'N' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded"><Lock size={12}/> 직원전용</span>}
+                            <td className="px-4 py-3 text-center whitespace-nowrap">
+                              {table.is_public === 'Y' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded whitespace-nowrap"><Globe size={12}/> 전체공개</span>}
+                              {table.is_public === 'P' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded whitespace-nowrap"><ShieldHalf size={12}/> 부분공개</span>}
+                              {table.is_public === 'N' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded whitespace-nowrap"><Lock size={12}/> 직원전용</span>}
                             </td>
-                            <td className="px-4 py-3 text-center text-[11px] text-gray-500 font-mono">
+                            <td className="px-4 py-3 text-center text-[11px] text-gray-500 font-mono whitespace-nowrap">
                               {table.created_at}
                             </td>
                           </tr>
@@ -336,6 +376,7 @@ export default function Dashboard() {
                   ))
                 )}
               </div>
+              {filteredTables.length > 0 && renderPagination(tablePage, tableTotalPages, setTablePage)}
             </>
           )}
 
