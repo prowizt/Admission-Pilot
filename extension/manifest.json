@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "대동대 AI 업무 헬퍼 (챗봇)",
+  "version": "1.0.0",
+  "description": "입시처 교직원 전용 화면 스크랩 및 AI 질의응답 사이드 패널",
+  "permissions": [
+    "sidePanel",
+    "scripting",
+    "activeTab",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "AI 헬퍼 열기"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  }
+}

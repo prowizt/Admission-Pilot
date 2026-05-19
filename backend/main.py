@@ -6,7 +6,9 @@ import re
 import io
 import uuid
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Header
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import List
 import chromadb
 import pyodbc
 import pdfplumber
@@ -17,6 +19,15 @@ import google.generativeai as genai
 app = FastAPI(
     title="Admission-Pilot Backend", 
     description="대동대학교 입시처 AI 업무 헬퍼 및 챗봇 중앙 서버"
+)
+
+# [CORS 설정] 크롬 사이드 패널 및 로컬 React 웹에서의 API 접근을 허용합니다.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ==========================================
@@ -44,10 +55,21 @@ def get_system_prompt(user_role: str = "staff"):
         """
 
 
+from typing import List, Optional
+
 class ChatRequest(BaseModel):
     question: str
+    scraped_context: Optional[str] = "" # [NEW] 스크랩된 현재 화면 텍스트
     model_name: str = "gemini-2.5-flash"
     user_role: str = "staff" # 권한: "staff"(교직원) 또는 "student"(일반학생)
+
+class ColumnUpdateItem(BaseModel):
+    id: int
+    ai_description: Optional[str] = "" # None 대신 빈 문자열 기본값 처리
+    is_public: str
+
+class ColumnUpdatePayload(BaseModel):
+    columns: List[ColumnUpdateItem]
 
 # ==========================================
 # [1] 하이브리드 DB 세팅 (Vector DB)
@@ -216,6 +238,7 @@ async def upload_knowledge(
     doc_type: str = Form(...),
     year: str = Form(...),
     title: str = Form(...),
+    is_public: str = Form("Y"), # [NEW] 프론트엔드에서 보안 권한 수신
     description: str = Form(None) # [NEW] 문서에 대한 관리자/AI 설명
 ):
     """
@@ -266,8 +289,8 @@ async def upload_knowledge(
             desc_val = description if description else ""
             cursor.execute("""
                 INSERT INTO Sys_DocumentCatalog (doc_id, filename, doc_type, year, title, description, is_public)
-                VALUES (?, ?, ?, ?, ?, ?, 'Y')
-            """, (doc_id, file.filename, doc_type, year, title, desc_val))
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (doc_id, file.filename, doc_type, year, title, desc_val, is_public))
             conn.commit()
             cursor.close()
             conn.close()
@@ -318,6 +341,63 @@ async def get_documents(doc_type: str):
         raise HTTPException(status_code=500, detail=f"문서 조회 중 오류가 발생했습니다: {str(e)}")
 
 
+@app.get("/documents/{doc_type}/{doc_id}")
+async def get_document_content(doc_type: str, doc_id: str):
+    """관리자가 추출된 문서 본문을 미리보기 할 때 사용합니다."""
+    if doc_type not in ["rule", "reference"]:
+        raise HTTPException(status_code=400, detail="Invalid doc_type")
+    
+    target_db = rule_db if doc_type == "rule" else reference_db
+    result = target_db.get(ids=[doc_id])
+    
+    if not result or not result.get("documents") or len(result["documents"]) == 0:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+        
+    return {"status": "success", "content": result["documents"][0]}
+
+
+@app.put("/documents/{doc_id}")
+async def update_document(
+    doc_id: str,
+    doc_type: str = Form(...),
+    year: str = Form(...),
+    title: str = Form(...),
+    is_public: str = Form("Y"),
+    description: str = Form(None)
+):
+    """비정형 문서 메타데이터 수정 (MS-SQL 및 ChromaDB 동기화)"""
+    # 1. MS-SQL 업데이트
+    conn = get_mssql_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            desc_val = description if description else ""
+            cursor.execute("""
+                UPDATE Sys_DocumentCatalog 
+                SET year=?, title=?, description=?, is_public=? 
+                WHERE doc_id=?
+            """, (year, title, desc_val, is_public, doc_id))
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            print(f"카탈로그 수정 에러: {e}")
+
+    # 2. ChromaDB 메타데이터 업데이트
+    target_db = rule_db if doc_type == "rule" else reference_db
+    try:
+        res = target_db.get(ids=[doc_id])
+        if res and res.get("metadatas") and len(res["metadatas"]) > 0:
+            meta = res["metadatas"][0]
+            meta["year"] = year
+            meta["title"] = title
+            target_db.update(ids=[doc_id], metadatas=[meta])
+    except Exception as e:
+        print(f"ChromaDB 메타데이터 수정 에러: {e}")
+
+    return {"status": "success", "message": "문서 정보가 성공적으로 수정되었습니다."}
+
+
 @app.delete("/documents/{doc_type}/{doc_id}")
 async def delete_document(doc_type: str, doc_id: str):
     """지정된 벡터 DB와 MS-SQL 문서 카탈로그에서 문서를 동기화하여 완벽히 삭제합니다."""
@@ -349,13 +429,28 @@ async def delete_document(doc_type: str, doc_id: str):
         raise HTTPException(status_code=500, detail=f"문서 삭제 중 오류 발생: {str(e)}")
 
 
+@app.get("/available-views")
+async def get_available_views():
+    """MS-SQL에 존재하는 뷰(View) 중, 아직 연동되지 않은 목록만 조회합니다."""
+    conn = get_mssql_connection()
+    if not conn: raise HTTPException(status_code=500, detail="MS-SQL 연결 실패")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_NAME NOT IN (SELECT table_name FROM Sys_TableCatalog)")
+        views = [row[0] for row in cursor.fetchall()]
+        return {"status": "success", "data": views}
+    finally:
+        cursor.close()
+        conn.close()
+
 @app.post("/upload-dynamic-statistics")
 async def upload_dynamic_statistics(
     file: UploadFile = File(...),
     table_name: str = Form(...),
-    table_name_kr: str = Form(None) # [NEW] 대시보드 표시용 한글 테이블명
+    table_name_kr: str = Form(None),
+    description: str = Form(None) # [NEW] 테이블 설명 추가
 ):
-    """엑셀 데이터를 올리면서 데이터 카탈로그에 한글 테이블명과 함께 자동 등록합니다."""
+    """엑셀 데이터를 올리면서 데이터 카탈로그에 자동 등록합니다."""
     if not file.filename.lower().endswith(('.xlsx', '.xls')):
         raise HTTPException(status_code=400, detail="엑셀 파일만 업로드 가능합니다.")
     if not re.match(r"^[a-zA-Z0-9_]+$", table_name):
@@ -381,9 +476,10 @@ async def upload_dynamic_statistics(
             cursor.execute(f"CREATE TABLE [{table_name}] (id INT IDENTITY(1,1) PRIMARY KEY, {cols_def}, created_at DATETIME DEFAULT GETDATE())")
             print(f"✅ 테이블 [{table_name}] 생성 완료")
             
-        # [NEW] 테이블 카탈로그 등록 (한글명 포함)
+        # [NEW] 테이블 카탈로그 등록 (한글명 및 설명 포함)
         kr_name = table_name_kr if table_name_kr else table_name
-        cursor.execute(f"IF NOT EXISTS (SELECT 1 FROM Sys_TableCatalog WHERE table_name = '{table_name}') INSERT INTO Sys_TableCatalog (table_name, table_name_kr, db_source) VALUES ('{table_name}', '{kr_name}', 'INTERNAL')")
+        desc_val = description if description else ""
+        cursor.execute(f"IF NOT EXISTS (SELECT 1 FROM Sys_TableCatalog WHERE table_name = '{table_name}') INSERT INTO Sys_TableCatalog (table_name, table_name_kr, db_source, description) VALUES ('{table_name}', '{kr_name}', 'INTERNAL', '{desc_val}')")
         
         # [NEW] 컬럼 카탈로그 등록
         for h in headers:
@@ -450,18 +546,24 @@ async def sync_external_table(
         cursor.execute(f"SELECT COUNT(*) FROM Sys_TableCatalog WHERE table_name = '{table_name}'")
         if cursor.fetchone()[0] == 0:
             cursor.execute(f"INSERT INTO Sys_TableCatalog (table_name, table_name_kr, db_source, description) VALUES ('{table_name}', '{kr_name}', 'EXTERNAL', '{desc_val}')")
+        else:
+            cursor.execute(f"UPDATE Sys_TableCatalog SET table_name_kr='{kr_name}', description='{desc_val}' WHERE table_name='{table_name}'")
         
         # 4. 컬럼 스마트 동기화 (신규 추가 및 삭제 반영)
         cursor.execute(f"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{table_name}'")
         actual_cols = [row[0] for row in cursor.fetchall()]
         
+        added_count = 0
+        deleted_count = 0
+
         if actual_cols:
-            # (A) 원본 뷰에서 삭제된 컬럼 장부에서 제거
+            # (A) 원본 뷰에서 삭제된 컬럼 장부에서 제거 및 카운트
             cols_format = ", ".join([f"'{c}'" for c in actual_cols])
+            cursor.execute(f"SELECT COUNT(*) FROM Sys_ColumnCatalog WHERE table_name = '{table_name}' AND column_name NOT IN ({cols_format})")
+            deleted_count = cursor.fetchone()[0]
             cursor.execute(f"DELETE FROM Sys_ColumnCatalog WHERE table_name = '{table_name}' AND column_name NOT IN ({cols_format})")
             
             # (B) 신규 컬럼 장부에 추가 (기본 비공개 'N')
-            added_count = 0
             for c_name in actual_cols:
                 cursor.execute(f"SELECT COUNT(*) FROM Sys_ColumnCatalog WHERE table_name = '{table_name}' AND column_name = '{c_name}'")
                 if cursor.fetchone()[0] == 0:
@@ -474,7 +576,7 @@ async def sync_external_table(
 
         return {
             "status": "success", 
-            "message": f"'{table_name}' 뷰 동기화 완료. (신규 발견 컬럼: {added_count}개 안전 등록)"
+            "message": f"'{table_name}' 뷰 동기화 완료\n(신규 추가: {added_count}개 / 삭제: {deleted_count}개)"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"동기화 중 오류 발생: {str(e)}")
@@ -495,6 +597,11 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         # =======================================================
         # [Step 1] NL2SQL: 사용자 질문 -> T-SQL 생성
         # =======================================================
+        # 스크랩된 내용이 있다면 질문과 앞부분 키워드를 조합하여 관련된 DB 통계를 찾을 수 있도록 유도
+        sql_search_text = request.question
+        if request.scraped_context:
+            sql_search_text += " " + request.scraped_context[:300]
+
         sql_router_prompt = f"""
         너는 대동대학교 입시처의 DB 아키텍트야. 
         사용자의 [질문]에 답변하기 위해 정형 데이터(숫자/통계) 조회가 필요하다면, 
@@ -514,7 +621,7 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         {dynamic_schema}
 
         [질문]
-        {request.question}
+        {sql_search_text}
         """
         # SQL 생성용은 빠르고 논리적인 모델 사용
         sql_model = genai.GenerativeModel("gemini-2.5-flash")
@@ -549,43 +656,245 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             conn.close()
 
         # =======================================================
-        # [Step 3] 비정형 DB (ChromaDB) 검색
+        # [Step 3] 비정형 DB (ChromaDB) 검색 (Rule + Ref 모두 탐색)
         # =======================================================
-        results = rule_db.query(query_texts=[request.question], n_results=3)
-        chroma_context = "\n\n".join(results["documents"][0]) if results.get("documents") else ""
+        # 스크랩 문맥이 있을 경우 앞부분의 문서 제목/내용 힌트(500자)를 쿼리에 덧붙여 실질적인 관련 규정(회의비 기준 등)을 검색합니다.
+        chroma_query = request.question
+        if request.scraped_context:
+            chroma_query += " " + request.scraped_context[:500]
+
+        rule_res = rule_db.query(query_texts=[chroma_query], n_results=2)
+        ref_res = reference_db.query(query_texts=[chroma_query], n_results=2)
+        
+        chroma_context = ""
+        results_metadatas = []
+        
+        if rule_res and rule_res.get("documents") and rule_res["documents"][0]:
+            chroma_context += "[규정/팩트 문서]\n" + "\n\n".join(rule_res["documents"][0]) + "\n\n"
+            if rule_res.get("metadatas"): results_metadatas.extend(rule_res["metadatas"][0])
+            
+        if ref_res and ref_res.get("documents") and ref_res["documents"][0]:
+            chroma_context += "[참조/양식 문서]\n" + "\n\n".join(ref_res["documents"][0]) + "\n\n"
+            if ref_res.get("metadatas"): results_metadatas.extend(ref_res["metadatas"][0])
 
         # =======================================================
         # [Step 4] 최종 하이브리드 답변 생성
         # =======================================================
         final_model = genai.GenerativeModel(model_name=request.model_name, system_instruction=get_system_prompt(request.user_role))
         
+        # [디버그] 프론트엔드에서 스크랩 컨텍스트가 분리되어 제대로 넘어왔는지 확인
+        if request.scraped_context:
+            print(f"=== [수신된 스크랩 컨텍스트 (미리보기)] ===\n{request.scraped_context[:200]}...\n===========================")
+        else:
+            print("=== [스크랩 컨텍스트 없음] ===")
+
         prompt = f"""
-        너는 대동대학교 입시처 전문 AI 상담원이야.
+너는 대동대학교 입시처 행정 검토 전문 AI 아키텍트야.
+아래의 XML 태그로 구분된 정보들을 읽고, <사용자 지시사항>에 따라 완벽한 분석을 제공해.
 
-        [🚨 0순위 절대 규칙 🚨]
-        1. 아래 [시스템 DB 데이터]와 [PDF 규정 문서]의 수치(정원, 인원, 금액 등)가 서로 다를 경우, 무조건!!! [시스템 DB 데이터]의 수치가 100% 정답이야. 
-        2. PDF의 수치는 변경되기 전의 '과거 자료'이므로 절대 답변에 사용하지 마.
-        3. 답변할 때 반드시 "최신 시스템 DB 확인 결과, 변경된 모집정원은 OO명입니다." 라는 식으로 강조해서 답변해.
+<검토 대상 문서>
+(아래 내용은 사용자가 현재 브라우저 화면에서 스크랩한 기안/공문 원본입니다. 당신의 **유일한 분석 및 검토 대상**은 오직 이 문서입니다.)
 
-        [시스템 DB 데이터 (최신 팩트 - 무조건 이 숫자를 사용할 것)]
-        {sql_context if sql_context else "관련 DB 데이터 없음"}
+{request.scraped_context if request.scraped_context else "검토할 원본 문서가 제공되지 않았습니다."}
+</검토 대상 문서>
 
-        [PDF 규정 문서 (참고용 - DB와 숫자가 다르면 이 문서의 숫자는 무시할 것)]
-        {chroma_context}
+<판단 기준 1: 시스템 DB 최신 팩트>
+(수치 비교 시 가장 1순위로 신뢰해야 하는 데이터입니다.)
+{sql_context if sql_context else "관련 DB 데이터 없음"}
+</판단 기준 1: 시스템 DB 최신 팩트>
 
-        [사용자 질문]
-        {request.question}
-        """
+<판단 기준 2: 사내 규정 및 과거 문서 (RAG)>
+(아래 문서들은 <검토 대상 문서>를 평가하고 검열하기 위한 '기준표'입니다. 이 기준 문서들 자체의 오류나 헛점을 지적하는 우를 범하지 마십시오.)
+{chroma_context if chroma_context else "관련 규정/참조 문서 없음"}
+</판단 기준 2: 사내 규정 및 과거 문서 (RAG)>
+
+<사용자 지시사항>
+{request.question}
+</사용자 지시사항>
+
+[행동 지침]
+1. <검토 대상 문서>의 내용을 꼼꼼히 파악해.
+2. <판단 기준> 항목들의 규정(예: 회의비 지출 한도, 대상, 양식 등)과 대조해봐.
+3. <검토 대상 문서> 내에 규정을 위반한 사항, 계산 오류, 양식 누락 등 헛점이 있다면 논리적으로 지적하고 해결책을 제시해.
+"""
+
         
-        response = final_model.generate_content(prompt, request_options={"timeout": 15})
+        # 스크랩된 대량의 텍스트를 처리할 수 있도록 타임아웃을 60초로 넉넉하게 연장
+        response = final_model.generate_content(prompt, request_options={"timeout": 60})
         return {
             "status": "success",
             "answer": response.text,
-            "references": results.get("metadatas")[0] if results.get("metadatas") else []
+            "references": results_metadatas
         }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI 답변 생성 중 오류 발생: {str(e)}")
+
+
+@app.get("/catalog/tables")
+async def get_table_catalog():
+    """
+    [대시보드 리스트용 API] 
+    MS-SQL의 Sys_TableCatalog에서 연동된 정형 데이터(View/Table) 목록을 조회합니다.
+    """
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+        
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT table_name, db_source, description, 
+                   CONVERT(VARCHAR(10), created_at, 120) AS created_at, 
+                   table_name_kr 
+            FROM Sys_TableCatalog
+            ORDER BY created_at DESC
+        """)
+        
+        columns = [column[0] for column in cursor.description]
+        tables = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        
+        # 권한(is_public)은 컬럼 단위로 관리되지만 대시보드 표시를 위해 테이블 단위로 세분화 (Y: 전체공개, P: 부분공개, N: 직원전용)
+        for t in tables:
+            cursor.execute(f"SELECT COUNT(*) FROM Sys_ColumnCatalog WHERE table_name='{t['table_name']}'")
+            total_cols = cursor.fetchone()[0]
+            
+            cursor.execute(f"SELECT COUNT(*) FROM Sys_ColumnCatalog WHERE table_name='{t['table_name']}' AND is_public='Y'")
+            public_cols = cursor.fetchone()[0]
+            
+            if total_cols == 0:
+                t['is_public'] = 'N'
+            elif public_cols == total_cols:
+                t['is_public'] = 'Y'
+            elif public_cols == 0:
+                t['is_public'] = 'N'
+            else:
+                t['is_public'] = 'P'
+        
+        return {
+            "status": "success",
+            "total_count": len(tables),
+            "data": tables
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"테이블 카탈로그 목록 조회 에러: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.put("/tables/{table_name}")
+async def update_table(table_name: str, table_name_kr: str = Form(...), description: str = Form(None)):
+    """정형 데이터(테이블/뷰) 메타데이터 수정"""
+    conn = get_mssql_connection()
+    if not conn: raise HTTPException(status_code=500, detail="MS-SQL 연결 실패")
+    try:
+        cursor = conn.cursor()
+        desc_val = description if description else ""
+        cursor.execute("UPDATE Sys_TableCatalog SET table_name_kr=?, description=? WHERE table_name=?", (table_name_kr, desc_val, table_name))
+        conn.commit()
+        return {"status": "success", "message": "데이터 카탈로그 정보가 수정되었습니다."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.delete("/tables/{table_name}")
+async def delete_table(table_name: str):
+    """정형 데이터 카탈로그 영구 삭제 및 엑셀 데이터 Drop"""
+    conn = get_mssql_connection()
+    if not conn: raise HTTPException(status_code=500, detail="MS-SQL 연결 실패")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT db_source FROM Sys_TableCatalog WHERE table_name = ?", (table_name,))
+        row = cursor.fetchone()
+        db_source = row[0] if row else None
+        
+        # 메타데이터 장부 삭제
+        cursor.execute("DELETE FROM Sys_ColumnCatalog WHERE table_name = ?", (table_name,))
+        cursor.execute("DELETE FROM Sys_TableCatalog WHERE table_name = ?", (table_name,))
+        
+        # 엑셀 데이터일 경우 실제 물리 테이블도 Drop
+        if db_source == 'INTERNAL':
+            cursor.execute(f"IF OBJECT_ID('[{table_name}]', 'U') IS NOT NULL DROP TABLE [{table_name}]")
+            
+        conn.commit()
+        return {"status": "success", "message": f"'{table_name}' 연동 해제 및 삭제 완료"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.get("/catalog/documents")
+async def get_document_catalog():
+    """
+    [대시보드 리스트용 API] 
+    ChromaDB가 아닌 MS-SQL의 Sys_DocumentCatalog에서 비정형 문서 메타데이터 목록만 빠르게 조회합니다.
+    """
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+        
+    try:
+        cursor = conn.cursor()
+        # 프론트엔드 UI에 맞게 날짜 포맷팅 및 최신순 정렬
+        cursor.execute("""
+            SELECT doc_id, filename, doc_type, year, title, is_public, 
+                   CONVERT(VARCHAR(10), uploaded_at, 120) AS uploaded_at, 
+                   description 
+            FROM Sys_DocumentCatalog
+            ORDER BY uploaded_at DESC
+        """)
+        
+        columns = [column[0] for column in cursor.description]
+        documents = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        
+        return {
+            "status": "success",
+            "total_count": len(documents),
+            "data": documents
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"카탈로그 목록 조회 에러: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.get("/columns/{table_name}")
+async def get_columns(table_name: str):
+    """특정 테이블/뷰의 컬럼 카탈로그 정보를 반환합니다."""
+    conn = get_mssql_connection()
+    if not conn: raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT id, column_name, ai_description, is_public FROM Sys_ColumnCatalog WHERE table_name = '{table_name}' ORDER BY id ASC")
+        columns = [column[0] for column in cursor.description]
+        data = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return {"status": "success", "data": data}
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.put("/columns/{table_name}")
+async def update_columns(table_name: str, payload: ColumnUpdatePayload):
+    """특정 테이블/뷰의 컬럼 카탈로그(AI 힌트, 공개 여부)를 일괄 수정합니다."""
+    conn = get_mssql_connection()
+    if not conn: raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        cursor = conn.cursor()
+        for col in payload.columns:
+            desc = col.ai_description if col.ai_description else ""
+            cursor.execute("UPDATE Sys_ColumnCatalog SET ai_description=?, is_public=? WHERE id=?", (desc, col.is_public, col.id))
+        conn.commit()
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
 
 
 if __name__ == "__main__":

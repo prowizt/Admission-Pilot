@@ -357,10 +357,6 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
                     <>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
-                          <label className={labelClass}>시스템 생성 영문명 *</label>
-                          <input type="text" value={formData.table_name} onChange={e => setFormData({ ...formData, table_name: e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '') })} className={`${inputClass} font-mono ${isEditMode ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-white'}`} placeholder="영문명 (엑셀 첨부시 자동입력)" disabled={isEditMode} />
-                        </div>
-                        <div>
                           <label className={labelClass}>엑셀 파일 첨부 (.xlsx) *</label>
                           {isEditMode ? (
                             <div className="w-full border border-gray-200 bg-gray-50 rounded-lg p-2.5 text-center">
@@ -372,6 +368,10 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
                               {selectedFile ? <p className="text-xs font-bold text-orange-700 truncate">{selectedFile.name}</p> : <p className="text-[10px] text-gray-500 font-medium pt-1">엑셀(.xlsx) 파일 드래그</p>}
                             </div>
                           )}
+                        </div>
+                        <div>
+                          <label className={labelClass}>시스템 생성 영문명 *</label>
+                          <input type="text" value={formData.table_name} onChange={e => setFormData({ ...formData, table_name: e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '') })} className={`${inputClass} font-mono ${isEditMode ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-white'}`} placeholder="영문명 (엑셀 첨부시 자동입력)" disabled={isEditMode} />
                         </div>
                       </div>
                       <div>

@@ -1,0 +1,56 @@
+=========================================
+Table: AdmissionCapacity
+=========================================
+Columns:
+ - [PK] id (int(4)) NOT NULL
+ - 적용년도 (nvarchar(510)) NULL
+ - 학과 (nvarchar(510)) NULL
+ - 입학정원 (nvarchar(510)) NULL
+ - created_at (datetime(8)) NULL
+
+=========================================
+Table: AdmissionStats
+=========================================
+Columns:
+ - [PK] id (int(4)) NOT NULL
+ - 적용년도 (nvarchar(510)) NULL
+ - 모집구분 (nvarchar(510)) NULL
+ - 학과 (nvarchar(510)) NULL
+ - 전형명 (nvarchar(510)) NULL
+ - 모집정원 (nvarchar(510)) NULL
+ - created_at (datetime(8)) NULL
+
+=========================================
+Table: Sys_ColumnCatalog (컬럼 레벨 보안(CLS) 및 AI 힌트 카탈로그)
+=========================================
+Columns:
+ - [PK] id (int(4)) NOT NULL -- 고유 ID
+ - table_name (nvarchar(200)) NOT NULL -- 테이블명
+ - column_name (nvarchar(200)) NOT NULL -- 컬럼명
+ - ai_description (nvarchar(510)) NULL -- AI 설명 힌트 (예: 이 컬럼은 학번)
+ - is_public (char(1)) NULL -- 공개 여부 (Y: 전체 공개, N: 직원 전용)
+ - created_at (datetime(8)) NULL -- 등록일시
+
+=========================================
+Table: Sys_DocumentCatalog (비정형 지식(PDF) 문서 카탈로그)
+=========================================
+Columns:
+ - [PK] doc_id (nvarchar(200)) NOT NULL -- 문서 고유 ID (ChromaDB UUID와 동일)
+ - filename (nvarchar(510)) NOT NULL -- 파일명
+ - doc_type (nvarchar(100)) NOT NULL -- 문서 유형 (rule 또는 reference)
+ - year (nvarchar(20)) NULL -- 적용년도
+ - title (nvarchar(510)) NULL -- 문서 제목
+ - is_public (char(1)) NULL -- 문서 공개 여부 (Y: 공개, N: 직원 전용)
+ - uploaded_at (datetime(8)) NULL -- 업로드 일시
+ - description (nvarchar(510)) NULL -- 문서 설명 및 AI/관리자 힌트
+
+=========================================
+Table: Sys_TableCatalog (테이블 관리 카탈로그 (외부/내부 DB 출처 관리))
+=========================================
+Columns:
+ - [PK] table_name (nvarchar(200)) NOT NULL -- 테이블명
+ - db_source (nvarchar(100)) NULL -- DB 출처 구분 (INTERNAL: 엑셀, EXTERNAL: 타 시스템)
+ - description (nvarchar(510)) NULL -- 테이블 용도 설명
+ - created_at (datetime(8)) NULL -- 등록일시
+ - table_name_kr (nvarchar(200)) NULL -- 한글 테이블명
+

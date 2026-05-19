@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>대동대 AI 헬퍼</title>
+  <script src="tailwindcss.js"></script>
+  <style>
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 10px; }
+  </style>
+</head>
+<body class="bg-gray-50 flex flex-col h-screen text-sm font-sans min-w-0">
+
+  <div class="bg-indigo-900 text-white px-4 py-3 shadow-md shrink-0 flex justify-between items-center z-10">
+    <div class="flex items-center gap-2">
+      <div class="w-7 h-7 bg-indigo-500 rounded-md flex items-center justify-center font-bold text-xs shadow-inner">AI</div>
+      <div>
+        <h1 class="font-extrabold text-sm tracking-wide">입시처 업무 헬퍼</h1>
+        <p class="text-[10px] text-indigo-200 font-medium">Staff-Only Mode</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-1.5">
+      <span class="text-[10px] text-indigo-200">Server</span>
+      <div class="w-2 h-2 bg-emerald-400 rounded-full animate-pulse shadow-[0_0_5px_#34d399]" title="Online"></div>
+    </div>
+  </div>
+
+  <div id="chat-container" class="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50 flex flex-col custom-scrollbar">
+    <div class="flex justify-start">
+      <div class="bg-white border border-gray-200 text-gray-700 p-3 rounded-2xl rounded-tl-none shadow-sm max-w-[85%] leading-relaxed text-sm">
+        안녕하세요! 교직원 전용 업무 헬퍼입니다.<br/>질문을 입력하시거나, 현재 화면을 스크랩하여 검토를 지시해 주세요.
+      </div>
+    </div>
+  </div>
+
+  <div class="p-3 bg-white border-t border-gray-200 shrink-0 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
+    <div class="flex items-center gap-2 mb-2.5">
+      <button id="btn-scrap" class="text-[11px] font-bold px-2.5 py-1.5 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-md border border-slate-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95">
+        📄 현재 화면 텍스트 스크랩
+      </button>
+      <span id="scrap-status" class="text-[11px] text-emerald-600 font-bold hidden bg-emerald-50 px-2 py-1 rounded">✅ 스크랩 완료</span>
+    </div>
+    
+    <div class="relative flex flex-col gap-2">
+      <input type="password" id="api-key-input" placeholder="Gemini API Key 입력 (1회용)" class="w-full text-xs px-3 py-2 bg-gray-50 border border-gray-200 rounded-md outline-none focus:ring-1 focus:ring-indigo-400 transition-shadow" />
+      
+      <div class="relative">
+        <textarea id="chat-input" rows="2" placeholder="질문을 입력하세요... (Shift+Enter로 줄바꿈)" class="w-full text-sm px-3 py-2.5 pr-12 bg-white border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 resize-none custom-scrollbar shadow-inner"></textarea>
+        <button id="btn-send" class="absolute right-2 bottom-2.5 w-8 h-8 flex items-center justify-center bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-all shadow-md active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-4 h-4 translate-x-[-1px] translate-y-[1px]">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

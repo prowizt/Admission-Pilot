@@ -1,0 +1,64 @@
+=========================================
+ Admission-Pilot Structure Tree
+ Generated at: 2026-05-19 15:28:55
+=========================================
+.
+├── AI_GUIDELINES.md
+├── backend/
+│   ├── main.py  # 메인 서버 및 API 엔드포인트
+│   └── requirements.txt
+├── db_schema_full.txt
+├── extract_schema.py  # Admission-Pilot DB 스키마 완벽 추출기
+├── frontend/
+│   ├── .gitignore
+│   ├── README.md
+│   ├── components.json
+│   ├── db_schema_full.txt
+│   ├── eslint.config.js
+│   ├── index.html
+│   ├── manifest.json
+│   ├── package-lock.json
+│   ├── package.json
+│   ├── postcss.config.js
+│   ├── project_file_structure.txt
+│   ├── public/
+│   │   ├── favicon.svg
+│   │   └── icons.svg
+│   ├── src/
+│   │   ├── App.css
+│   │   ├── App.tsx
+│   │   ├── assets/
+│   │   │   ├── hero.png
+│   │   │   ├── react.svg
+│   │   │   └── vite.svg
+│   │   ├── background.ts  # 확장 프로그램 아이콘을 클릭하면 사이드 패널이 열리도록 설정합니다.
+│   │   ├── components/
+│   │   │   ├── modals/
+│   │   │   │   └── KnowledgeModal.tsx
+│   │   │   └── ui/
+│   │   │       ├── badge.tsx
+│   │   │       ├── button.tsx
+│   │   │       ├── card.tsx
+│   │   │       ├── dialog.tsx
+│   │   │       ├── input.tsx
+│   │   │       ├── sheet.tsx
+│   │   │       ├── table.tsx
+│   │   │       └── tabs.tsx
+│   │   ├── index.css
+│   │   ├── layouts/
+│   │   │   └── MainLayout.tsx
+│   │   ├── lib/
+│   │   │   └── utils.ts
+│   │   ├── main.tsx
+│   │   ├── pages/
+│   │   │   └── Dashboard.tsx  # 상태 관리 (검색, 다중 필터, 데이터)
+│   │   └── utils/
+│   │       └── CustomSwal.ts  # 전역적으로 사용될 컴팩트 스타일 (모바일 최적화 및 인디고 테마)
+│   ├── tailwind.config.js
+│   ├── tsconfig.app.json
+│   ├── tsconfig.json
+│   ├── tsconfig.node.json
+│   └── vite.config.ts
+├── git_push.py  # 한글 깨짐 방지를 위해 인코딩 처리
+├── project_file_structure.txt
+└── scan_project.py  # Admission-Pilot 디렉터리 구조 생성

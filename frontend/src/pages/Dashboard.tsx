@@ -119,7 +119,7 @@ export default function Dashboard() {
     <div className="h-full flex flex-col min-w-0 pb-24 md:pb-6">
       
       {/* 1. Header & Tabs */}
-      <div className="bg-indigo-900 rounded-xl shadow-md pt-4 px-6 shrink-0 min-w-0 flex flex-col">
+      <div className="bg-indigo-900 rounded-t-xl shadow-md pt-4 px-6 shrink-0 min-w-0 flex flex-col">
         <div className="flex justify-between items-center mb-4 min-w-0">
           <div className="min-w-0">
             <h1 className="text-lg md:text-xl font-extrabold text-white tracking-tight flex items-center gap-2">
