@@ -23,10 +23,8 @@ const btnAddModel = document.getElementById('btn-add-model');
 
 let scrapedContext = ""; 
 
-// 기본 제공되는 모델 세트
-let defaultModels = [
-  { id: "default_1", alias: "Gemini 2.5 Flash (무료/고속)", modelName: "gemini-2.5-flash", apiKey: "" }
-];
+// 기본 제공되는 모델 세트 (요청에 따라 비움)
+let defaultModels = [];
 
 let customModels = []; // 사용자가 추가한 모델 세트
 let currentActiveModel = null; // 현재 선택된 모델 객체 추적
@@ -50,12 +48,12 @@ document.addEventListener('DOMContentLoaded', () => {
       if (result.customModels) {
         customModels = result.customModels;
       }
-      let activeId = result.activeModelId || "default_1";
+      let activeId = result.activeModelId || null;
       renderModelSelect(activeId);
     });
   } else {
     console.warn("Chrome storage API is not available.");
-    renderModelSelect("default_1");
+    renderModelSelect(null);
   }
 });
 
@@ -116,7 +114,7 @@ btnDeleteModel.addEventListener('click', () => {
   if (!currentActiveModel || !currentActiveModel.id.startsWith("custom_")) return;
   if (confirm(`[${currentActiveModel.alias}] 모델 세트를 정말 삭제하시겠습니까?`)) {
     customModels = customModels.filter(m => m.id !== currentActiveModel.id);
-    const nextActiveId = customModels.length > 0 ? customModels[customModels.length - 1].id : "default_1";
+    const nextActiveId = customModels.length > 0 ? customModels[customModels.length - 1].id : null;
     
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       chrome.storage.local.set({ 
@@ -126,6 +124,9 @@ btnDeleteModel.addEventListener('click', () => {
         renderModelSelect(nextActiveId);
         resetForm();
       });
+    } else {
+      renderModelSelect(nextActiveId);
+      resetForm();
     }
   }
 });
@@ -279,6 +280,8 @@ async function sendMessage() {
       addMessage(data.answer);
       scrapedContext = ""; 
       scrapStatus.classList.add('hidden');
+      btnScrap.innerHTML = "📄 현재 화면 텍스트 스크랩";
+      btnScrap.className = "text-[11px] font-bold px-2.5 py-1.5 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-md border border-slate-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
       chatInput.placeholder = "질문을 입력하세요... (Shift+Enter로 줄바꿈)";
     } else {
       addMessage("오류가 발생했습니다: " + data.detail);
@@ -302,7 +305,39 @@ chatInput.addEventListener('keydown', (e) => {
 
 btnSend.addEventListener('click', sendMessage);
 
+// 스크랩 상태 초기화 헬퍼 함수
+function resetScrapState() {
+  scrapedContext = "";
+  btnScrap.innerHTML = "📄 현재 화면 텍스트 스크랩";
+  btnScrap.className = "text-[11px] font-bold px-2.5 py-1.5 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-md border border-slate-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
+  chatInput.placeholder = "질문을 입력하세요... (Shift+Enter로 줄바꿈)";
+  scrapStatus.classList.add('hidden');
+}
+
+// 탭 활성화 감지하여 스크랩 상태 초기화
+if (typeof chrome !== 'undefined' && chrome.tabs) {
+  chrome.tabs.onActivated.addListener((activeInfo) => {
+    if (scrapedContext) resetScrapState();
+  });
+  
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.status === 'loading' && scrapedContext) {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs.length > 0 && tabs[0].id === tabId) {
+          resetScrapState();
+        }
+      });
+    }
+  });
+}
+
 btnScrap.addEventListener('click', async () => {
+  // 이미 스크랩된 상태라면 해제 (토글 오프)
+  if (scrapedContext) {
+    resetScrapState();
+    return;
+  }
+
   let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
 
@@ -367,7 +402,9 @@ btnScrap.addEventListener('click', async () => {
     if (results && results.length > 0) {
       const combinedText = results.map(r => r.result).filter(t => t && t.trim().length > 0).join('\n\n');
       scrapedContext = combinedText.substring(0, 3000); 
-      scrapStatus.classList.remove('hidden');
+      scrapStatus.classList.add('hidden'); // 기존 옆에 뜨는 텍스트는 숨김 유지
+      btnScrap.innerHTML = "✅ 스크랩 완료 (클릭 시 취소)";
+      btnScrap.className = "text-[11px] font-bold px-2.5 py-1.5 bg-emerald-100 text-emerald-700 hover:bg-emerald-200 rounded-md border border-emerald-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
       chatInput.placeholder = "스크랩 완료! (내용이 AI에게 전달됨)";
       chatInput.focus();
     } else {
