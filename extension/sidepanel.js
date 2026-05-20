@@ -3,9 +3,213 @@ const chatInput = document.getElementById('chat-input');
 const btnSend = document.getElementById('btn-send');
 const btnScrap = document.getElementById('btn-scrap');
 const scrapStatus = document.getElementById('scrap-status');
-const apiKeyInput = document.getElementById('api-key-input');
+
+// 설정 DOM 요소
+const btnToggleSettings = document.getElementById('btn-toggle-settings');
+const settingsBody = document.getElementById('settings-body');
+const settingsArrow = document.getElementById('settings-arrow');
+
+const savedModelsSelect = document.getElementById('saved-models-select');
+const btnEditModel = document.getElementById('btn-edit-model');
+const btnDeleteModel = document.getElementById('btn-delete-model');
+const btnCancelEdit = document.getElementById('btn-cancel-edit');
+const editModelId = document.getElementById('edit-model-id');
+const formTitle = document.getElementById('form-title');
+
+const newModelAlias = document.getElementById('new-model-alias');
+const newModelId = document.getElementById('new-model-id');
+const newModelApiKey = document.getElementById('new-model-apikey');
+const btnAddModel = document.getElementById('btn-add-model');
 
 let scrapedContext = ""; 
+
+// 기본 제공되는 모델 세트
+let defaultModels = [
+  { id: "default_1", alias: "Gemini 2.5 Flash (무료/고속)", modelName: "gemini-2.5-flash", apiKey: "" }
+];
+
+let customModels = []; // 사용자가 추가한 모델 세트
+let currentActiveModel = null; // 현재 선택된 모델 객체 추적
+
+// 설정창 토글
+btnToggleSettings.addEventListener('click', () => {
+  const isHidden = settingsBody.classList.contains('hidden');
+  if (isHidden) {
+    settingsBody.classList.remove('hidden');
+    settingsArrow.innerText = "▲";
+  } else {
+    settingsBody.classList.add('hidden');
+    settingsArrow.innerText = "▼";
+  }
+});
+
+// 크롬 저장소 연동 (최근 설정 불러오기)
+document.addEventListener('DOMContentLoaded', () => {
+  if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+    chrome.storage.local.get(['customModels', 'activeModelId'], (result) => {
+      if (result.customModels) {
+        customModels = result.customModels;
+      }
+      let activeId = result.activeModelId || "default_1";
+      renderModelSelect(activeId);
+    });
+  } else {
+    console.warn("Chrome storage API is not available.");
+    renderModelSelect("default_1");
+  }
+});
+
+// 셀렉트 박스 렌더링 함수
+function renderModelSelect(activeId) {
+  savedModelsSelect.innerHTML = "";
+  const allModels = [...defaultModels, ...customModels];
+  
+  allModels.forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    const keyStatus = m.apiKey.length > 5 ? "🔑" : "⚠️키 없음";
+    opt.innerText = `${m.alias} [${keyStatus}]`;
+    if (m.id === activeId) {
+      opt.selected = true;
+      currentActiveModel = m;
+    }
+    savedModelsSelect.appendChild(opt);
+  });
+
+  if (!currentActiveModel && allModels.length > 0) {
+    currentActiveModel = allModels[0];
+    savedModelsSelect.value = currentActiveModel.id;
+  }
+  
+  // 커스텀 모델일 때만 수정/삭제 버튼 노출
+  if (currentActiveModel && currentActiveModel.id.startsWith("custom_")) {
+    btnEditModel.classList.remove('hidden');
+    btnDeleteModel.classList.remove('hidden');
+  } else {
+    btnEditModel.classList.add('hidden');
+    btnDeleteModel.classList.add('hidden');
+  }
+}
+
+// 모델 변경 시 자동 저장 및 버튼 상태 변경
+savedModelsSelect.addEventListener('change', () => {
+  const selectedId = savedModelsSelect.value;
+  const allModels = [...defaultModels, ...customModels];
+  currentActiveModel = allModels.find(m => m.id === selectedId);
+  
+  if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+    chrome.storage.local.set({ activeModelId: selectedId });
+  }
+  
+  if (currentActiveModel && currentActiveModel.id.startsWith("custom_")) {
+    btnEditModel.classList.remove('hidden');
+    btnDeleteModel.classList.remove('hidden');
+  } else {
+    btnEditModel.classList.add('hidden');
+    btnDeleteModel.classList.add('hidden');
+  }
+  resetForm();
+});
+
+// 모델 삭제 로직
+btnDeleteModel.addEventListener('click', () => {
+  if (!currentActiveModel || !currentActiveModel.id.startsWith("custom_")) return;
+  if (confirm(`[${currentActiveModel.alias}] 모델 세트를 정말 삭제하시겠습니까?`)) {
+    customModels = customModels.filter(m => m.id !== currentActiveModel.id);
+    const nextActiveId = customModels.length > 0 ? customModels[customModels.length - 1].id : "default_1";
+    
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set({ 
+        customModels: customModels,
+        activeModelId: nextActiveId 
+      }, () => {
+        renderModelSelect(nextActiveId);
+        resetForm();
+      });
+    }
+  }
+});
+
+// 모델 수정 준비 로직
+btnEditModel.addEventListener('click', () => {
+  if (!currentActiveModel || !currentActiveModel.id.startsWith("custom_")) return;
+  newModelAlias.value = currentActiveModel.alias;
+  newModelId.value = currentActiveModel.modelName;
+  newModelApiKey.value = currentActiveModel.apiKey;
+  editModelId.value = currentActiveModel.id;
+  
+  formTitle.innerText = "✏️ AI 모델 세트 수정";
+  btnAddModel.innerText = "수정완료";
+  btnCancelEdit.classList.remove('hidden');
+});
+
+// 수정 취소 로직
+btnCancelEdit.addEventListener('click', () => {
+  resetForm();
+});
+
+// 입력 폼 초기화 함수
+function resetForm() {
+  newModelAlias.value = "";
+  newModelId.value = "";
+  newModelApiKey.value = "";
+  editModelId.value = "";
+  formTitle.innerText = "➕ 나만의 AI 모델 세트 추가";
+  btnAddModel.innerText = "저장";
+  btnCancelEdit.classList.add('hidden');
+}
+
+// 신규 추가 및 수정 저장 로직
+btnAddModel.addEventListener('click', () => {
+  const alias = newModelAlias.value.trim();
+  const modelId = newModelId.value.trim();
+  const apiKey = newModelApiKey.value.trim();
+  const editingId = editModelId.value;
+
+  if (!alias || !modelId || !apiKey) {
+    alert("구분용 이름, 실제 모델명, API Key를 모두 입력해주세요.");
+    return;
+  }
+
+  let finalActiveId = "";
+
+  if (editingId) {
+    // 기존 데이터 업데이트
+    const idx = customModels.findIndex(m => m.id === editingId);
+    if (idx !== -1) {
+      customModels[idx].alias = alias;
+      customModels[idx].modelName = modelId;
+      customModels[idx].apiKey = apiKey;
+    }
+    finalActiveId = editingId;
+  } else {
+    // 신규 등록
+    const newModel = {
+      id: "custom_" + Date.now(),
+      alias: alias,
+      modelName: modelId,
+      apiKey: apiKey
+    };
+    customModels.push(newModel);
+    finalActiveId = newModel.id;
+  }
+  
+  if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+    chrome.storage.local.set({ 
+      customModels: customModels,
+      activeModelId: finalActiveId 
+    }, () => {
+      resetForm();
+      renderModelSelect(finalActiveId);
+      alert(`모델 세트가 성공적으로 ${editingId ? '수정' : '등록'}되었습니다.`);
+    });
+  } else {
+    // 임시 메모리 저장 처리
+    resetForm();
+    renderModelSelect(finalActiveId);
+    alert(`모델 세트가 ${editingId ? '수정' : '추가'}되었으나, 확장 프로그램 환경이 아니어 영구 저장되지 않습니다.`);
+  }
+});
 
 function addMessage(text, isUser = false) {
   const msgDiv = document.createElement('div');
@@ -26,11 +230,12 @@ function addMessage(text, isUser = false) {
 
 async function sendMessage() {
   const text = chatInput.value.trim();
-  const apiKey = apiKeyInput.value.trim();
   
   if (!text) return;
-  if (!apiKey) {
-    alert("Gemini API Key를 입력해주세요.");
+  if (!currentActiveModel || !currentActiveModel.apiKey) {
+    alert("선택된 모델에 연결된 API Key가 없습니다.\n⚙️ 내 AI 모델 관리 패널에서 키가 포함된 모델을 추가하고 선택해주세요.");
+    settingsBody.classList.remove('hidden');
+    settingsArrow.innerText = "▲";
     return;
   }
 
@@ -43,14 +248,14 @@ async function sendMessage() {
   const loadingDiv = document.createElement('div');
   loadingDiv.id = loadingId;
   loadingDiv.className = 'flex justify-start items-center gap-2 text-xs font-bold text-indigo-500 p-2 ml-1';
-  loadingDiv.innerHTML = `<span class="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></span>AI가 규정과 DB를 검토 중입니다...`;
+  loadingDiv.innerHTML = `<span class="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></span>AI(${currentActiveModel.modelName})가 규정과 DB를 검토 중입니다...`;
   chatContainer.appendChild(loadingDiv);
   chatContainer.scrollTop = chatContainer.scrollHeight;
 
   const payload = {
     question: text,
     user_role: 'staff',
-    model_name: 'gemini-2.5-flash'
+    model_name: currentActiveModel.modelName
   };
 
   if (scrapedContext) {
@@ -62,7 +267,7 @@ async function sendMessage() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-gemini-key': apiKey
+        'x-gemini-key': currentActiveModel.apiKey
       },
       body: JSON.stringify(payload)
     });
@@ -104,7 +309,6 @@ btnScrap.addEventListener('click', async () => {
   chrome.scripting.executeScript({
     target: { tabId: tab.id, allFrames: true },
     func: () => {
-      // 1. 페이지 내 모든 테이블을 마크다운 표 형식으로 변환하여 임시 대체
       const tables = Array.from(document.querySelectorAll('table'));
       const originalPlaceholders = [];
       
@@ -121,13 +325,11 @@ btnScrap.addEventListener('click', async () => {
           
           let rowText = '|';
           cells.forEach(cell => {
-            // 셀 안의 개행 및 연속 공백을 공백 하나로 치환
             let cellText = cell.innerText.replace(/\s+/g, ' ').trim();
             rowText += ` ${cellText} |`;
           });
           markdownTable += rowText + '\n';
           
-          // 헤더 아래 마크다운 구분선 추가
           if (rowIndex === 0 && rows.length > 1) {
             let separator = '|';
             cells.forEach(() => {
@@ -138,7 +340,6 @@ btnScrap.addEventListener('click', async () => {
         });
         markdownTable += '\n';
         
-        // 테이블을 마크다운 텍스트를 담은 div로 임시 교체
         const placeholder = document.createElement('div');
         placeholder.innerText = markdownTable;
         
@@ -151,26 +352,20 @@ btnScrap.addEventListener('click', async () => {
         table.parentNode.replaceChild(placeholder, table);
       });
 
-      // 2. 마크다운 표가 삽입된 상태의 렌더링 텍스트 추출
       let text = document.body.innerText;
       
-      // 3. 원래 테이블 구조로 원상 복구 (사용자 화면 영향 없음)
       originalPlaceholders.forEach(item => {
         if (item.parent && item.placeholder.parentNode) {
           item.parent.replaceChild(item.table, item.placeholder);
         }
       });
       
-      // 4. 불필요한 줄바꿈 제거
       text = text.replace(/\n{3,}/g, '\n\n');
       return text.trim();
     }
   }, (results) => {
     if (results && results.length > 0) {
-      // [핵심] iframe 등 모든 프레임에서 가져온 텍스트를 하나로 병합
       const combinedText = results.map(r => r.result).filter(t => t && t.trim().length > 0).join('\n\n');
-      
-      // 5. 전체 길이를 3000자로 잘라 AI 토큰 제한 최적화 (프레임이 많을 수 있으므로 3000자로 여유)
       scrapedContext = combinedText.substring(0, 3000); 
       scrapStatus.classList.remove('hidden');
       chatInput.placeholder = "스크랩 완료! (내용이 AI에게 전달됨)";

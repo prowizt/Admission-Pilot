@@ -1,6 +1,6 @@
 =========================================
  Admission-Pilot Structure Tree
- Generated at: 2026-05-19 15:28:55
+ Generated at: 2026-05-20 14:28:45
 =========================================
 .
 ├── AI_GUIDELINES.md
@@ -8,6 +8,12 @@
 │   ├── main.py  # 메인 서버 및 API 엔드포인트
 │   └── requirements.txt
 ├── db_schema_full.txt
+├── extension/
+│   ├── background.js  # 확장 프로그램이 서비스 워커로 인식하게 하기 위한 최소한의 코드입니다.
+│   ├── manifest.json
+│   ├── sidepanel.html
+│   ├── sidepanel.js  # 설정 DOM 요소
+│   └── tailwindcss.js
 ├── extract_schema.py  # Admission-Pilot DB 스키마 완벽 추출기
 ├── frontend/
 │   ├── .gitignore
