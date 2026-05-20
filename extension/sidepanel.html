@@ -5,16 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>대동대 AI 헬퍼</title>
   <script src="tailwindcss.js"></script>
+  <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
   <style>
+    /* 전체 폰트 적용 및 스크롤바 디자인 */
+    body { font-family: 'Pretendard', sans-serif; }
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 10px; }
   </style>
 </head>
-<body class="bg-gray-50 flex flex-col h-screen text-sm font-sans min-w-0">
+<body class="bg-gray-50 flex flex-col h-screen text-sm min-w-0 m-0 p-0">
 
-  <div class="bg-indigo-900 text-white px-4 py-3 shadow-md shrink-0 flex justify-between items-center z-10">
+  <div class="bg-indigo-900 text-white px-4 py-3 shadow-md shrink-0 flex justify-between items-center z-10 w-full rounded-none">
     <div class="flex items-center gap-2">
-      <div class="w-7 h-7 bg-indigo-500 rounded-md flex items-center justify-center font-bold text-xs shadow-inner">AI</div>
+      <img src="logo.png" class="w-8 h-8 rounded-full bg-white p-0.5" alt="Logo">
       <div>
         <h1 class="font-extrabold text-sm tracking-wide">입시처 업무 헬퍼</h1>
         <p class="text-[10px] text-indigo-200 font-medium">Staff-Only Mode</p>
@@ -32,7 +35,6 @@
       <span id="settings-arrow">▼</span>
     </button>
     <div id="settings-body" class="hidden p-3 bg-gray-50 border-t border-gray-200 space-y-3">
-      
       <div>
         <label class="block text-[10px] font-bold text-gray-500 mb-1">작동할 AI 모델 세트 선택</label>
         <div class="flex gap-1">
@@ -56,10 +58,9 @@
           <button type="button" id="btn-add-model" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm whitespace-nowrap active:scale-95">저장</button>
         </div>
       </div>
-
     </div>
   </div>
-
+  
   <div id="chat-container" class="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50 flex flex-col custom-scrollbar">
     <div class="flex justify-start">
       <div class="bg-white border border-gray-200 text-gray-700 p-3 rounded-2xl rounded-tl-none shadow-sm max-w-[85%] leading-relaxed text-sm">
@@ -85,7 +86,6 @@
       </button>
     </div>
   </div>
-
   <script src="sidepanel.js"></script>
 </body>
 </html>

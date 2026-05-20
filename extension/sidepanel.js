@@ -109,12 +109,15 @@ savedModelsSelect.addEventListener('change', () => {
   resetForm();
 });
 
-// 모델 삭제 로직
+// 모델 삭제 로직 (수정)
 btnDeleteModel.addEventListener('click', () => {
   if (!currentActiveModel || !currentActiveModel.id.startsWith("custom_")) return;
+  
   if (confirm(`[${currentActiveModel.alias}] 모델 세트를 정말 삭제하시겠습니까?`)) {
     customModels = customModels.filter(m => m.id !== currentActiveModel.id);
-    const nextActiveId = customModels.length > 0 ? customModels[customModels.length - 1].id : null;
+    
+    // 삭제 후 기본 모델 선택
+    const nextActiveId = defaultModels[0]?.id || null;
     
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       chrome.storage.local.set({ 
@@ -134,6 +137,7 @@ btnDeleteModel.addEventListener('click', () => {
 // 모델 수정 준비 로직
 btnEditModel.addEventListener('click', () => {
   if (!currentActiveModel || !currentActiveModel.id.startsWith("custom_")) return;
+  
   newModelAlias.value = currentActiveModel.alias;
   newModelId.value = currentActiveModel.modelName;
   newModelApiKey.value = currentActiveModel.apiKey;
@@ -142,6 +146,10 @@ btnEditModel.addEventListener('click', () => {
   formTitle.innerText = "✏️ AI 모델 세트 수정";
   btnAddModel.innerText = "수정완료";
   btnCancelEdit.classList.remove('hidden');
+  
+  // 수정 시 설정창이 열려있어야 함
+  settingsBody.classList.remove('hidden');
+  settingsArrow.innerText = "▲";
 });
 
 // 수정 취소 로직
