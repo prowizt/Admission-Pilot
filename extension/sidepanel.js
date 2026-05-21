@@ -3,6 +3,7 @@ const chatInput = document.getElementById('chat-input');
 const btnSend = document.getElementById('btn-send');
 const btnScrap = document.getElementById('btn-scrap');
 const scrapStatus = document.getElementById('scrap-status');
+const btnClearChat = document.getElementById('btn-clear-chat'); // 대화 비우기 버튼
 
 // 설정 DOM 요소
 const btnToggleSettings = document.getElementById('btn-toggle-settings');
@@ -22,6 +23,7 @@ const newModelApiKey = document.getElementById('new-model-apikey');
 const btnAddModel = document.getElementById('btn-add-model');
 
 let scrapedContext = ""; 
+let chatHistory = []; // 대화 기록 저장용 전역 배열
 
 // 기본 제공되는 모델 세트 (요청에 따라 비움)
 let defaultModels = [];
@@ -41,15 +43,26 @@ btnToggleSettings.addEventListener('click', () => {
   }
 });
 
-// 크롬 저장소 연동 (최근 설정 불러오기)
+// 크롬 저장소 연동 (최근 설정 및 대화 기록 불러오기)
 document.addEventListener('DOMContentLoaded', () => {
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-    chrome.storage.local.get(['customModels', 'activeModelId'], (result) => {
+    chrome.storage.local.get(['customModels', 'activeModelId', 'chatHistory'], (result) => {
       if (result.customModels) {
         customModels = result.customModels;
       }
       let activeId = result.activeModelId || null;
       renderModelSelect(activeId);
+
+      // 대화 복구
+      if (result.chatHistory && result.chatHistory.length > 0) {
+        chatHistory = result.chatHistory;
+        // 기존 환영 메시지 삭제
+        chatContainer.innerHTML = "";
+        
+        chatHistory.forEach(msg => {
+          addMessage(msg.text, msg.isUser, false);
+        });
+      }
     });
   } else {
     console.warn("Chrome storage API is not available.");
@@ -220,7 +233,7 @@ btnAddModel.addEventListener('click', () => {
   }
 });
 
-function addMessage(text, isUser = false) {
+function addMessage(text, isUser = false, saveToStorage = true) {
   const msgDiv = document.createElement('div');
   msgDiv.className = `flex ${isUser ? 'justify-end' : 'justify-start'}`;
   
@@ -235,6 +248,14 @@ function addMessage(text, isUser = false) {
   msgDiv.appendChild(innerDiv);
   chatContainer.appendChild(msgDiv);
   chatContainer.scrollTop = chatContainer.scrollHeight;
+
+  // 대화 기록을 스토리지에 동기화
+  if (saveToStorage) {
+    chatHistory.push({ text, isUser });
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set({ chatHistory: chatHistory });
+    }
+  }
 }
 
 async function sendMessage() {
@@ -312,6 +333,36 @@ chatInput.addEventListener('keydown', (e) => {
 });
 
 btnSend.addEventListener('click', sendMessage);
+
+// 대화 내역 초기화(비우기)
+btnClearChat.addEventListener('click', () => {
+  if (confirm("이전 대화 기록을 모두 삭제하시겠습니까?")) {
+    chatHistory = [];
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set({ chatHistory: [] }, () => {
+        chatContainer.innerHTML = "";
+        addDefaultWelcomeMessage();
+      });
+    } else {
+      chatContainer.innerHTML = "";
+      addDefaultWelcomeMessage();
+    }
+  }
+});
+
+// 기본 웰컴 메시지 출력 함수
+function addDefaultWelcomeMessage() {
+  const welcomeDiv = document.createElement('div');
+  welcomeDiv.className = 'flex justify-start';
+  welcomeDiv.innerHTML = `
+    <div class="p-3 rounded-2xl shadow-sm max-w-[85%] leading-relaxed text-sm whitespace-pre-wrap word-break break-words bg-white border border-gray-200 text-gray-700 rounded-tl-none">
+안녕하세요! 대동대학교 입시처 AI 부사수입니다.
+상단의 톱니바퀴 아이콘을 클릭하여 작동할 AI 모델을 설정해 주시고,
+궁금한 점(통계 조회, 규정 분석 등)을 입력해 주세요! 😊
+    </div>
+  `;
+  chatContainer.appendChild(welcomeDiv);
+}
 
 // 스크랩 상태 초기화 헬퍼 함수
 function resetScrapState() {
