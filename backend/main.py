@@ -609,12 +609,10 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 
         [가장 중요한 SQL 작성 규칙]
         1. 컬럼명이 한글일 수 있으므로 대괄호 []를 반드시 사용해.
-        2. 문자열 조건은 무조건 `=` 대신 `LIKE`를 사용하되, **사용자의 단어에서 핵심 형태소만 아주 짧게 잘라서 검색해!**
-           - (예시) "대학교 전형" -> `LIKE '%대학%'`
-           - (예시) "일반고 전형" -> `LIKE '%일반고%'`
-        3. **[핵심] 최종 AI가 어떤 데이터인지 정확히 문맥을 파악할 수 있도록, 특정 컬럼 하나만 조회하지 말고 무조건 `SELECT * FROM [테이블명]` 형태로 모든 컬럼을 추출해!**
-           - (나쁜 예: SELECT [모집정원] FROM ...)
-           - (좋은 예: SELECT * FROM ...)
+        2. 문자열 조건은 무조건 `=` 대신 `LIKE`를 사용하되, 사용자의 단어에서 핵심 형태소만 짧게 잘라서 검색해! (예: "일반고" -> LIKE '%일반고%')
+        3. **[핵심 - 데이터 조회 방식]**
+           - 사용자가 '몇 명이야?', '얼마야?' 등 통계나 숫자를 물어보면 무조건 `COUNT()`, `SUM()` 같은 집계 함수를 사용해! (예: `SELECT COUNT(*) AS [지원자수] FROM ...`)
+           - 특정 사람이나 상세 목록을 물어볼 때만 일반 조회를 하되, 데이터 폭발을 막기 위해 무조건 `SELECT TOP 30 * FROM ...` 처럼 TOP 제한을 걸어!
         4. 정형 데이터 조회가 전혀 필요 없는 질문이면 오직 "NONE" 이라고만 출력해.
         5. 마크다운 기호(```sql)나 설명은 절대 쓰지 마. 오직 SELECT 쿼리문만 출력해.
 
@@ -636,12 +634,19 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         sql_context = ""
         if sql_query.upper().startswith("SELECT") and conn:
             try:
+                # [최적화] AI가 추출된 데이터의 출처와 필터링 조건을 확신할 수 있도록 사용된 쿼리 원문을 증거로 덧붙입니다.
+                sql_context += f"[시스템이 데이터를 추출할 때 사용한 조건(쿼리)]: {sql_query}\n"
+                
                 cursor = conn.cursor()
                 cursor.execute(sql_query)
                 rows = cursor.fetchall()
                 if rows:
                     columns = [column[0] for column in cursor.description]
-                    for row in rows:
+                    for idx, row in enumerate(rows):
+                        # [보안/안정성] 최대 50건까지만 컨텍스트에 포함시켜 토큰 폭발(429 에러) 완벽 차단
+                        if idx >= 50:
+                            sql_context += f"- ... (데이터가 너무 많아 상위 50건만 AI에게 전달됩니다. 총 {len(rows)}건 검색됨)\n"
+                            break
                         row_dict = dict(zip(columns, row))
                         sql_context += f"- 시스템 DB 추출 데이터: {row_dict}\n"
                 
@@ -658,24 +663,31 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         # =======================================================
         # [Step 3] 비정형 DB (ChromaDB) 검색 (Rule + Ref 모두 탐색)
         # =======================================================
-        # 스크랩 문맥이 있을 경우 앞부분의 문서 제목/내용 힌트(500자)를 쿼리에 덧붙여 실질적인 관련 규정(회의비 기준 등)을 검색합니다.
-        chroma_query = request.question
-        if request.scraped_context:
-            chroma_query += " " + request.scraped_context[:500]
-
-        rule_res = rule_db.query(query_texts=[chroma_query], n_results=2)
-        ref_res = reference_db.query(query_texts=[chroma_query], n_results=2)
-        
         chroma_context = ""
         results_metadatas = []
-        
-        if rule_res and rule_res.get("documents") and rule_res["documents"][0]:
-            chroma_context += "[규정/팩트 문서]\n" + "\n\n".join(rule_res["documents"][0]) + "\n\n"
-            if rule_res.get("metadatas"): results_metadatas.extend(rule_res["metadatas"][0])
-            
-        if ref_res and ref_res.get("documents") and ref_res["documents"][0]:
-            chroma_context += "[참조/양식 문서]\n" + "\n\n".join(ref_res["documents"][0]) + "\n\n"
-            if ref_res.get("metadatas"): results_metadatas.extend(ref_res["metadatas"][0])
+
+        # [최적화] 스크랩 문서가 없고, DB에서 이미 통계 데이터를 찾았다면 굳이 RAG 벡터 검색을 수행하지 않음 (API 호출 50% 절감)
+        if not request.scraped_context and sql_context and "데이터 없음" not in sql_context:
+            print("=== [스마트 라우팅] DB 통계 데이터로 충분하므로 ChromaDB 벡터 검색(RAG)을 생략합니다 ===")
+        else:
+            # 스크랩 문맥이 있을 경우 앞부분의 문서 제목/내용 힌트(500자)를 쿼리에 덧붙여 실질적인 관련 규정(회의비 기준 등)을 검색합니다.
+            chroma_query = request.question
+            if request.scraped_context:
+                chroma_query += " " + request.scraped_context[:500]
+
+            try:
+                rule_res = rule_db.query(query_texts=[chroma_query], n_results=2)
+                ref_res = reference_db.query(query_texts=[chroma_query], n_results=2)
+                
+                if rule_res and rule_res.get("documents") and rule_res["documents"][0]:
+                    chroma_context += "[규정/팩트 문서]\n" + "\n\n".join(rule_res["documents"][0]) + "\n\n"
+                    if rule_res.get("metadatas"): results_metadatas.extend(rule_res["metadatas"][0])
+                    
+                if ref_res and ref_res.get("documents") and ref_res["documents"][0]:
+                    chroma_context += "[참조/양식 문서]\n" + "\n\n".join(ref_res["documents"][0]) + "\n\n"
+                    if ref_res.get("metadatas"): results_metadatas.extend(ref_res["metadatas"][0])
+            except Exception as chroma_err:
+                print(f"ChromaDB 검색 오류: {chroma_err}")
 
         # =======================================================
         # [Step 4] 최종 하이브리드 답변 생성
@@ -690,21 +702,20 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 
         prompt = f"""
 너는 대동대학교 입시처 행정 검토 전문 AI 아키텍트야.
-아래의 XML 태그로 구분된 정보들을 읽고, <사용자 지시사항>에 따라 완벽한 분석을 제공해.
+아래의 XML 태그로 구분된 정보들을 읽고, <사용자 지시사항>에 따라 정확하고 명쾌한 답변을 제공해.
 
-<검토 대상 문서>
-(아래 내용은 사용자가 현재 브라우저 화면에서 스크랩한 기안/공문 원본입니다. 당신의 **유일한 분석 및 검토 대상**은 오직 이 문서입니다.)
-
-{request.scraped_context if request.scraped_context else "검토할 원본 문서가 제공되지 않았습니다."}
-</검토 대상 문서>
+<검토 대상 문서 (선택)>
+(사용자가 브라우저 화면에서 스크랩한 문서 원본입니다. 데이터가 존재한다면 문서를 검토하는 데 사용하세요.)
+{request.scraped_context if request.scraped_context else "스크랩된 문서 없음 (단순 질의응답 모드로 동작하세요)"}
+</검토 대상 문서 (선택)>
 
 <판단 기준 1: 시스템 DB 최신 팩트>
-(수치 비교 시 가장 1순위로 신뢰해야 하는 데이터입니다.)
+(질문에 답변하기 위해 시스템에서 1순위로 추출한 실시간 DB 데이터입니다.)
 {sql_context if sql_context else "관련 DB 데이터 없음"}
 </판단 기준 1: 시스템 DB 최신 팩트>
 
 <판단 기준 2: 사내 규정 및 과거 문서 (RAG)>
-(아래 문서들은 <검토 대상 문서>를 평가하고 검열하기 위한 '기준표'입니다. 이 기준 문서들 자체의 오류나 헛점을 지적하는 우를 범하지 마십시오.)
+(규정 확인이나 과거 문서 참조가 필요할 때 사용하는 데이터입니다.)
 {chroma_context if chroma_context else "관련 규정/참조 문서 없음"}
 </판단 기준 2: 사내 규정 및 과거 문서 (RAG)>
 
@@ -713,9 +724,10 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 </사용자 지시사항>
 
 [행동 지침]
-1. <검토 대상 문서>의 내용을 꼼꼼히 파악해.
-2. <판단 기준> 항목들의 규정(예: 회의비 지출 한도, 대상, 양식 등)과 대조해봐.
-3. <검토 대상 문서> 내에 규정을 위반한 사항, 계산 오류, 양식 누락 등 헛점이 있다면 논리적으로 지적하고 해결책을 제시해.
+1. "검토 대상 문서가 없다"며 답변을 회피하거나 사과하지 마. 문서가 없으면 <판단 기준 1>과 <판단 기준 2>의 데이터를 바탕으로 질문에 직접적으로 대답해.
+2. <검토 대상 문서>가 존재할 경우에만 해당 문서 내 위반 사항이나 오류를 찾아내고 지적해.
+3. <판단 기준 1: 시스템 DB 최신 팩트>에 사용자가 묻는 데이터(예: 사람, 숫자, 출신학교 등)가 포함되어 있다면 주저하지 말고 그 팩트를 기반으로 확신을 가지고 답변해.
+4. <판단 기준 1>의 데이터는 시스템이 사용자의 질문 조건을 완벽히 필터링해서 가져온 맞춤형 정답입니다. 결과값에 연도나 수험번호가 보이지 않는다고 해서 "일치하는지 확인할 수 없다"는 식의 변명을 절대 하지 마세요.
 """
 
         
