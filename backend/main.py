@@ -639,16 +639,32 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 
                 cursor = conn.cursor()
                 cursor.execute(sql_query)
-                rows = cursor.fetchall()
-                if rows:
-                    columns = [column[0] for column in cursor.description]
-                    for idx, row in enumerate(rows):
-                        # [보안/안정성] 최대 50건까지만 컨텍스트에 포함시켜 토큰 폭발(429 에러) 완벽 차단
-                        if idx >= 50:
-                            sql_context += f"- ... (데이터가 너무 많아 상위 50건만 AI에게 전달됩니다. 총 {len(rows)}건 검색됨)\n"
-                            break
-                        row_dict = dict(zip(columns, row))
-                        sql_context += f"- 시스템 DB 추출 데이터: {row_dict}\n"
+                
+                # [개선] 다중 결과셋(Multiple Result Sets)을 순회하며 모든 결과를 sql_context에 누적
+                result_idx = 1
+                while True:
+                    if cursor.description:
+                        rows = cursor.fetchall()
+                        if rows:
+                            columns = [column[0] for column in cursor.description]
+                            for idx, row in enumerate(rows):
+                                # [보안/안정성] 최대 50건까지만 컨텍스트에 포함시켜 토큰 폭발(429 에러) 완벽 차단
+                                if idx >= 50:
+                                    sql_context += f"- ... (데이터가 너무 많아 상위 50건만 AI에게 전달됩니다. 총 {len(rows)}건 검색됨)\n"
+                                    break
+                                row_dict = dict(zip(columns, row))
+                                sql_context += f"- 시스템 DB 추출 데이터: {row_dict}\n"
+                    
+                    try:
+                        # 다음 결과셋(두 번째 SELECT 쿼리 등의 결과)이 있는지 확인
+                        more_results = cursor.nextset()
+                    except Exception as nextset_err:
+                        print(f"nextset() 호출 중 오류 또는 미지원: {nextset_err}")
+                        break
+                        
+                    if not more_results:
+                        break
+                    result_idx += 1
                 
                 # [디버그 추가] MS-SQL에서 실제 가져온 데이터 확인용
                 print(f"=== [SQL 실제 실행 결과] ===\n{sql_context if sql_context else '데이터 없음 (0건 검색됨)'}\n===========================")
