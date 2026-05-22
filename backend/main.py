@@ -174,46 +174,61 @@ def get_mssql_connection():
 def get_dynamic_db_schema(conn, user_role="staff"):
     """
     [데이터 카탈로그 기반 스키마 추출] 
-    사용자의 권한(user_role)을 확인하여, 학생일 경우 is_public='Y'인 컬럼만 추출하고, 
-    AI 이해를 돕기 위한 ai_description 힌트를 덧붙여 반환합니다.
+    Sys_TableCatalog, Sys_ColumnCatalog 및 Sys_DocumentCatalog를 모두 조회하여
+    AI에게 데이터베이스와 비정형 문서 보유 현황을 통합 제공합니다.
     """
     if not conn: return "DB 연결 실패"
     try:
         cursor = conn.cursor()
-        query = "SELECT table_name, column_name, ai_description FROM Sys_ColumnCatalog"
+        
+        # 1. 정형 데이터 (테이블 & 컬럼 카탈로그)
+        query = """
+            SELECT c.table_name, t.description, c.column_name, c.ai_description 
+            FROM Sys_ColumnCatalog c
+            LEFT JOIN Sys_TableCatalog t ON c.table_name = t.table_name
+        """
         if user_role == "student":
-            query += " WHERE is_public = 'Y'" # 보안: 학생은 비공개 컬럼의 존재 자체를 모르게 차단
+            query += " WHERE c.is_public = 'Y'"
             
         cursor.execute(query)
         schema_dict = {}
+        table_desc_dict = {}
         for row in cursor.fetchall():
-            t_name, c_name, ai_desc = row
+            t_name, t_desc, c_name, ai_desc = row
             if t_name not in schema_dict:
                 schema_dict[t_name] = []
+                table_desc_dict[t_name] = t_desc
             
-            # AI를 위한 힌트 조합 (예: [학번](설명: 학생 고유 식별번호))
+            # AI를 위한 힌트 조합
             col_str = f"[{c_name}]"
             if ai_desc: col_str += f"(설명:{ai_desc})"
             schema_dict[t_name].append(col_str)
             
         schema_str = "[현재 AI가 접근 가능한 MS-SQL 테이블 구조]\n"
         for t_name, cols in schema_dict.items():
-            schema_str += f"- Table: [{t_name}] | Columns: {', '.join(cols)}\n"
-            try:
-                # 샘플 조회를 위해 (설명:~) 부분 제거
-                clean_cols = [c.split('(')[0] for c in cols]
-                cursor.execute(f"SELECT TOP 1 {', '.join(clean_cols)} FROM [{t_name}]")
-                sample_row = cursor.fetchone()
-                if sample_row:
-                    clean_col_names = [c.replace('[','').replace(']','') for c in clean_cols]
-                    sample_dict = dict(zip(clean_col_names, sample_row))
-                    schema_str += f"  * 💡 데이터 샘플 힌트: {sample_dict}\n"
-            except Exception:
-                pass
+            t_desc = table_desc_dict.get(t_name)
+            t_desc_str = f" (테이블 용도: {t_desc})" if t_desc else ""
+            schema_str += f"- Table: [{t_name}]{t_desc_str} | Columns: {', '.join(cols)}\n"
+            
+        # 2. 비정형 데이터 (문서 카탈로그)
+        doc_query = "SELECT doc_type, year, title, description FROM Sys_DocumentCatalog"
+        if user_role == "student":
+            doc_query += " WHERE is_public = 'Y'"
+            
+        cursor.execute(doc_query)
+        docs = cursor.fetchall()
+        if docs:
+            schema_str += "\n[현재 AI가 접근 가능한 비정형 문서 목록 (ChromaDB에 저장됨)]\n"
+            for doc in docs:
+                d_type, d_year, d_title, d_desc = doc
+                year_str = f"{d_year}학년도 " if d_year else ""
+                desc_str = f" (문서 설명: {d_desc})" if d_desc else ""
+                schema_str += f"- [{d_type}] {year_str}{d_title}{desc_str}\n"
+                
         return schema_str
     except Exception as e:
-        print(f"스키마 추출 에러: {e}")
-        return "스키마 추출 오류"
+        print(f"카탈로그 추출 에러: {e}")
+        return "카탈로그 추출 오류"
 
 
 # ==========================================
@@ -602,31 +617,59 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         if request.scraped_context:
             sql_search_text += " " + request.scraped_context[:300]
 
+        import json
+        
         sql_router_prompt = f"""
-        너는 대동대학교 입시처의 DB 아키텍트야. 
-        사용자의 [질문]에 답변하기 위해 정형 데이터(숫자/통계) 조회가 필요하다면, 
-        아래 [현재 MS-SQL 테이블 구조]를 보고 MS SQL Server용 T-SQL SELECT 쿼리를 작성해.
+        너는 대동대학교 입시처의 수석 데이터 아키텍트야. 
+        사용자의 [질문]에 답변하기 위해 아래의 [현재 데이터베이스 및 문서 카탈로그 현황]을 분석하고, 
+        어떻게 데이터를 조회해야 할지 판단해 줘.
 
+        [사전 지식 주입]
+        1. [입시 학년도 정의]: 대학교 입시에서 'N학년도 전형(모집요강)'은 'N-1년도'에 모집을 실시하는 전형을 뜻합니다. (예: 2027학년도 모집요강 = 2026년 가을/겨울에 모집 실시). 사용자가 질문한 연도가 '실시 연도'인지 '입학 학년도'인지 문맥을 파악하여 SQL과 문서 검색 타겟을 정확히 일치시키세요.
+        2. [일반 학년도 정의]: 학년도(예: 2026학년도)는 3월 1일부터 다음 해 2월 말일까지를 의미합니다. (예: 2026학년도 = 2026.03 ~ 2027.02).
+        
         [가장 중요한 SQL 작성 규칙]
         1. 컬럼명이 한글일 수 있으므로 대괄호 []를 반드시 사용해.
         2. 문자열 조건은 무조건 `=` 대신 `LIKE`를 사용하되, 사용자의 단어에서 핵심 형태소만 짧게 잘라서 검색해! (예: "일반고" -> LIKE '%일반고%')
-        3. **[핵심 - 데이터 조회 방식]**
-           - 사용자가 '몇 명이야?', '얼마야?' 등 통계나 숫자를 물어보면 무조건 `COUNT()`, `SUM()` 같은 집계 함수를 사용해! (예: `SELECT COUNT(*) AS [지원자수] FROM ...`)
-           - 특정 사람이나 상세 목록을 물어볼 때만 일반 조회를 하되, 데이터 폭발을 막기 위해 무조건 `SELECT TOP 30 * FROM ...` 처럼 TOP 제한을 걸어!
-        4. 정형 데이터 조회가 전혀 필요 없는 질문이면 오직 "NONE" 이라고만 출력해.
-        5. 마크다운 기호(```sql)나 설명은 절대 쓰지 마. 오직 SELECT 쿼리문만 출력해.
+        3. 통계나 숫자를 물어보면 무조건 `COUNT()`, `SUM()` 같은 집계 함수를 사용해!
+        4. 목록을 물어볼 때는 데이터 폭발 방지를 위해 `SELECT TOP 30 * FROM ...` 처럼 TOP 제한을 걸어!
 
         {dynamic_schema}
 
         [질문]
         {sql_search_text}
+        
+        [출력 지침]
+        너는 무조건 아래의 JSON 형식으로만 대답해야 해. 마크다운 기호(```json)나 다른 설명은 일절 쓰지 마.
+        {{
+            "sql_query": "정형 데이터 조회가 필요하면 T-SQL SELECT 문을, 필요 없으면 'NONE'을 입력",
+            "need_rag": true 혹은 false (비정형 문서 목록에서 찾아봐야 할 정보가 있다면 true),
+            "rag_search_query": "need_rag가 true일 경우, 문서를 검색할 핵심 키워드 문장 (예: '2026학년도 간호학부 모집인원')"
+        }}
         """
         # SQL 생성용은 빠르고 논리적인 모델 사용
         sql_model = genai.GenerativeModel("gemini-2.5-flash")
         sql_response = sql_model.generate_content(sql_router_prompt)
-        sql_query = sql_response.text.strip().replace("```sql", "").replace("```", "").strip()
         
-        print(f"=== [NL2SQL 자동 생성 쿼리] ===\n{sql_query}\n===========================")
+        # JSON 파싱
+        try:
+            response_text = sql_response.text.strip()
+            if response_text.startswith("```json"):
+                response_text = response_text.replace("```json", "").replace("```", "").strip()
+            elif response_text.startswith("```"):
+                response_text = response_text.replace("```", "").strip()
+                
+            parsed_json = json.loads(response_text)
+            sql_query = parsed_json.get("sql_query", "NONE")
+            need_rag = parsed_json.get("need_rag", False)
+            rag_query = parsed_json.get("rag_search_query", request.question)
+        except Exception as json_err:
+            print(f"JSON 파싱 오류: {json_err} / 원본: {sql_response.text}")
+            sql_query = "NONE"
+            need_rag = True
+            rag_query = request.question
+        
+        print(f"=== [AI 라우팅 결과] ===\nSQL 쿼리: {sql_query}\n문서 검색 필요 여부(RAG): {need_rag}\nRAG 쿼리: {rag_query}\n===========================")
 
         # =======================================================
         # [Step 2] 생성된 쿼리 실행
@@ -682,12 +725,13 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         chroma_context = ""
         results_metadatas = []
 
-        # [최적화] 스크랩 문서가 없고, DB에서 이미 통계 데이터를 찾았다면 굳이 RAG 벡터 검색을 수행하지 않음 (API 호출 50% 절감)
-        if not request.scraped_context and sql_context and "데이터 없음" not in sql_context:
-            print("=== [스마트 라우팅] DB 통계 데이터로 충분하므로 ChromaDB 벡터 검색(RAG)을 생략합니다 ===")
+        # [AI 기반 스마트 라우팅 적용]
+        # 스크랩 문서가 없고, AI가 카탈로그를 분석한 결과 문서 검색(RAG)이 불필요하다고 판단했다면 생략합니다.
+        if not request.scraped_context and not need_rag:
+            print("=== [스마트 라우팅] AI 판단 결과, 비정형 문서(RAG) 검색이 불필요하여 생략합니다 ===")
         else:
-            # 스크랩 문맥이 있을 경우 앞부분의 문서 제목/내용 힌트(500자)를 쿼리에 덧붙여 실질적인 관련 규정(회의비 기준 등)을 검색합니다.
-            chroma_query = request.question
+            # 스크랩 문맥이 있을 경우 앞부분의 문서 제목/내용 힌트(500자)를 쿼리에 덧붙입니다.
+            chroma_query = rag_query
             if request.scraped_context:
                 chroma_query += " " + request.scraped_context[:500]
 
@@ -744,6 +788,8 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 2. <검토 대상 문서>가 존재할 경우에만 해당 문서 내 위반 사항이나 오류를 찾아내고 지적해.
 3. <판단 기준 1: 시스템 DB 최신 팩트>에 사용자가 묻는 데이터(예: 사람, 숫자, 출신학교 등)가 포함되어 있다면 주저하지 말고 그 팩트를 기반으로 확신을 가지고 답변해.
 4. <판단 기준 1>의 데이터는 시스템이 사용자의 질문 조건을 완벽히 필터링해서 가져온 맞춤형 정답입니다. 결과값에 연도나 수험번호가 보이지 않는다고 해서 "일치하는지 확인할 수 없다"는 식의 변명을 절대 하지 마세요.
+5. **[데이터 크로스체크 및 결합 금지]:** <판단 기준 1: 시스템 DB>에서 추출된 데이터의 학년도(연도)와 <판단 기준 2: 사내 규정>에서 추출된 문서의 적용년도(학년도)를 반드시 대조하세요.
+6. 만약 두 데이터의 기준 연도(학년도)가 다를 경우, 절대 데이터를 결합하여 경쟁률 등을 산출하지 마세요. 대신 "DB 데이터는 OOOO학년도 기준이며, 문서는 OOOO학년도 기준이라 두 수치를 직접 비교하거나 산출할 수 없습니다"라고 명확히 분리하여 경고하세요.
 """
 
         
