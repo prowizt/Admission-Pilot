@@ -633,6 +633,7 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         2. 문자열 조건은 무조건 `=` 대신 `LIKE`를 사용하되, 사용자의 단어에서 핵심 형태소만 짧게 잘라서 검색해! (예: "일반고" -> LIKE '%일반고%')
         3. 통계나 숫자를 물어보면 무조건 `COUNT()`, `SUM()` 같은 집계 함수를 사용해!
         4. 목록을 물어볼 때는 데이터 폭발 방지를 위해 `SELECT TOP 30 * FROM ...` 처럼 TOP 제한을 걸어!
+        5. **[학년도 강제]** 질문에 특정 연도/학년도가 포함되어 있다면 반드시 `WHERE [입시학년도] = '2026'` 과 같이 학년도 조건을 추가해!
 
         {dynamic_schema}
 
@@ -644,7 +645,8 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         {{
             "sql_query": "정형 데이터 조회가 필요하면 T-SQL SELECT 문을, 필요 없으면 'NONE'을 입력",
             "need_rag": true 혹은 false (비정형 문서 목록에서 찾아봐야 할 정보가 있다면 true),
-            "rag_search_query": "need_rag가 true일 경우, 문서를 검색할 핵심 키워드 문장 (예: '2026학년도 간호학부 모집인원')"
+            "rag_search_query": "need_rag가 true일 경우, 문서를 검색할 핵심 키워드 문장 (예: '간호학부 모집인원')",
+            "rag_year_filter": "특정 학년도(예: '2028')의 문서만 찾아야 할 경우 해당 4자리 숫자만 입력, 특정 학년도에 국한되지 않거나 모르면 'ALL' 입력"
         }}
         """
         # SQL 생성용은 빠르고 논리적인 모델 사용
@@ -663,13 +665,15 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             sql_query = parsed_json.get("sql_query", "NONE")
             need_rag = parsed_json.get("need_rag", False)
             rag_query = parsed_json.get("rag_search_query", request.question)
+            rag_year_filter = parsed_json.get("rag_year_filter", "ALL")
         except Exception as json_err:
             print(f"JSON 파싱 오류: {json_err} / 원본: {sql_response.text}")
             sql_query = "NONE"
             need_rag = True
             rag_query = request.question
+            rag_year_filter = "ALL"
         
-        print(f"=== [AI 라우팅 결과] ===\nSQL 쿼리: {sql_query}\n문서 검색 필요 여부(RAG): {need_rag}\nRAG 쿼리: {rag_query}\n===========================")
+        print(f"=== [AI 라우팅 결과] ===\nSQL 쿼리: {sql_query}\n문서 검색 필요 여부(RAG): {need_rag}\nRAG 쿼리: {rag_query}\n메타데이터 필터(Year): {rag_year_filter}\n===========================")
 
         # =======================================================
         # [Step 2] 생성된 쿼리 실행
@@ -736,8 +740,10 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 chroma_query += " " + request.scraped_context[:500]
 
             try:
-                rule_res = rule_db.query(query_texts=[chroma_query], n_results=2)
-                ref_res = reference_db.query(query_texts=[chroma_query], n_results=2)
+                where_clause = {"year": rag_year_filter} if rag_year_filter and rag_year_filter != "ALL" else None
+                
+                rule_res = rule_db.query(query_texts=[chroma_query], n_results=2, where=where_clause)
+                ref_res = reference_db.query(query_texts=[chroma_query], n_results=2, where=where_clause)
                 
                 if rule_res and rule_res.get("documents") and rule_res["documents"][0]:
                     chroma_context += "[규정/팩트 문서]\n" + "\n\n".join(rule_res["documents"][0]) + "\n\n"
