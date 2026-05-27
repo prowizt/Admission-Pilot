@@ -370,7 +370,7 @@ export default function Dashboard() {
                           {table.is_public === 'P' && '🔵 부분공개'}
                           {table.is_public === 'N' && '🔴 직원전용'}
                         </span>
-                      </div>
+                      </div>  
                     </div>
                   ))
                 )}
