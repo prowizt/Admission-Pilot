@@ -61,7 +61,14 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
   if (!isOpen) return null;
 
   const handleYearChange = (delta: number) => {
-    setFormData(prev => ({ ...prev, year: (parseInt(prev.year) + delta).toString() }));
+    setFormData(prev => {
+      const currentYearStr = prev.year;
+      let yearNum = parseInt(currentYearStr);
+      if (isNaN(yearNum)) {
+        yearNum = new Date().getFullYear();
+      }
+      return { ...prev, year: (yearNum + delta).toString() };
+    });
   };
 
   const processFile = (file: File) => {
@@ -281,8 +288,9 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
                       <label className={labelClass}>적용 연도</label>
                       <div className="flex items-center gap-1.5">
                         <button type="button" onClick={() => handleYearChange(-1)} className="px-2 py-1.5 bg-white border border-gray-300 rounded-md hover:bg-gray-100 active:scale-90 transition-transform shadow-sm"><ChevronLeft size={16} /></button>
-                        <input type="text" value={formData.year} onChange={(e) => setFormData({...formData, year: e.target.value.replace(/[^0-9]/g, '')})} className="flex-1 w-full text-center font-bold text-sm bg-white border border-gray-300 py-1.5 rounded-md outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 shadow-sm" maxLength={4} />
+                        <input type="text" value={formData.year} onChange={(e) => setFormData({...formData, year: e.target.value.replace(/[^0-9a-zA-Z]/g, '').toUpperCase()})} className="flex-1 w-full text-center font-bold text-sm bg-white border border-gray-300 py-1.5 rounded-md outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 shadow-sm" maxLength={4} />
                         <button type="button" onClick={() => handleYearChange(1)} className="px-2 py-1.5 bg-white border border-gray-300 rounded-md hover:bg-gray-100 active:scale-90 transition-transform shadow-sm"><ChevronRight size={16} /></button>
+                        <button type="button" onClick={() => setFormData({...formData, year: 'ALL'})} className="px-2 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-md hover:bg-indigo-100 text-[10px] font-bold active:scale-95 transition-all whitespace-nowrap shadow-sm">상시</button>
                       </div>
                     </div>
                   </div>

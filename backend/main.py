@@ -646,7 +646,7 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             "sql_query": "정형 데이터 조회가 필요하면 T-SQL SELECT 문을, 필요 없으면 'NONE'을 입력",
             "need_rag": true 혹은 false (비정형 문서 목록에서 찾아봐야 할 정보가 있다면 true),
             "rag_search_query": "need_rag가 true일 경우, 문서를 검색할 핵심 키워드 문장 (예: '간호학부 모집인원')",
-            "rag_year_filter": "특정 학년도(예: '2028')의 문서만 찾아야 할 경우 해당 4자리 숫자만 입력, 특정 학년도에 국한되지 않거나 모르면 'ALL' 입력"
+            "rag_year_filter": "특정 학년도의 문서만 찾아야 할 경우 해당 4자리 숫자 입력. 단, 학칙 등 상시 적용되는 문서를 찾아야 하거나 연도를 모르면 'ALL' 입력"
         }}
         """
         # SQL 생성용은 빠르고 논리적인 모델 사용
@@ -740,7 +740,8 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 chroma_query += " " + request.scraped_context[:500]
 
             try:
-                where_clause = {"year": rag_year_filter} if rag_year_filter and rag_year_filter != "ALL" else None
+                # [상시 적용 문서 지원] 특정 연도(예: 2028)를 필터링하더라도, year가 'ALL'인 상시 적용 규정(학칙 등)도 함께 검색되도록 $in 연산자를 사용합니다.
+                where_clause = {"year": {"$in": [rag_year_filter, "ALL"]}} if rag_year_filter and rag_year_filter != "ALL" else None
                 
                 rule_res = rule_db.query(query_texts=[chroma_query], n_results=2, where=where_clause)
                 ref_res = reference_db.query(query_texts=[chroma_query], n_results=2, where=where_clause)
