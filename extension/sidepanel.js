@@ -5,6 +5,12 @@ const btnScrap = document.getElementById('btn-scrap');
 const scrapStatus = document.getElementById('scrap-status');
 const btnClearChat = document.getElementById('btn-clear-chat'); // 대화 비우기 버튼
 
+const btnUpload = document.getElementById('btn-upload');
+const fileUploadInput = document.getElementById('file-upload-input');
+const uploadStatus = document.getElementById('upload-status');
+const uploadFilename = document.getElementById('upload-filename');
+const btnClearUpload = document.getElementById('btn-clear-upload');
+const btnClearScrap = document.getElementById('btn-clear-scrap');
 // 설정 DOM 요소
 const btnToggleSettings = document.getElementById('btn-toggle-settings');
 const settingsBody = document.getElementById('settings-body');
@@ -307,11 +313,7 @@ async function sendMessage() {
     
     if (data.status === 'success') {
       addMessage(data.answer);
-      scrapedContext = ""; 
-      scrapStatus.classList.add('hidden');
-      btnScrap.innerHTML = "📄 현재 화면 텍스트 스크랩";
-      btnScrap.className = "text-[11px] font-bold px-2.5 py-1.5 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-md border border-slate-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
-      chatInput.placeholder = "질문을 입력하세요... (Shift+Enter로 줄바꿈)";
+      resetScrapState(); // 전송 성공 시 스크랩/업로드 상태 모두 초기화
     } else {
       addMessage("오류가 발생했습니다: " + data.detail);
     }
@@ -364,14 +366,30 @@ function addDefaultWelcomeMessage() {
   chatContainer.appendChild(welcomeDiv);
 }
 
-// 스크랩 상태 초기화 헬퍼 함수
+// 상태 초기화 헬퍼 함수 (스크랩 및 업로드 파일 공통)
 function resetScrapState() {
   scrapedContext = "";
-  btnScrap.innerHTML = "📄 현재 화면 텍스트 스크랩";
+  btnScrap.innerHTML = "📄 스크랩";
   btnScrap.className = "text-[11px] font-bold px-2.5 py-1.5 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-md border border-slate-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
   chatInput.placeholder = "질문을 입력하세요... (Shift+Enter로 줄바꿈)";
   scrapStatus.classList.add('hidden');
+  
+  uploadStatus.classList.add('hidden');
+  uploadFilename.innerText = "";
+  fileUploadInput.value = "";
 }
+
+// 스크랩 취소 버튼 동작
+btnClearScrap.addEventListener('click', (e) => {
+  e.stopPropagation();
+  resetScrapState();
+});
+
+// 파일 첨부 취소 버튼 동작
+btnClearUpload.addEventListener('click', (e) => {
+  e.stopPropagation();
+  resetScrapState();
+});
 
 // 탭 활성화 감지하여 스크랩 상태 초기화
 if (typeof chrome !== 'undefined' && chrome.tabs) {
@@ -461,13 +479,62 @@ btnScrap.addEventListener('click', async () => {
     if (results && results.length > 0) {
       const combinedText = results.map(r => r.result).filter(t => t && t.trim().length > 0).join('\n\n');
       scrapedContext = combinedText.substring(0, 3000); 
-      scrapStatus.classList.add('hidden'); // 기존 옆에 뜨는 텍스트는 숨김 유지
-      btnScrap.innerHTML = "✅ 스크랩 완료 (클릭 시 취소)";
-      btnScrap.className = "text-[11px] font-bold px-2.5 py-1.5 bg-emerald-100 text-emerald-700 hover:bg-emerald-200 rounded-md border border-emerald-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
-      chatInput.placeholder = "스크랩 완료! (내용이 AI에게 전달됨)";
+      scrapStatus.classList.remove('hidden');
+      uploadStatus.classList.add('hidden'); // 첨부파일이 있으면 숨김 (동시 사용 안함)
+      btnScrap.innerHTML = "📄 스크랩 됨";
+      btnScrap.className = "text-[11px] font-bold px-2.5 py-1.5 bg-emerald-100 text-emerald-700 rounded-md border border-emerald-300 flex items-center gap-1 shadow-sm";
+      chatInput.placeholder = "스크랩 화면에 대해 무엇이든 물어보세요!";
       chatInput.focus();
     } else {
       alert("페이지의 텍스트를 가져올 수 없습니다.");
     }
   });
+});
+
+// --- 파일 첨부 로직 ---
+btnUpload.addEventListener('click', () => {
+  fileUploadInput.click();
+});
+
+fileUploadInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  // 로딩 상태 표시
+  uploadStatus.classList.remove('hidden');
+  uploadFilename.innerText = "파싱 중...";
+  chatInput.disabled = true;
+  chatInput.placeholder = "파일에서 텍스트 및 표를 추출 중입니다...";
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const response = await fetch('http://127.0.0.1:8000/parse-file', {
+      method: 'POST',
+      body: formData
+    });
+
+    const data = await response.json();
+    
+    if (data.status === 'success') {
+      scrapedContext = data.text.substring(0, 5000); // 파싱된 텍스트 저장 (최대 5000자)
+      uploadFilename.innerText = file.name;
+      uploadFilename.title = file.name;
+      scrapStatus.classList.add('hidden'); // 스크랩과 동시 사용 안함
+      btnScrap.innerHTML = "📄 스크랩";
+      btnScrap.className = "text-[11px] font-bold px-2.5 py-1.5 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-md border border-slate-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
+      chatInput.placeholder = "첨부된 파일 내용에 대해 무엇이든 물어보세요!";
+    } else {
+      resetScrapState();
+      alert("파싱 오류: " + data.detail);
+    }
+  } catch (error) {
+    resetScrapState();
+    alert("서버 연결 실패. 파이썬 백엔드가 켜져 있는지 확인하세요.");
+  } finally {
+    chatInput.disabled = false;
+    chatInput.focus();
+    fileUploadInput.value = ""; // 동일 파일 다시 업로드 가능하도록 초기화
+  }
 });

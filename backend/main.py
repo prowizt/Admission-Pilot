@@ -319,6 +319,53 @@ async def upload_knowledge(
         "extracted_preview": safe_text[:100] + "..."
     }
 
+@app.post("/parse-file")
+async def parse_file(file: UploadFile = File(...)):
+    """
+    [챗봇 첨부파일 파싱 전용 API]
+    업로드된 파일(PDF, TXT, CSV)에서 텍스트와 표(마크다운 변환)를 추출하여 즉시 반환합니다.
+    (ChromaDB나 SQL에 저장하지 않고 순수 파싱 용도로만 사용됨)
+    """
+    filename = file.filename.lower()
+    if not (filename.endswith('.pdf') or filename.endswith('.txt') or filename.endswith('.csv')):
+        raise HTTPException(status_code=400, detail="현재는 PDF, TXT, CSV 파일만 지원합니다.")
+
+    try:
+        content = await file.read()
+        extracted_text = ""
+
+        if filename.endswith('.pdf'):
+            with pdfplumber.open(io.BytesIO(content)) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        extracted_text += page_text + "\n"
+                    tables = page.extract_tables()
+                    if tables:
+                        for table in tables:
+                            extracted_text += table_to_markdown(table)
+        else:
+            # TXT, CSV 등 순수 텍스트 파일 처리
+            # csv도 일반 텍스트 읽기로 처리 (단순 RAG용이므로)
+            try:
+                extracted_text = content.decode('utf-8')
+            except UnicodeDecodeError:
+                extracted_text = content.decode('euc-kr', errors='replace')
+                
+        if not extracted_text.strip():
+            raise ValueError("추출된 텍스트가 없습니다.")
+            
+        safe_text = mask_personal_info(extracted_text)
+        
+        return {
+            "status": "success",
+            "filename": file.filename,
+            "text": safe_text
+        }
+    except Exception as e:
+        print(f"[파싱 오류] {str(e)}")
+        raise HTTPException(status_code=500, detail=f"파일 파싱 오류: {str(e)}")
+
 
 @app.get("/documents/{doc_type}")
 async def get_documents(doc_type: str):
