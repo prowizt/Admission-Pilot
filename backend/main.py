@@ -135,7 +135,7 @@ def get_mssql_connection():
         available_drivers = [d for d in pyodbc.drivers() if 'SQL Server' in d]
         
         if not available_drivers:
-            print("❌ 오류: 시스템에 설치된 SQL Server ODBC 드라이버가 없습니다.")
+            print("[ERROR] 오류: 시스템에 설치된 SQL Server ODBC 드라이버가 없습니다.")
             return None
             
         # 2. 드라이버 우선순위 선택 (17 -> 18 -> 11 -> 기본 SQL Server)
@@ -147,7 +147,7 @@ def get_mssql_connection():
                 driver_name = pref
                 break
                 
-        print(f"✅ 선택된 MS-SQL 드라이버: {driver_name}")
+        print(f"[OK] 선택된 MS-SQL 드라이버: {driver_name}")
 
         # 3. 동적 드라이버 연결 문자열 구성 (ODBC 18 SSL 검증 에러 우회)
         conn_str = (
@@ -536,7 +536,7 @@ async def upload_dynamic_statistics(
         if not table_exists:
             cols_def = ", ".join([f"[{h}] NVARCHAR(255)" for h in headers])
             cursor.execute(f"CREATE TABLE [{table_name}] (id INT IDENTITY(1,1) PRIMARY KEY, {cols_def}, created_at DATETIME DEFAULT GETDATE())")
-            print(f"✅ 테이블 [{table_name}] 생성 완료")
+            print(f"[OK] 테이블 [{table_name}] 생성 완료")
             
         # [NEW] 테이블 카탈로그 등록 (한글명 및 설명 포함)
         kr_name = table_name_kr if table_name_kr else table_name
@@ -713,12 +713,26 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             need_rag = parsed_json.get("need_rag", False)
             rag_query = parsed_json.get("rag_search_query", request.question)
             rag_year_filter = parsed_json.get("rag_year_filter", "ALL")
+            
+            # [연도 자동 보정] 사용자 질문이나 스크랩된 문서에서 4자리 연도를 감지하여 RAG 필터에 자동 적용합니다.
+            if rag_year_filter == "ALL" or not rag_year_filter:
+                all_text = (request.question or "") + " " + (request.scraped_context or "")
+                years = re.findall(r"\b(202\d)\b", all_text)
+                if years:
+                    rag_year_filter = years[0]
+                    print(f"[연도 보정] 질문/스크랩 내에서 {rag_year_filter}학년도를 감지하여 필터를 적용합니다.")
         except Exception as json_err:
             print(f"JSON 파싱 오류: {json_err} / 원본: {sql_response.text}")
             sql_query = "NONE"
             need_rag = True
             rag_query = request.question
             rag_year_filter = "ALL"
+            
+            # [연도 자동 보정]
+            all_text = (request.question or "") + " " + (request.scraped_context or "")
+            years = re.findall(r"\b(202\d)\b", all_text)
+            if years:
+                rag_year_filter = years[0]
         
         print(f"=== [AI 라우팅 결과] ===\nSQL 쿼리: {sql_query}\n문서 검색 필요 여부(RAG): {need_rag}\nRAG 쿼리: {rag_query}\n메타데이터 필터(Year): {rag_year_filter}\n===========================")
 
@@ -781,24 +795,45 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         if not request.scraped_context and not need_rag:
             print("=== [스마트 라우팅] AI 판단 결과, 비정형 문서(RAG) 검색이 불필요하여 생략합니다 ===")
         else:
-            # 스크랩 문맥이 있을 경우 앞부분의 문서 제목/내용 힌트(500자)를 쿼리에 덧붙입니다.
+            # [최적화] CSV 등 텍스트 더미가 쿼리에 섞여 코사인 유사도를 망치지 않도록,
+            # RAG 임베딩 검색 시에는 scraped_context를 생략하고 오직 자연어 질문(rag_query)만 쿼리로 사용합니다.
             chroma_query = rag_query
-            if request.scraped_context:
-                chroma_query += " " + request.scraped_context[:500]
 
             try:
                 # [상시 적용 문서 지원] 특정 연도(예: 2028)를 필터링하더라도, year가 'ALL'인 상시 적용 규정(학칙 등)도 함께 검색되도록 $in 연산자를 사용합니다.
                 where_clause = {"year": {"$in": [rag_year_filter, "ALL"]}} if rag_year_filter and rag_year_filter != "ALL" else None
                 
-                rule_res = rule_db.query(query_texts=[chroma_query], n_results=2, where=where_clause)
-                ref_res = reference_db.query(query_texts=[chroma_query], n_results=2, where=where_clause)
+                # [RAG 범위 극대화] 통째 문서 검색 시 누락 방지를 위해 n_results를 기존 5에서 8로 확장합니다.
+                # (통째 문서는 파일 개수가 적어 n_results=8 설정 시 해당 학년도의 모든 규정이 100% 한 번에 수집됩니다)
+                rule_res = rule_db.query(query_texts=[chroma_query], n_results=8, where=where_clause)
+                ref_res = reference_db.query(query_texts=[chroma_query], n_results=8, where=where_clause)
                 
+                # [터미널 검색 현황 출력 - cp949 인코딩 에러 방지를 위해 이모지 제거]
+                if rule_res and rule_res.get("metadatas") and rule_res["metadatas"][0]:
+                    matched_files = [m.get("filename", "이름없음") for m in rule_res["metadatas"][0]]
+                    print(f"[RAG 검색 성공] Rule DB 매칭 문서: {matched_files}")
+                if ref_res and ref_res.get("metadatas") and ref_res["metadatas"][0]:
+                    matched_files = [m.get("filename", "이름없음") for m in ref_res["metadatas"][0]]
+                    print(f"[RAG 검색 성공] Reference DB 매칭 문서: {matched_files}")
+
                 if rule_res and rule_res.get("documents") and rule_res["documents"][0]:
-                    chroma_context += "[규정/팩트 문서]\n" + "\n\n".join(rule_res["documents"][0]) + "\n\n"
+                    formatted_docs = []
+                    for i, doc_text in enumerate(rule_res["documents"][0]):
+                        meta = rule_res["metadatas"][0][i] if rule_res.get("metadatas") else {}
+                        meta_title = meta.get("title", "출처 불명")
+                        formatted_docs.append(f"◆ [출처 문서: {meta_title}]\n{doc_text}")
+                        
+                    chroma_context += "[규정/팩트 문서]\n" + "\n\n".join(formatted_docs) + "\n\n"
                     if rule_res.get("metadatas"): results_metadatas.extend(rule_res["metadatas"][0])
                     
                 if ref_res and ref_res.get("documents") and ref_res["documents"][0]:
-                    chroma_context += "[참조/양식 문서]\n" + "\n\n".join(ref_res["documents"][0]) + "\n\n"
+                    formatted_refs = []
+                    for i, doc_text in enumerate(ref_res["documents"][0]):
+                        meta = ref_res["metadatas"][0][i] if ref_res.get("metadatas") else {}
+                        meta_title = meta.get("title", "출처 불명")
+                        formatted_refs.append(f"◆ [참조/양식 문서: {meta_title}]\n{doc_text}")
+                        
+                    chroma_context += "[참조/양식 문서]\n" + "\n\n".join(formatted_refs) + "\n\n"
                     if ref_res.get("metadatas"): results_metadatas.extend(ref_res["metadatas"][0])
             except Exception as chroma_err:
                 print(f"ChromaDB 검색 오류: {chroma_err}")
@@ -844,6 +879,8 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 4. <판단 기준 1>의 데이터는 시스템이 사용자의 질문 조건을 완벽히 필터링해서 가져온 맞춤형 정답입니다. 결과값에 연도나 수험번호가 보이지 않는다고 해서 "일치하는지 확인할 수 없다"는 식의 변명을 절대 하지 마세요.
 5. **[데이터 크로스체크 및 결합 금지]:** <판단 기준 1: 시스템 DB>에서 추출된 데이터의 학년도(연도)와 <판단 기준 2: 사내 규정>에서 추출된 문서의 적용년도(학년도)를 반드시 대조하세요.
 6. 만약 두 데이터의 기준 연도(학년도)가 다를 경우, 절대 데이터를 결합하여 경쟁률 등을 산출하지 마세요. 대신 "DB 데이터는 OOOO학년도 기준이며, 문서는 OOOO학년도 기준이라 두 수치를 직접 비교하거나 산출할 수 없습니다"라고 명확히 분리하여 경고하세요.
+7. **[근거 규정 출처 표기 필수]:** <판단 기준 2: 사내 규정 및 과거 문서 (RAG)>에서 제공된 정보 및 규정을 인용하거나 행정적 검토 의견을 제시할 때, 지적 사항 및 의견 끝 또는 자연스러운 문맥 위치에 반드시 근거 규정이 실린 문서의 명칭을 명시하세요. (예: "(근거 문서: 2027학년도 모집요강)", "(근거 문서: 2027학년도 전문대학 입학전형 기본사항)")
+8. **[전문대교협 기본사항 크로스체크 강제]:** <판단 기준 2: 사내 규정 및 과거 문서 (RAG)>에 '전문대학입학전형기본사항'이 포함되어 있을 경우, 모집요강 내 전형별 인원(또는 첨부파일 수치)이 기본사항에서 제한하는 비율 상한선(예: 재외국민/외국인 정원 외 10% 제한, 농어촌/대졸자/만학도 등 보건계열 정원 제한 등)을 위반하는지 반드시 전수 교차 계산하여 보고서에 지적 사항으로 명시하세요.
 """
 
         
