@@ -504,9 +504,16 @@ btnUpload.addEventListener('click', () => {
   fileUploadInput.click();
 });
 
-fileUploadInput.addEventListener('change', async (e) => {
-  const file = e.target.files[0];
+// 파일 업로드 처리 공통 함수
+async function processFile(file) {
   if (!file) return;
+
+  // 드래그 앤 드롭 시 확장자 필터링 안전 검증
+  const filename = file.name.toLowerCase();
+  if (!(filename.endsWith('.pdf') || filename.endsWith('.txt') || filename.endsWith('.csv'))) {
+    alert("현재는 PDF, TXT, CSV 파일만 지원합니다.");
+    return;
+  }
 
   // 로딩 상태 표시
   uploadStatus.classList.remove('hidden');
@@ -549,5 +556,36 @@ fileUploadInput.addEventListener('change', async (e) => {
     chatInput.disabled = false;
     chatInput.focus();
     fileUploadInput.value = ""; // 동일 파일 다시 업로드 가능하도록 초기화
+  }
+}
+
+fileUploadInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (file) {
+    await processFile(file);
+  }
+});
+
+// --- 질문 입력창 드래그 앤 드롭 이벤트 바인딩 ---
+chatInput.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  chatInput.classList.add('border-indigo-500', 'ring-2', 'ring-indigo-100');
+});
+
+chatInput.addEventListener('dragleave', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  chatInput.classList.remove('border-indigo-500', 'ring-2', 'ring-indigo-100');
+});
+
+chatInput.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  chatInput.classList.remove('border-indigo-500', 'ring-2', 'ring-indigo-100');
+  
+  const files = e.dataTransfer.files;
+  if (files && files.length > 0) {
+    await processFile(files[0]);
   }
 });
