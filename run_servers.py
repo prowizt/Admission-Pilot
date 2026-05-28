@@ -18,6 +18,26 @@ if sys.platform == "win32":
     except Exception as e:
         print(f"[경고] Windows 가상 터미널 프로세싱 활성화 실패: {e}")
 
+def watch_keyboard_input(root_dir):
+    print("\n💡 [백업 안내] 서버가 실행 중인 터미널에서 'b' 또는 'ㅠ'를 입력하고 [엔터]를 누르면, 개발 서버 종료 없이 외부 새 창에서 깃 백업(git_push.py)을 실행합니다!\n")
+    while True:
+        try:
+            line = sys.stdin.readline()
+            if not line:
+                break
+            command = line.strip().lower()
+            if command in ('b', 'ㅠ'):
+                print("\n[시스템] 깃 백업 요청 감지! 외부 새 창으로 백업 스크립트를 기동합니다...")
+                script_path = os.path.join(root_dir, "git_push.py")
+                if sys.platform == "win32":
+                    cmd = f'cmd.exe /c "python \"{script_path}\""'
+                    subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_CONSOLE)
+                else:
+                    subprocess.Popen(["python", script_path])
+        except Exception as e:
+            print(f"[오류] 입력 감지 에러: {e}")
+            break
+
 def read_output(pipe, prefix):
     try:
         for line in iter(pipe.readline, b''):
@@ -84,14 +104,21 @@ def start_servers():
         args=(frontend_proc.stdout, "\033[92m[FRONTEND]\033[0m"), 
         daemon=True
     )
+    t_input = threading.Thread(
+        target=watch_keyboard_input,
+        args=(root_dir,),
+        daemon=True
+    )
     
     t_backend.start()
     t_frontend.start()
+    t_input.start()
     
     try:
         # 두 서브프로세스가 동작하는지 주기적으로 핑 점검
         while True:
             time.sleep(1)
+            
             if backend_proc.poll() is not None:
                 print(f"[경고] 백엔드 프로세스가 비정상 종료되었습니다 (코드: {backend_proc.poll()})")
                 break
