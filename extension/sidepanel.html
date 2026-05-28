@@ -103,17 +103,15 @@
         class="text-[11px] font-bold px-2.5 py-1.5 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-md border border-slate-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95">
         📄 스크랩
       </button>
-      <span id="scrap-status" class="text-[11px] text-emerald-600 font-bold hidden bg-emerald-50 px-2 py-1 rounded border border-emerald-200">✅
-        스크랩 완료 <button id="btn-clear-scrap" class="ml-1 hover:text-emerald-800 font-extrabold cursor-pointer">✕</button></span>
-        
+      <!-- 스크랩 완료 텍스트 뱃지는 버튼 자체 토글로 병합하여 제거함 -->
       <button id="btn-upload"
         class="text-[11px] font-bold px-2.5 py-1.5 bg-indigo-100 text-indigo-700 hover:bg-indigo-200 rounded-md border border-indigo-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95">
         📎 파일 첨부
       </button>
       <input type="file" id="file-upload-input" accept=".pdf,.txt,.csv" class="hidden" />
-      <span id="upload-status" class="text-[11px] text-indigo-700 font-bold hidden bg-indigo-50 px-2 py-1 rounded border border-indigo-200 flex items-center gap-1">
-        <span id="upload-filename" class="truncate max-w-[100px]">filename.pdf</span> 
-        <button id="btn-clear-upload" class="hover:text-indigo-900 font-extrabold px-1 cursor-pointer">✕</button>
+      <span id="upload-status" class="text-[11px] text-lime-900 font-extrabold hidden bg-lime-100 px-2.5 py-1.5 rounded-md border border-lime-300 flex items-center gap-1.5 shadow-sm">
+        <span id="upload-filename" class="truncate max-w-[120px]">filename.pdf</span> 
+        <button id="btn-clear-upload" class="hover:text-lime-950 font-extrabold px-1 cursor-pointer">✕</button>
       </span>
     </div>
 

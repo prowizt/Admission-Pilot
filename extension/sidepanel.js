@@ -10,7 +10,6 @@ const fileUploadInput = document.getElementById('file-upload-input');
 const uploadStatus = document.getElementById('upload-status');
 const uploadFilename = document.getElementById('upload-filename');
 const btnClearUpload = document.getElementById('btn-clear-upload');
-const btnClearScrap = document.getElementById('btn-clear-scrap');
 // 설정 DOM 요소
 const btnToggleSettings = document.getElementById('btn-toggle-settings');
 const settingsBody = document.getElementById('settings-body');
@@ -29,6 +28,7 @@ const newModelApiKey = document.getElementById('new-model-apikey');
 const btnAddModel = document.getElementById('btn-add-model');
 
 let scrapedContext = ""; 
+let scrapedFileName = ""; // [NEW] 첨부 파일명 기록용 변수
 let chatHistory = []; // 대화 기록 저장용 전역 배열
 
 // 기본 제공되는 모델 세트 (요청에 따라 비움)
@@ -296,6 +296,9 @@ async function sendMessage() {
 
   if (scrapedContext) {
     payload.scraped_context = scrapedContext;
+    if (scrapedFileName) {
+      payload.scraped_file_name = scrapedFileName;
+    }
   }
 
   try {
@@ -369,21 +372,26 @@ function addDefaultWelcomeMessage() {
 // 상태 초기화 헬퍼 함수 (스크랩 및 업로드 파일 공통)
 function resetScrapState() {
   scrapedContext = "";
+  scrapedFileName = ""; // [NEW] 파일명 초기화
+  
+  // 스크랩 버튼 초기화
   btnScrap.innerHTML = "📄 스크랩";
   btnScrap.className = "text-[11px] font-bold px-2.5 py-1.5 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-md border border-slate-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
+  
+  // 파일 첨부 버튼 초기화
+  btnUpload.innerHTML = "📎 파일 첨부";
+  btnUpload.className = "text-[11px] font-bold px-2.5 py-1.5 bg-indigo-100 text-indigo-700 hover:bg-indigo-200 rounded-md border border-indigo-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
+
   chatInput.placeholder = "질문을 입력하세요... (Shift+Enter로 줄바꿈)";
-  scrapStatus.classList.add('hidden');
+  
+  if (scrapStatus) {
+    scrapStatus.classList.add('hidden');
+  }
   
   uploadStatus.classList.add('hidden');
   uploadFilename.innerText = "";
   fileUploadInput.value = "";
 }
-
-// 스크랩 취소 버튼 동작
-btnClearScrap.addEventListener('click', (e) => {
-  e.stopPropagation();
-  resetScrapState();
-});
 
 // 파일 첨부 취소 버튼 동작
 btnClearUpload.addEventListener('click', (e) => {
@@ -478,11 +486,11 @@ btnScrap.addEventListener('click', async () => {
   }, (results) => {
     if (results && results.length > 0) {
       const combinedText = results.map(r => r.result).filter(t => t && t.trim().length > 0).join('\n\n');
+      resetScrapState(); // 기존 상태 모두 초기화
+      
       scrapedContext = combinedText.substring(0, 3000); 
-      scrapStatus.classList.remove('hidden');
-      uploadStatus.classList.add('hidden'); // 첨부파일이 있으면 숨김 (동시 사용 안함)
-      btnScrap.innerHTML = "📄 스크랩 됨";
-      btnScrap.className = "text-[11px] font-bold px-2.5 py-1.5 bg-emerald-100 text-emerald-700 rounded-md border border-emerald-300 flex items-center gap-1 shadow-sm";
+      btnScrap.innerHTML = "✅ 스크랩 완료";
+      btnScrap.className = "text-[11px] font-bold px-2.5 py-1.5 bg-emerald-600 text-white hover:bg-emerald-700 rounded-md border border-emerald-700 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
       chatInput.placeholder = "스크랩 화면에 대해 무엇이든 물어보세요!";
       chatInput.focus();
     } else {
@@ -518,12 +526,17 @@ fileUploadInput.addEventListener('change', async (e) => {
     const data = await response.json();
     
     if (data.status === 'success') {
+      resetScrapState(); // 기존 상태 모두 초기화
+      
       scrapedContext = data.text.substring(0, 5000); // 파싱된 텍스트 저장 (최대 5000자)
+      scrapedFileName = file.name; // [NEW] 파일명 저장
       uploadFilename.innerText = file.name;
       uploadFilename.title = file.name;
-      scrapStatus.classList.add('hidden'); // 스크랩과 동시 사용 안함
-      btnScrap.innerHTML = "📄 스크랩";
-      btnScrap.className = "text-[11px] font-bold px-2.5 py-1.5 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-md border border-slate-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
+      uploadStatus.classList.remove('hidden');
+      
+      // 파일 첨부 완료 시 눈에 띄는 형광색(lime)으로 버튼 스타일 변경
+      btnUpload.innerHTML = "📎 파일 첨부 완료";
+      btnUpload.className = "text-[11px] font-extrabold px-2.5 py-1.5 bg-lime-400 text-lime-950 hover:bg-lime-500 rounded-md border border-lime-500 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
       chatInput.placeholder = "첨부된 파일 내용에 대해 무엇이든 물어보세요!";
     } else {
       resetScrapState();

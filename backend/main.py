@@ -60,6 +60,7 @@ from typing import List, Optional
 class ChatRequest(BaseModel):
     question: str
     scraped_context: Optional[str] = "" # [NEW] 스크랩된 현재 화면 텍스트
+    scraped_file_name: Optional[str] = "" # [NEW] 첨부 파일명
     model_name: str = "gemini-2.5-flash"
     user_role: str = "staff" # 권한: "staff"(교직원) 또는 "student"(일반학생)
 
@@ -284,6 +285,34 @@ async def upload_knowledge(
         raise HTTPException(status_code=400, detail="텍스트 추출 불가 (이미지 PDF 등)")
 
     safe_text = mask_personal_info(extracted_text)
+
+    # [중복 방지] 기존에 동일한 파일명이나 제목을 가진 문서가 있다면 선 제거 조치
+    conn = get_mssql_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT doc_id, doc_type FROM Sys_DocumentCatalog WHERE filename = ? OR title = ?",
+                (file.filename, title)
+            )
+            existing_docs = cursor.fetchall()
+            for old_id, old_type in existing_docs:
+                print(f"[중복 제거] 기존 동일 파일/제목 감지하여 삭제 진행: ID {old_id}")
+                # 1. ChromaDB 삭제
+                try:
+                    target_db = rule_db if old_type == "rule" else reference_db
+                    target_db.delete(ids=[old_id])
+                except Exception as e:
+                    print(f"ChromaDB 이전 데이터 삭제 실패: {e}")
+                
+                # 2. MS-SQL 삭제
+                cursor.execute("DELETE FROM Sys_DocumentCatalog WHERE doc_id = ?", (old_id,))
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except Exception as err:
+            print(f"기존 중복 확인 과정 에러: {err}")
+
     doc_id = str(uuid.uuid4())
     metadata = {"year": year, "title": title, "doc_type": doc_type, "filename": file.filename}
 
@@ -845,7 +874,10 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         
         # [디버그] 프론트엔드에서 스크랩 컨텍스트가 분리되어 제대로 넘어왔는지 확인
         if request.scraped_context:
-            print(f"=== [수신된 스크랩 컨텍스트 (미리보기)] ===\n{request.scraped_context[:200]}...\n===========================")
+            if request.scraped_file_name:
+                print(f"=== [수신된 스크랩 컨텍스트 (미리보기: {request.scraped_file_name})] ===\n{request.scraped_context[:200]}...\n===========================")
+            else:
+                print(f"=== [수신된 스크랩 컨텍스트 (미리보기)] ===\n{request.scraped_context[:200]}...\n===========================")
         else:
             print("=== [스크랩 컨텍스트 없음] ===")
 
@@ -880,7 +912,6 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 5. **[데이터 크로스체크 및 결합 금지]:** <판단 기준 1: 시스템 DB>에서 추출된 데이터의 학년도(연도)와 <판단 기준 2: 사내 규정>에서 추출된 문서의 적용년도(학년도)를 반드시 대조하세요.
 6. 만약 두 데이터의 기준 연도(학년도)가 다를 경우, 절대 데이터를 결합하여 경쟁률 등을 산출하지 마세요. 대신 "DB 데이터는 OOOO학년도 기준이며, 문서는 OOOO학년도 기준이라 두 수치를 직접 비교하거나 산출할 수 없습니다"라고 명확히 분리하여 경고하세요.
 7. **[근거 규정 출처 표기 필수]:** <판단 기준 2: 사내 규정 및 과거 문서 (RAG)>에서 제공된 정보 및 규정을 인용하거나 행정적 검토 의견을 제시할 때, 지적 사항 및 의견 끝 또는 자연스러운 문맥 위치에 반드시 근거 규정이 실린 문서의 명칭을 명시하세요. (예: "(근거 문서: 2027학년도 모집요강)", "(근거 문서: 2027학년도 전문대학 입학전형 기본사항)")
-8. **[전문대교협 기본사항 크로스체크 강제]:** <판단 기준 2: 사내 규정 및 과거 문서 (RAG)>에 '전문대학입학전형기본사항'이 포함되어 있을 경우, 모집요강 내 전형별 인원(또는 첨부파일 수치)이 기본사항에서 제한하는 비율 상한선(예: 재외국민/외국인 정원 외 10% 제한, 농어촌/대졸자/만학도 등 보건계열 정원 제한 등)을 위반하는지 반드시 전수 교차 계산하여 보고서에 지적 사항으로 명시하세요.
 """
 
         
