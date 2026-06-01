@@ -1,8 +1,9 @@
 =========================================
  Admission-Pilot Structure Tree
- Generated at: 2026-05-20 14:28:45
+ Generated at: 2026-06-01 13:59:14
 =========================================
 .
+├── 2026학년도 입학전형 운영 결과 보고.pdf
 ├── AI_GUIDELINES.md
 ├── backend/
 │   ├── main.py  # 메인 서버 및 API 엔드포인트
@@ -10,6 +11,8 @@
 ├── db_schema_full.txt
 ├── extension/
 │   ├── background.js  # 확장 프로그램이 서비스 워커로 인식하게 하기 위한 최소한의 코드입니다.
+│   ├── icon.png
+│   ├── logo.png
 │   ├── manifest.json
 │   ├── sidepanel.html
 │   ├── sidepanel.js  # 설정 DOM 요소
@@ -65,6 +68,8 @@
 │   ├── tsconfig.json
 │   ├── tsconfig.node.json
 │   └── vite.config.ts
-├── git_push.py  # 한글 깨짐 방지를 위해 인코딩 처리
+├── git_push.py  # Windows 환경에서 한글 및 이모지 입출력 cp949 에러 방지
 ├── project_file_structure.txt
+├── recovered_chat.txt
+├── run_servers.py  # 스레드 안전한 통합 로그 출력을 위한 락 및 마지막 로그 출력 타임스탬프 변수
 └── scan_project.py  # Admission-Pilot 디렉터리 구조 생성

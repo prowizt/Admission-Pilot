@@ -1,23 +1,11 @@
 =========================================
-Table: AdmissionCapacity
+Table: ADMISSIONCAPACITY
 =========================================
 Columns:
  - [PK] id (int(4)) NOT NULL
- - 적용년도 (nvarchar(510)) NULL
+ - 학년도 (nvarchar(510)) NULL
  - 학과 (nvarchar(510)) NULL
  - 입학정원 (nvarchar(510)) NULL
- - created_at (datetime(8)) NULL
-
-=========================================
-Table: AdmissionStats
-=========================================
-Columns:
- - [PK] id (int(4)) NOT NULL
- - 적용년도 (nvarchar(510)) NULL
- - 모집구분 (nvarchar(510)) NULL
- - 학과 (nvarchar(510)) NULL
- - 전형명 (nvarchar(510)) NULL
- - 모집정원 (nvarchar(510)) NULL
  - created_at (datetime(8)) NULL
 
 =========================================

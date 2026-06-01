@@ -21,6 +21,10 @@ def run_command(command):
         return False
 
 def main():
+    # 실행되는 CWD가 꼬이지 않도록 스크립트 파일이 존재하는 물리 폴더로 무조건 작업 디렉터리를 변경합니다.
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(script_dir)
+
     print("="*50)
     print("🚀 [Admission-Pilot] GitHub 자동 백업 스크립트 (독립 실행 모드)")
     print("="*50)
@@ -64,9 +68,14 @@ if __name__ == "__main__":
     # Windows 환경에서 새 콘솔 팝업으로 분기 재구동 처리
     if sys.platform == "win32" and "--child" not in sys.argv:
         script_path = os.path.abspath(__file__)
-        # 새 콘솔 창에서 본 스크립트 실행
-        cmd = f'cmd.exe /c "python \"{script_path}\" --child"'
-        subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        # 'python' 대신 현재 실행에 사용 중인 python.exe 경로(sys.executable)를 사용하여 경로 누락 에러를 차단합니다.
+        # 이중 실행 시에도 작업 디렉토리(cwd)를 스크립트 경로로 명시합니다.
+        script_dir = os.path.dirname(script_path)
+        subprocess.Popen(
+            [sys.executable, script_path, "--child"], 
+            creationflags=subprocess.CREATE_NEW_CONSOLE,
+            cwd=script_dir
+        )
         sys.exit(0) # 기존 안티그래비티 터미널의 부모 프로세스는 즉시 종료
         
     main()

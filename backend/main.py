@@ -106,6 +106,59 @@ def mask_personal_info(text: str) -> str:
     return masked_text
 
 
+def format_sql_query(sql: str) -> str:
+    """SQL 쿼리 문자열을 예약어 및 SELECT 컬럼 기준으로 줄바꿈 처리하여 터미널 가독성을 높입니다."""
+    if not sql or sql.upper() == "NONE":
+        return sql
+    
+    # 1. 예약어 앞에 줄바꿈(\n  ) 추가
+    keywords = ["SELECT ", "FROM ", "WHERE ", "GROUP BY ", "ORDER BY ", "HAVING ", "LEFT JOIN ", "INNER JOIN ", "JOIN "]
+    formatted = sql
+    
+    for kw in keywords:
+        pattern = re.compile(rf"\b{kw.strip()}\b", re.IGNORECASE)
+        formatted = pattern.sub(f"\n  {kw.strip()}", formatted)
+        
+    # 2. SELECT 절의 최상위 컬럼들(쉼표 기준) 줄바꿈 처리
+    lines = formatted.split('\n')
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.upper().startswith("SELECT"):
+            # SELECT 키워드와 컬럼들을 분리
+            select_idx = line.upper().find("SELECT")
+            select_keyword = line[:select_idx + 6]
+            columns_part = line[select_idx + 6:]
+            
+            # 괄호 깊이를 추적하며 최상위 쉼표 분리
+            new_columns = []
+            current_col = []
+            paren_depth = 0
+            for char in columns_part:
+                if char == '(':
+                    paren_depth += 1
+                    current_col.append(char)
+                elif char == ')':
+                    paren_depth -= 1
+                    current_col.append(char)
+                elif char == ',' and paren_depth == 0:
+                    new_columns.append("".join(current_col).strip())
+                    current_col = []
+                else:
+                    current_col.append(char)
+            if current_col:
+                new_columns.append("".join(current_col).strip())
+                
+            # 컬럼들을 줄바꿈 및 정렬하여 합침
+            indent = " " * len(select_keyword)
+            joined_cols = f",\n{indent} ".join(new_columns)
+            new_lines.append(f"{select_keyword} {joined_cols}")
+        else:
+            new_lines.append(line)
+            
+    return "\n".join(new_lines).strip()
+
+
 def table_to_markdown(table):
     """
     pdfplumber가 추출한 2D 리스트(표) 데이터를 Markdown 테이블 형식으로 변환합니다.
@@ -703,6 +756,12 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         [사전 지식 주입]
         1. [입시 학년도 정의]: 대학교 입시에서 'N학년도 전형(모집요강)'은 'N-1년도'에 모집을 실시하는 전형을 뜻합니다. (예: 2027학년도 모집요강 = 2026년 가을/겨울에 모집 실시). 사용자가 질문한 연도가 '실시 연도'인지 '입학 학년도'인지 문맥을 파악하여 SQL과 문서 검색 타겟을 정확히 일치시키세요.
         2. [일반 학년도 정의]: 학년도(예: 2026학년도)는 3월 1일부터 다음 해 2월 말일까지를 의미합니다. (예: 2026학년도 = 2026.03 ~ 2027.02).
+        3. [신입/편입 구분]: 대학 입학 결과에는 신입생 뿐만 아니라 '편입생'도 존재합니다. 사용자가 특정 전형만 지정하지 않고 '최종 모집 결과' 등 종합 검토를 요청하는 경우, `[신입편입구분]` 조건에 '신입'만 걸어 조회하지 말고, '신입'과 '편입' 데이터를 구분하여 각각 조회하거나 한꺼번에 수집하도록 T-SQL을 구성하세요.
+        4. [정원내 및 정원외 전형 구분 규칙]: 
+           - 대학 학칙상 명시된 '입학정원'은 오직 **정원내 전형**에만 적용됩니다.
+           - 전문대졸이상자, 기회균형 등 **'정원외 전형'**은 관계법령 및 학칙에 따라 입학정원 제한을 받지 않고 초과등록이 법적으로 허용됩니다.
+           - 따라서 DB 최종등록자 수와 학칙상 입학정원을 비교·대조할 때는 반드시 `[정원내외명] = '정원내'`(혹은 `LIKE '%정원내%'`) 조건의 등록자 수만 직접 대조해야 합니다.
+           - 정원외 등록자는 입학정원 대비 초과/미달 판단에서 제외하고 별도의 단독 수치(예: '정원외 등록자 O명')로만 나타내어야 하므로, 이를 분석할 수 있도록 T-SQL 작성 시 `[정원내외명]`을 GROUP BY 하거나 SELECT 절에서 조건별 분리 집계(CASE WHEN 등) 및 조건절로 구분하여 조회하게 만드십시오.
         
         [가장 중요한 SQL 작성 규칙]
         1. 컬럼명이 한글일 수 있으므로 대괄호 []를 반드시 사용해.
@@ -712,6 +771,11 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         5. 통계나 숫자를 물어보면 무조건 `COUNT()`, `SUM()` 같은 집계 함수를 사용해!
         6. 목록을 물어볼 때는 데이터 폭발 방지를 위해 `SELECT TOP 30 * FROM ...` 처럼 TOP 제한을 걸어!
         7. **[학년도 강제]** 질문에 특정 연도/학년도가 포함되어 있다면 반드시 `WHERE [입시학년도] = '2026'` 과 같이 학년도 조건을 추가해!
+        8. **[스크랩/첨부 문서 데이터 구조 분석 및 쿼리 매핑 규칙]**:
+           - 사용자가 제시한 `[질문]` 하단에는 스크랩되거나 첨부된 문서의 표 내용(예: 학과명, 지원인원, 최종등록자수, 정원내외구분, 신입편입여부 등)이 포함되어 있습니다.
+           - 너는 이 문서 내용의 데이터 레이아웃과 구체적인 표 구조를 자세히 파악해야 해.
+           - 만약 표에 **학과별 지원 수치 및 등록 수치**, **신입생/편입생 구분**, **정원내/외 구분** 등이 있다면, DB에서 이 수치들과 1:1로 직접 교차 검토(대조)가 가능하도록, **`[지원학과명]`, `[신입편입구분]`, `[정원내외명]`을 GROUP BY 절과 SELECT 절에 반드시 누락 없이 반영하여 학과별/전형구분별 세부 데이터(지원인원 수 및 등록자 수)를 집계하는 T-SQL 쿼리**를 영리하게 빌드해 내야 합니다. 단순히 전체 합계만 조회하는 쿼리로 퉁치지 말고, 서류의 표 구조와 1:1 매칭되는 상세 통계 쿼리를 작성하세요.
+
 
         {dynamic_schema}
 
@@ -765,7 +829,17 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             if years:
                 rag_year_filter = years[0]
         
-        print(f"=== [AI 라우팅 결과] ===\nSQL 쿼리: {sql_query}\n문서 검색 필요 여부(RAG): {need_rag}\nRAG 쿼리: {rag_query}\n메타데이터 필터(Year): {rag_year_filter}\n===========================")
+        formatted_sql = format_sql_query(sql_query)
+        print(f"=== [AI 라우팅 결과] ===")
+        print(f"※ 설명: 사용자의 자연어 질문을 바탕으로 AI가 데이터 사전 카탈로그를 분석하여 자동으로 설계한 T-SQL 쿼리문입니다.")
+        print(f"SQL 쿼리:")
+        print("--- T-SQL START ---")
+        print(formatted_sql)
+        print("--- T-SQL END ---")
+        print(f"문서 검색 필요 여부(RAG): {need_rag}")
+        print(f"RAG 쿼리: {rag_query}")
+        print(f"메타데이터 필터(Year): {rag_year_filter}")
+        print(f"===========================")
 
         # =======================================================
         # [Step 2] 생성된 쿼리 실행
@@ -774,7 +848,7 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         if sql_query.upper().startswith("SELECT") and conn:
             try:
                 # [최적화] AI가 추출된 데이터의 출처와 필터링 조건을 확신할 수 있도록 사용된 쿼리 원문을 증거로 덧붙입니다.
-                sql_context += f"[시스템이 데이터를 추출할 때 사용한 조건(쿼리)]: {sql_query}\n"
+                sql_context += f"[시스템이 데이터를 추출할 때 사용한 조건(쿼리)]:\n{formatted_sql}\n"
                 
                 cursor = conn.cursor()
                 cursor.execute(sql_query)
@@ -806,7 +880,16 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     result_idx += 1
                 
                 # [디버그 추가] MS-SQL에서 실제 가져온 데이터 확인용
-                print(f"=== [SQL 실제 실행 결과] ===\n{sql_context if sql_context else '데이터 없음 (0건 검색됨)'}\n===========================")
+                print(f"=== [SQL 실제 실행 결과] ===")
+                print(f"※ 설명: 위에서 AI가 설계한 T-SQL 쿼리를 실제 MS-SQL DB(입시마스타)에 전달하여 실시간으로 실행 및 수집해온 데이터 팩트입니다.")
+                print("--- T-SQL START ---")
+                print(formatted_sql)
+                print("--- T-SQL END ---")
+                
+                print(f"\n[수집된 DB 레코드]")
+                data_lines = [line for line in sql_context.split('\n') if "추출 데이터" in line or "데이터가 너무 많아" in line]
+                print("\n".join(data_lines) if data_lines else "데이터 없음 (0건 검색됨)")
+                print(f"===========================")
                 
             except Exception as db_err:
                 print(f"SQL 실행 오류: {db_err}")
@@ -909,11 +992,36 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 [행동 지침]
 1. "검토 대상 문서가 없다"며 답변을 회피하거나 사과하지 마. 문서가 없으면 <판단 기준 1>과 <판단 기준 2>의 데이터를 바탕으로 질문에 직접적으로 대답해.
 2. <검토 대상 문서>가 존재할 경우에만 해당 문서 내 위반 사항이나 오류를 찾아내고 지적해.
-3. <판단 기준 1: 시스템 DB 최신 팩트>에 사용자가 묻는 데이터(예: 사람, 숫자, 출신학교 등)가 포함되어 있다면 주저하지 말고 그 팩트를 기반으로 확신을 가지고 답변해.
+3. <판단 기준 1: SYSTEM DB 최신 팩트>에 사용자가 묻는 데이터(예: 사람, 숫자, 출신학교 등)가 포함되어 있다면 주저하지 말고 그 팩트를 기반으로 확신을 가지고 답변해.
 4. <판단 기준 1>의 데이터는 시스템이 사용자의 질문 조건을 완벽히 필터링해서 가져온 맞춤형 정답입니다. 결과값에 연도나 수험번호가 보이지 않는다고 해서 "일치하는지 확인할 수 없다"는 식의 변명을 절대 하지 마세요.
 5. **[데이터 크로스체크 및 결합 금지]:** <판단 기준 1: 시스템 DB>에서 추출된 데이터의 학년도(연도)와 <판단 기준 2: 사내 규정>에서 추출된 문서의 적용년도(학년도)를 반드시 대조하세요.
 6. 만약 두 데이터의 기준 연도(학년도)가 다를 경우, 절대 데이터를 결합하여 경쟁률 등을 산출하지 마세요. 대신 "DB 데이터는 OOOO학년도 기준이며, 문서는 OOOO학년도 기준이라 두 수치를 직접 비교하거나 산출할 수 없습니다"라고 명확히 분리하여 경고하세요.
 7. **[근거 규정 출처 표기 필수]:** <판단 기준 2: 사내 규정 및 과거 문서 (RAG)>에서 제공된 정보 및 규정을 인용하거나 행정적 검토 의견을 제시할 때, 지적 사항 및 의견 끝 또는 자연스러운 문맥 위치에 반드시 근거 규정이 실린 문서의 명칭을 명시하세요. (예: "(근거 문서: 2027학년도 모집요강)", "(근거 문서: 2027학년도 전문대학 입학전형 기본사항)")
+8. **[정원내/외 비교 및 정합성 검토 원칙]:**
+   - 시스템 DB 최종등록자 수와 학칙상 입학정원을 대조하여 정합성을 판별할 때, **정원내 전형 최종등록자만 입학정원과 비교**해야 합니다.
+   - 전문대졸이상자, 기회균형 등 **정원외 전형**은 정원에 구애받지 않고 초과등록이 가능하므로, 정원외 최종등록자를 정원에 포함해 "입학정원 초과 학칙 위반"이라고 오판하지 마십시오.
+   - 문서를 대조할 때는 **[정원내 최종등록자 수]**와 **[정원외 최종등록자 수]**를 명확하게 구분하여 각각 기재하고 분석에 반영해야 합니다.
+9. **[신입생 및 편입생 동시 분석]:**
+   - 사용자가 전형 결과 보고 등의 문서 대조를 요구할 때, 신입생 모집 결과 뿐만 아니라 **편입생 모집 결과**도 동일하게 정형 DB의 편입생 데이터(`[신입편입구분] = '편입'`)를 참고하여 양쪽 모두 정합성을 분석하고 누락 없이 보고하십시오.
+10. **[답변 구성 최우선순위 지침 (통계 대조 최우선화)]**:
+   - 사용자가 "통계수치가 틀리지 않는지 대조/비교/검토/점검해줘"라고 요청한 경우, **서류(스크랩/첨부된 문서) 속의 표에 기재된 통계와 실제 DB(입시마스타) 데이터가 일치하는지 여부 판별 결과를 가장 먼저(답변의 최상단에) 상세히 노출**해야 합니다.
+   - 서류 데이터와 DB 데이터를 1:1로 직접 대조한 결과를 보여준 뒤, 그 다음 순서로 규정(학칙, 예산 등)과의 연계 검토 의견을 서술하십시오.
+   - 단, 사용자 질문의 주 핵심이 통계 대조보다 서류의 규정(Rule) 검토인 경우에는 규정 검토를 가장 처음에 답변하십시오.
+11. **[학과별 1:1 대조 및 일치여부 표시 지침 (엄격 적용)]**:
+   - 사용자가 통계 대조를 원할 때, 학과별 최종 모집 통계(지원인원 및 최종등록자 등)에 대해 단순히 DB 수치만 나열하지 마십시오.
+   - **학과별로 각각 `[일치]` 혹은 `[불일치 - 서류: O명, DB: O명]`, 또는 서류에 해당 수치가 누락된 경우 `[불일치 - 서류 미기재]` 와 같이 일치 여부 상태를 개별 라인마다 반드시 1:1로 아주 정밀하게 명시**하십시오.
+   - 대조 결과가 일치하는 경우와 일치하지 않는 경우, 그리고 대조군(서류)이 미기재된 경우 모두를 구분하여 각각의 학과 우측에 명확히 표기하여 교직원이 정밀 대조 현황을 즉각 판별하도록 하십시오.
+12. **[서류 내 표 데이터 누락 시 안내문 노출 최소화 지침]**:
+   - 만약 사용자가 '서류 표와 대조해달라'고 요청했으나, 스크랩된 문서에 학과별 세부 인원 표 데이터가 식별되지 않는 경우에도 **최상단에 경고성 안내사항을 반복해서 띄워 사용자를 불편하게 하지 마십시오.**
+   - 사용자가 이미 드래그 등을 통해 시도했음에도 수집 한계로 누락되었을 수 있으므로, 안내사항은 최상단에 크게 띄우지 말고 답변 최하단에 참고용 노트(`> [!NOTE]`) 등으로 간략하게 배치하거나, 아예 생략하십시오.
+   - 대신에 학과별 1:1 대조 결과 리스트/표를 작성할 때 서류 데이터가 존재하지 않는 학과는 상태 마크에 `[불일치 - 서류 미기재(DB 기준: O명)]` 등으로 표시하여, 안내문구에 의존하지 않고 대조 결과의 완성된 형태를 즉시 보여주십시오.
+13. **[LaTeX 수학 기호 사용 절대 금지 및 유니코드 화살표 기호 사용]**:
+   - 답변 내에 LaTeX 수학 기호(예: `\rightarrow`, `\implies`, `\times` 등)를 절대로 사용하지 마십시오. 마크다운 환경에서 렌더링되지 않고 텍스트 그대로 노출되어 가독성을 저해합니다.
+   - 대신 반드시 일반 유니코드 화살표 기호(예: `→`, `⇒`, `×` 등)를 사용해 가독성 있게 작성하십시오. (예: `622명 → 623명`)
+14. **[사용자 질문 의도 파악 및 우선순위 구성 지침]**:
+   - 사용자가 질문을 던졌을 때, 단순 기계적으로 미리 정해진 고정된 포맷만 따르지 마십시오.
+   - **사용자가 무엇을 가장 먼저 보고 싶어 하는지(의도)를 먼저 면밀히 파악**하십시오. 
+   - 예를 들어, 서류와 DB의 정합성 대조가 주 목적이라면 대조 결과 리스트(일치/불일치)를 최상단에 바로 배치하고, 학칙/규정 준수 여부 검토가 핵심이라면 검토 의견 및 규정 근거를 최상단에 배치하여 답변의 순서와 구성을 질문 의도에 완벽히 정렬하십시오.
 """
 
         
@@ -1097,6 +1205,6 @@ async def update_columns(table_name: str, payload: ColumnUpdatePayload):
 
 if __name__ == "__main__":
     import uvicorn
-    # 코드 수정 시 자동 재시작(reload=True) 적용. 
-    # 실제 배포 시에는 host="0.0.0.0", reload=False 로 구동.
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    # 코드 수정 시 자동 재시작(reload=True)을 끄고 안정적인 단일 프로세스 유지를 위해 reload=False 적용
+    # 실제 배포 시에도 host="0.0.0.0", reload=False 로 구동
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)

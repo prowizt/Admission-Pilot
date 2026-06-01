@@ -3,6 +3,20 @@ import sys
 import subprocess
 import threading
 import time
+import datetime
+
+# 스레드 안전한 통합 로그 출력을 위한 락 및 마지막 로그 출력 타임스탬프 변수
+log_lock = threading.Lock()
+last_log_time = [0.0]
+
+# Windows 환경에서 한글 및 이모지 입출력 cp949 에러 방지
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+        sys.stdin.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 
 # Windows 환경에서 ANSI 이스케이프 코드 활성화 (색상 정상 출력 처리)
 if sys.platform == "win32":
@@ -30,15 +44,22 @@ def watch_keyboard_input(root_dir):
                 print("\n[시스템] 깃 백업 요청 감지! 외부 새 창으로 백업 스크립트를 기동합니다...")
                 script_path = os.path.join(root_dir, "git_push.py")
                 if sys.platform == "win32":
-                    cmd = f'cmd.exe /c "python \"{script_path}\""'
-                    subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_CONSOLE)
+                    # cwd를 root_dir로 명시하여 새 콘솔이 띄워질 때 경로 유실을 방지합니다.
+                    # 또한 --child 인자를 처음부터 넘겨 중복 팝업(Double Spawning)을 예방합니다.
+                    subprocess.Popen(
+                        [sys.executable, script_path, "--child"], 
+                        creationflags=subprocess.CREATE_NEW_CONSOLE,
+                        cwd=root_dir
+                    )
                 else:
-                    subprocess.Popen(["python", script_path])
+                    subprocess.Popen([sys.executable, script_path], cwd=root_dir)
         except Exception as e:
             print(f"[오류] 입력 감지 에러: {e}")
             break
 
 def read_output(pipe, prefix):
+    global last_log_time
+    is_sql_block = False
     try:
         for line in iter(pipe.readline, b''):
             # 엄격한 utf-8 디코딩 시도 (에러 없이 replace 방지하여 cp949 분기 활성화)
@@ -49,8 +70,34 @@ def read_output(pipe, prefix):
             except Exception:
                 decoded_line = line.decode('utf-8', errors='replace').rstrip()
                 
-            print(f"{prefix} {decoded_line}")
-            sys.stdout.flush()
+            # T-SQL 블록 마커 감지
+            if "--- T-SQL START ---" in decoded_line:
+                is_sql_block = True
+                continue
+            elif "--- T-SQL END ---" in decoded_line:
+                is_sql_block = False
+                continue
+                
+            if is_sql_block:
+                # SQL 블록인 경우 접두사 없이 순수 쿼리만 출력 (SSMS 복사용)
+                print(decoded_line)
+                sys.stdout.flush()
+                continue
+                
+            now = datetime.datetime.now()
+            current_timestamp = time.time()
+            current_time_full = now.strftime("%Y-%m-%d %H:%M:%S")
+            
+            with log_lock:
+                # 최초 실행 시점 또는 마지막 로그가 기록된 지 1분(60초) 이상 지났을 때만 시간 헤더 출력
+                if last_log_time[0] == 0.0 or (current_timestamp - last_log_time[0] >= 60.0):
+                    print(f"\n[{current_time_full}]")
+                
+                # 모든 로그 출력 마다 최종 로그 기록 시각 갱신
+                last_log_time[0] = current_timestamp
+                
+                print(f"{prefix} {decoded_line}")
+                sys.stdout.flush()
     except Exception as e:
         print(f"{prefix} [오류] 로그 수신 에러: {e}")
     finally:
@@ -76,7 +123,7 @@ def start_servers():
     # 1. 백엔드 FastAPI 서버 실행
     print("[시스템] 백엔드 FastAPI 서버 준비 중...")
     backend_proc = subprocess.Popen(
-        ["python", "main.py"],
+        [sys.executable, "main.py"],
         cwd=backend_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
