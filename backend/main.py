@@ -749,9 +749,15 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         import json
         
         sql_router_prompt = f"""
-        너는 대동대학교 입시처의 수석 데이터 아키텍트야. 
+        너는 대동대학교 입시처의 수석 데이터 아키텍트이자 실시간 입시 사전지식 관리자야. 
         사용자의 [질문]에 답변하기 위해 아래의 [현재 데이터베이스 및 문서 카탈로그 현황]을 분석하고, 
-        어떻게 데이터를 조회해야 할지 판단해 줘.
+        어떻게 데이터를 조회 및 반영해야 할지 판단해 줘.
+
+        [인사/조직 및 결재라인 변경 등의 지식 추가/삭제 판단 규칙]
+        - 사용자의 [질문]이 "인사 정보 변경사항, 구성원 퇴사/입사 사실, 특정 결재라인 규정, 대학 행정 예외 정책" 등 AI가 향후 검토 시 상시 참고해야 할 새로운 규칙/정보를 **등록(저장/추가/기억) 또는 삭제(지우기/제거)**하려는 의도인 경우, 이를 감지하여 `knowledge_action`을 빌드하십시오.
+        - 단순 질문(예: "~를 확인해줘", "~가 누구야?", "다른점이 있을까?")은 조회 목적이므로 `knowledge_action`의 `action`은 `"NONE"`입니다.
+        - 등록 예시: "사전지식 등록해줘: 4월에 ooo 과장 퇴사했고, 5월에 ooo 주임 신규 입사" -> action: "INSERT", category: "인사/조직", content: "4월에 ooo 과장 퇴사했고, 5월에 ooo 주임 신규 입사"
+        - 삭제 예시: "ooo 과장 이력 삭제해줘" -> action: "DELETE", category: "인사/조직", content: "ooo 과장" (삭제하려는 대상을 특정하는 키워드 또는 요약)
 
         [사전 지식 주입]
         1. [입시 학년도 정의]: 대학교 입시에서 'N학년도 전형(모집요강)'은 'N-1년도'에 모집을 실시하는 전형을 뜻합니다. (예: 2027학년도 모집요강 = 2026년 가을/겨울에 모집 실시). 사용자가 질문한 연도가 '실시 연도'인지 '입학 학년도'인지 문맥을 파악하여 SQL과 문서 검색 타겟을 정확히 일치시키세요.
@@ -788,7 +794,12 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             "sql_query": "정형 데이터 조회가 필요하면 T-SQL SELECT 문을, 필요 없으면 'NONE'을 입력",
             "need_rag": true 혹은 false (비정형 문서 목록에서 찾아봐야 할 정보가 있다면 true),
             "rag_search_query": "need_rag가 true일 경우, 문서를 검색할 핵심 키워드 문장 (예: '간호학부 모집인원')",
-            "rag_year_filter": "특정 학년도의 문서만 찾아야 할 경우 해당 4자리 숫자 입력. 단, 학칙 등 상시 적용되는 문서를 찾아야 하거나 연도를 모르면 'ALL' 입력"
+            "rag_year_filter": "특정 학년도의 문서만 찾아야 할 경우 해당 4자리 숫자 입력. 단, 학칙 등 상시 적용되는 문서를 찾아야 하거나 연도를 모르면 'ALL' 입력",
+            "knowledge_action": {{
+                "action": "INSERT" 또는 "DELETE" 또는 "NONE",
+                "category": "인사/조직" 또는 "결재라인" 또는 "예외규정" 또는 "기타",
+                "content": "등록 시에는 저장할 사전지식 요약 팩트 문장, 삭제 시에는 삭제를 식별할 수 있는 키워드나 요약 내용 (해당사항 없으면 빈 문자열)"
+            }}
         }}
         """
         # SQL 생성용은 빠르고 논리적인 모델 사용
@@ -809,6 +820,12 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             rag_query = parsed_json.get("rag_search_query", request.question)
             rag_year_filter = parsed_json.get("rag_year_filter", "ALL")
             
+            # [실시간 지식 보완 액션 추출]
+            k_action_data = parsed_json.get("knowledge_action", {})
+            k_action = k_action_data.get("action", "NONE")
+            k_category = k_action_data.get("category", "기타")
+            k_content = k_action_data.get("content", "")
+            
             # [연도 자동 보정] 사용자 질문이나 스크랩된 문서에서 4자리 연도를 감지하여 RAG 필터에 자동 적용합니다.
             if rag_year_filter == "ALL" or not rag_year_filter:
                 all_text = (request.question or "") + " " + (request.scraped_context or "")
@@ -822,12 +839,79 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             need_rag = True
             rag_query = request.question
             rag_year_filter = "ALL"
+            k_action = "NONE"
+            k_category = "기타"
+            k_content = ""
             
             # [연도 자동 보정]
             all_text = (request.question or "") + " " + (request.scraped_context or "")
             years = re.findall(r"\b(202\d)\b", all_text)
             if years:
                 rag_year_filter = years[0]
+        
+        # =======================================================
+        # [Step 1-2] 실시간 보완 지식 (Supplemental Knowledge) DB 반영 및 수집
+        # =======================================================
+        k_feedback_msg = ""
+        supplemental_context = ""
+        
+        if conn:
+            try:
+                cursor = conn.cursor()
+                
+                # A. 지식 실시간 저장/삭제 반영
+                if k_action == "INSERT" and k_content:
+                    # 중복 저장 방지 체크
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM Sys_SupplementalKnowledge WHERE category = ? AND content = ? AND is_active = 'Y'",
+                        (k_category, k_content)
+                    )
+                    if cursor.fetchone()[0] == 0:
+                        cursor.execute(
+                            "INSERT INTO Sys_SupplementalKnowledge (category, content, is_active, author) VALUES (?, ?, 'Y', ?)",
+                            (k_category, k_content, request.user_role)
+                        )
+                        k_feedback_msg = f"[알림] 실시간 보완 지식({k_category})이 시스템에 성공적으로 등록되었습니다: '{k_content}'"
+                        print(f"[지식 저장 성공] {k_feedback_msg}")
+                    else:
+                        k_feedback_msg = f"[알림] 이미 등록되어 활성화되어 있는 보완 지식입니다: '{k_content}'"
+                        print(f"[지식 저장 중복] {k_feedback_msg}")
+                        
+                elif k_action == "DELETE" and k_content:
+                    like_pattern = f"%{k_content}%"
+                    cursor.execute(
+                        "SELECT COUNT(*) FROM Sys_SupplementalKnowledge WHERE is_active = 'Y' AND (content LIKE ? OR category LIKE ?)",
+                        (like_pattern, like_pattern)
+                    )
+                    del_count = cursor.fetchone()[0]
+                    if del_count > 0:
+                        cursor.execute(
+                            "UPDATE Sys_SupplementalKnowledge SET is_active = 'N' WHERE is_active = 'Y' AND (content LIKE ? OR category LIKE ?)",
+                            (like_pattern, like_pattern)
+                        )
+                        k_feedback_msg = f"[알림] 조건 '{k_content}'에 부합하는 실시간 보완 지식 총 {del_count}건이 삭제(비활성화) 처리되었습니다."
+                        print(f"[지식 삭제 성공] {k_feedback_msg}")
+                    else:
+                        k_feedback_msg = f"[알림] 삭제 요청 조건('{k_content}')에 맞는 활성화된 사전지식을 찾지 못했습니다."
+                        print(f"[지식 삭제 실패] {k_feedback_msg}")
+                
+                conn.commit()
+                
+                # B. 현재 활성화된 모든 사전지식 수집
+                cursor.execute(
+                    "SELECT category, content, CONVERT(VARCHAR(10), created_at, 120) FROM Sys_SupplementalKnowledge WHERE is_active = 'Y' ORDER BY category ASC, id ASC"
+                )
+                rows = cursor.fetchall()
+                if rows:
+                    for r in rows:
+                        cat, cnt, r_date = r
+                        supplemental_context += f"- [{cat}] {cnt} (등록일: {r_date})\n"
+                else:
+                    supplemental_context = "등록된 실시간 보완 지식 없음"
+                    
+            except Exception as k_db_err:
+                print(f"보완 지식 트랜잭션 에러: {k_db_err}")
+                supplemental_context = "보완 지식 데이터 로딩 오류"
         
         formatted_sql = format_sql_query(sql_query)
         print(f"=== [AI 라우팅 결과] ===")
@@ -985,6 +1069,11 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 {chroma_context if chroma_context else "관련 규정/참조 문서 없음"}
 </판단 기준 2: 사내 규정 및 과거 문서 (RAG)>
 
+<판단 기준 3: 실시간 보완 지식 (최신 인사 정보 및 행정 예외 정책)>
+(과거 규정/조직 문서(판단 기준 2)에 기재된 정보보다 우선하여 적용할 실시간 변경 팩트 및 예외 규정입니다. 대조 대상 문서 내 인명이나 결재선 정보가 아래 팩트와 상충할 경우, 반드시 아래 팩트를 기준으로 최종 정합성을 판단하세요.)
+{supplemental_context if supplemental_context else "등록된 실시간 보완 지식 없음"}
+</판단 기준 3: 실시간 보완 지식 (최신 인사 정보 및 행정 예외 정책)>
+
 <사용자 지시사항>
 {request.question}
 </사용자 지시사항>
@@ -1022,6 +1111,12 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
    - 사용자가 질문을 던졌을 때, 단순 기계적으로 미리 정해진 고정된 포맷만 따르지 마십시오.
    - **사용자가 무엇을 가장 먼저 보고 싶어 하는지(의도)를 먼저 면밀히 파악**하십시오. 
    - 예를 들어, 서류와 DB의 정합성 대조가 주 목적이라면 대조 결과 리스트(일치/불일치)를 최상단에 바로 배치하고, 학칙/규정 준수 여부 검토가 핵심이라면 검토 의견 및 규정 근거를 최상단에 배치하여 답변의 순서와 구성을 질문 의도에 완벽히 정렬하십시오.
+15. **[실시간 지식 업데이트 성공 시 피드백 알림 강제]**:
+   - 만약 아래 <지식 업데이트 반영 내역>에 저장 성공 또는 삭제 완료와 관련된 알림 메시지(예: `[알림] ...`)가 포함되어 있다면, **해당 알림 메시지를 답변의 가장 최상단 첫 줄에 마크다운 굵은 글씨 또는 인용구 형태로 100% 원문 그대로 노출**하고 한 줄 띄운 다음 본 답변을 작성하십시오.
+
+<지식 업데이트 반영 내역>
+{k_feedback_msg if k_feedback_msg else "수행된 업데이트 내역 없음"}
+</지식 업데이트 반영 내역>
 """
 
         

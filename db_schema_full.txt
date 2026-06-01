@@ -33,6 +33,17 @@ Columns:
  - description (nvarchar(510)) NULL -- 문서 설명 및 AI/관리자 힌트
 
 =========================================
+Table: Sys_SupplementalKnowledge (실시간 보완 지식 및 인사/결재 예외 장부 테이블)
+=========================================
+Columns:
+ - [PK] id (int(4)) NOT NULL -- 고유 일련번호 (PK)
+ - category (nvarchar(200)) NOT NULL -- 지식 분류 (예: 인사/조직, 결재라인, 예외규정 등)
+ - content (nvarchar(2000)) NOT NULL -- 실시간 사전지식 팩트 원문
+ - is_active (char(1)) NOT NULL -- 활성 여부 (Y: 활성, N: 비활성)
+ - created_at (datetime(8)) NOT NULL -- 등록/수정 일시
+ - author (nvarchar(200)) NULL -- 등록한 교직원명 또는 ID
+
+=========================================
 Table: Sys_TableCatalog (테이블 관리 카탈로그 (외부/내부 DB 출처 관리))
 =========================================
 Columns:
