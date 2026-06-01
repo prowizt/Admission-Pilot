@@ -56,7 +56,22 @@ def main():
 
     # git push
     print("\n📤 원격 저장소로 업로드 중...")
-    if not run_command("git push"):
+    
+    # [Upstream 에러 방지] 현재 브랜치명을 조회하여 origin으로 안전하게 업스트림 설정을 포함해 푸시합니다.
+    try:
+        # 현재 브랜치명 획득 (예: main)
+        branch_res = subprocess.run(
+            "git rev-parse --abbrev-ref HEAD", 
+            capture_output=True, 
+            text=True, 
+            shell=True, 
+            check=True
+        )
+        current_branch = branch_res.stdout.strip()
+    except Exception:
+        current_branch = "main" # 예외 발생 시 기본 브랜치명 적용
+
+    if not run_command(f"git push -u origin {current_branch}"):
         print("\n⚠️ Push 실패! remote 설정을 확인하거나, 'git pull'을 먼저 해야 할 수도 있습니다.")
         input("\n엔터키를 누르면 창이 닫힙니다...")
         return
