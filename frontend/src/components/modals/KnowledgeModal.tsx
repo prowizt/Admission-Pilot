@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import axios from 'axios';
-import { X, Save, Database, FileText, ChevronLeft, ChevronRight, Upload, CheckCircle2, Lock, Trash2, List, RefreshCw } from 'lucide-react';
+import { X, Save, Database, FileText, ChevronLeft, ChevronRight, Upload, CheckCircle2, Lock, Trash2, List, RefreshCw, ShieldHalf } from 'lucide-react';
 import CustomSwal from '@/utils/CustomSwal';
 
 export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, onSuccess }: any) {
@@ -15,7 +15,8 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
 
   const [formData, setFormData] = useState({
     doc_type: 'rule', year: new Date().getFullYear().toString(), title: '',
-    is_public: 'Y', db_source: 'INTERNAL', table_name: '', description: ''
+    is_public: 'Y', db_source: 'INTERNAL', table_name: '', description: '',
+    category: '인사/조직', content: ''
   });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
@@ -39,17 +40,20 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
         setFormData({
           doc_type: editData.doc_type || 'rule',
           year: editData.year || new Date().getFullYear().toString(),
-          title: activeTab === 'documents' ? editData.title : editData.table_name_kr,
+          title: activeTab === 'documents' ? editData.title : (activeTab === 'tables' ? editData.table_name_kr : ''),
           is_public: editData.is_public || 'Y',
           db_source: editData.db_source || 'INTERNAL',
           table_name: editData.table_name || '',
-          description: editData.description || ''
+          description: editData.description || '',
+          category: editData.category || '인사/조직',
+          content: editData.content || ''
         });
         if (activeTab === 'tables') fetchColumns(editData.table_name);
       } else {
         setFormData({
           doc_type: 'rule', year: new Date().getFullYear().toString(), title: '',
-          is_public: 'Y', db_source: 'INTERNAL', table_name: '', description: ''
+          is_public: 'Y', db_source: 'INTERNAL', table_name: '', description: '',
+          category: '인사/조직', content: ''
         });
         setColumns([]);
       }
@@ -96,9 +100,12 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
 
   const handleDelete = async () => {
     const isDoc = activeTab === 'documents';
+    const isKnowledge = activeTab === 'knowledge';
     const result = await CustomSwal.fire({
       title: '데이터 삭제',
-      text: isDoc ? "정말 삭제하시겠습니까?\nAI 지식에서 영구 파기됩니다." : "정말 연동을 해제하시겠습니까?\n엑셀 데이터인 경우 실제 테이블도 삭제됩니다.",
+      text: isDoc 
+        ? "정말 삭제하시겠습니까?\nAI 지식에서 영구 파기됩니다." 
+        : (isKnowledge ? "정말 사전지식을 삭제하시겠습니까?\n삭제 후 복구가 불가능합니다." : "정말 연동을 해제하시겠습니까?\n엑셀 데이터인 경우 실제 테이블도 삭제됩니다."),
       icon: 'warning',
       showCancelButton: true, confirmButtonText: '삭제', cancelButtonText: '취소'
     });
@@ -107,6 +114,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
     try {
       setIsLoading(true);
       if (isDoc) await axios.delete(`http://127.0.0.1:8000/documents/${editData.doc_type}/${editData.doc_id}`);
+      else if (isKnowledge) await axios.delete(`http://127.0.0.1:8000/catalog/supplemental-knowledge/${editData.id}`);
       else await axios.delete(`http://127.0.0.1:8000/tables/${editData.table_name}`);
       
       CustomSwal.fire({ icon: 'success', title: '성공', text: '안전하게 삭제되었습니다.', timer: 1500, showConfirmButton: false });
@@ -188,6 +196,34 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
         CustomSwal.fire({ icon: 'error', title: '저장 실패', text: error.response?.data?.detail || error.message });
       } finally { setIsLoading(false); }
 
+    } else if (activeTab === 'knowledge') {
+      try {
+        setIsLoading(true);
+        const payload = {
+          category: formData.category,
+          content: formData.content,
+          author: 'staff'
+        };
+
+        if (isEditMode) {
+          const res = await axios.put(`http://127.0.0.1:8000/catalog/supplemental-knowledge/${editData.id}`, payload);
+          if (res.data.status === 'success') {
+            CustomSwal.fire({ icon: 'success', title: '성공', text: '사전지식이 성공적으로 수정되었습니다.', timer: 1500, showConfirmButton: false });
+            if (onSuccess) onSuccess();
+            onClose();
+          }
+        } else {
+          const res = await axios.post('http://127.0.0.1:8000/catalog/supplemental-knowledge', payload);
+          if (res.data.status === 'success') {
+            CustomSwal.fire({ icon: 'success', title: '성공', text: '사전지식이 성공적으로 등록되었습니다.', timer: 1500, showConfirmButton: false });
+            if (onSuccess) onSuccess();
+            onClose();
+          }
+        }
+      } catch (error: any) {
+        CustomSwal.fire({ icon: 'error', title: '저장 실패', text: error.response?.data?.detail || error.message });
+      } finally { setIsLoading(false); }
+
     } else {
       const payload = new FormData();
       payload.append('table_name', formData.table_name);
@@ -244,6 +280,9 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
     if (activeTab === 'documents') {
       if (!formData.title.trim()) return CustomSwal.fire({ icon: 'warning', title: '입력 누락', text: '문서 제목을 입력해주세요.' });
       if (!isEditMode && !selectedFile) return CustomSwal.fire({ icon: 'warning', title: '파일 누락', text: 'PDF 파일을 첨부해주세요.' });
+    } else if (activeTab === 'knowledge') {
+      if (!formData.category.trim()) return CustomSwal.fire({ icon: 'warning', title: '입력 누락', text: '지식 분류를 선택해주세요.' });
+      if (!formData.content.trim()) return CustomSwal.fire({ icon: 'warning', title: '입력 누락', text: '지식 내용을 입력해주세요.' });
     } else {
       if (!formData.title.trim()) return CustomSwal.fire({ icon: 'warning', title: '입력 누락', text: '테이블 한글명을 입력해주세요.' });
       if (!formData.table_name.trim()) return CustomSwal.fire({ icon: 'warning', title: '입력 누락', text: '영문 뷰 이름을 지정/입력해주세요.' });
@@ -262,8 +301,13 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
         {/* Header */}
         <div className="bg-indigo-900 px-5 py-4 text-white flex justify-between items-center shrink-0 min-w-0">
           <h3 className="font-bold text-sm tracking-wide flex items-center gap-1.5">
-            {activeTab === 'documents' ? <FileText size={18} /> : <Database size={18} />}
-            {activeTab === 'documents' ? `비정형 문서(PDF) ${isEditMode ? '수정' : '등록'}` : `정형 데이터 ${isEditMode ? '상세설정' : '연동'}`}
+            {activeTab === 'documents' ? <FileText size={18} /> : (activeTab === 'knowledge' ? <ShieldHalf size={18} /> : <Database size={18} />)}
+            {activeTab === 'documents' 
+              ? `비정형 문서(PDF) ${isEditMode ? '수정' : '등록'}` 
+              : activeTab === 'knowledge'
+                ? `실시간 보완 지식 ${isEditMode ? '수정' : '등록'}`
+                : `정형 데이터 ${isEditMode ? '상세설정' : '연동'}`
+            }
           </h3>
           <button onClick={onClose} className="hover:bg-white/20 p-1.5 rounded-full transition-colors"><X size={18} /></button>
         </div>
@@ -324,6 +368,35 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
                         {selectedFile ? <p className="text-xs font-bold text-indigo-700 truncate">{selectedFile.name}</p> : <p className="text-xs text-gray-500 font-medium">여기를 클릭하거나 PDF 파일을 끌어다 놓으세요.</p>}
                       </div>
                     )}
+                  </div>
+                </>
+              ) : activeTab === 'knowledge' ? (
+                /* ================= [사전지식관리 모달] ================= */
+                <>
+                  <div className="grid grid-cols-1 gap-4 min-w-0">
+                    <div>
+                      <label className={labelClass}>지식 분류 *</label>
+                      <select 
+                        value={formData.category} 
+                        onChange={(e) => setFormData({ ...formData, category: e.target.value })} 
+                        className={inputClass}
+                      >
+                        <option value="인사/조직">인사/조직 (부서원 변경, 퇴사/입사 등)</option>
+                        <option value="결재라인">결재라인 (특정 결재선 규정, 부서 협조 등)</option>
+                        <option value="예외규정">예외규정 (행정 처리 및 입시 지침 예외 등)</option>
+                        <option value="기타">기타</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className={labelClass}>보완 지식 내용 (최대 1000자) *</label>
+                      <textarea
+                        value={formData.content}
+                        onChange={(e) => setFormData({ ...formData, content: e.target.value })}
+                        className="w-full text-sm bg-white border border-gray-300 p-3 rounded-lg outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 shadow-sm transition-all resize-none min-h-[160px] leading-relaxed"
+                        placeholder="AI가 판단 및 대조 작업 시 상시 참고해야 할 최신 변경사항을 구체적으로 기재하세요.&#10;예: 배소미 직원은 2026년 5월 26일부로 입시홍보처 신규 임용되었습니다."
+                        maxLength={1000}
+                      />
+                    </div>
                   </div>
                 </>
               ) : (
@@ -391,10 +464,12 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
                 </>
               )}
               
-              <div>
-                <label className={labelClass}>AI 및 관리자용 테이블 설명 (힌트)</label>
-                <textarea rows={2} value={formData.description} onChange={e => setFormData({ ...formData, description: e.target.value })} className={`${inputClass} resize-none`} placeholder="AI가 문맥을 파악할 수 있는 설명을 적어주세요." />
-              </div>
+              {activeTab !== 'knowledge' && (
+                <div>
+                  <label className={labelClass}>AI 및 관리자용 테이블 설명 (힌트)</label>
+                  <textarea rows={2} value={formData.description} onChange={e => setFormData({ ...formData, description: e.target.value })} className={`${inputClass} resize-none`} placeholder="AI가 문맥을 파악할 수 있는 설명을 적어주세요." />
+                </div>
+              )}
 
               {/* [NEW] 컬럼 카탈로그 편집기 (수정 모드일 때만 표시) */}
               {isEditMode && activeTab === 'tables' && (
@@ -476,15 +551,15 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
           <div>
             {isEditMode && (
               <button type="button" onClick={handleDelete} disabled={isLoading} className="px-3 py-2 text-red-600 bg-white border border-red-200 hover:bg-red-50 hover:border-red-300 rounded-lg text-xs font-bold transition-colors flex items-center shadow-sm">
-                <Trash2 size={16} className="mr-1" /> {activeTab === 'documents' ? '문서 삭제' : '연동 해제'}
+                <Trash2 size={16} className="mr-1" /> {activeTab === 'documents' ? '문서 삭제' : (activeTab === 'knowledge' ? '지식 삭제' : '연동 해제')}
               </button>
             )}
           </div>
           <div className="flex gap-2">
             <button type="button" onClick={onClose} disabled={isLoading} className="px-4 py-2 bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 rounded-lg text-xs md:text-sm font-bold shadow-sm transition-colors">취소</button>
-            <button type="button" onClick={handleBeforeSubmit} disabled={isLoading} className={`px-5 py-2 ${activeTab === 'documents' ? 'bg-indigo-600 hover:bg-indigo-700' : formData.db_source === 'INTERNAL' ? 'bg-orange-500 hover:bg-orange-600' : 'bg-teal-500 hover:bg-teal-600'} text-white rounded-lg text-xs md:text-sm font-bold shadow-md transition transform flex items-center gap-1.5 ${isLoading ? 'opacity-50 cursor-wait' : 'hover:-translate-y-0.5 active:scale-95'}`}>
+            <button type="button" onClick={handleBeforeSubmit} disabled={isLoading} className={`px-5 py-2 ${activeTab === 'documents' || activeTab === 'knowledge' ? 'bg-indigo-600 hover:bg-indigo-700' : formData.db_source === 'INTERNAL' ? 'bg-orange-500 hover:bg-orange-600' : 'bg-teal-500 hover:bg-teal-600'} text-white rounded-lg text-xs md:text-sm font-bold shadow-md transition transform flex items-center gap-1.5 ${isLoading ? 'opacity-50 cursor-wait' : 'hover:-translate-y-0.5 active:scale-95'}`}>
               {isLoading ? <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span> : <Save size={16} />}
-              {isEditMode ? '설정 및 컬럼 저장' : (activeTab === 'documents' ? '등록 및 AI 임베딩' : 'DB 연동하기')}
+              {isEditMode ? (activeTab === 'knowledge' ? '지식 수정 완료' : '설정 및 컬럼 저장') : (activeTab === 'documents' ? '등록 및 AI 임베딩' : (activeTab === 'knowledge' ? '지식 등록하기' : 'DB 연동하기'))}
             </button>
           </div>
         </div>

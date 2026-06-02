@@ -15,19 +15,23 @@ export default function Dashboard() {
   const [docFilter, setDocFilter] = useState('all'); 
   const [tableFilter, setTableFilter] = useState('all'); 
   const [publicFilter, setPublicFilter] = useState('all');
+  const [knowledgeFilter, setKnowledgeFilter] = useState('all');
   
   const [documents, setDocuments] = useState<any[]>([]);
   const [tables, setTables] = useState<any[]>([]);
+  const [supplementalList, setSupplementalList] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
   // [NEW] 페이지네이션 상태
   const [docPage, setDocPage] = useState(1);
   const [tablePage, setTablePage] = useState(1);
+  const [knowledgePage, setKnowledgePage] = useState(1);
   const ITEMS_PER_PAGE = 10;
 
   // 검색/필터 변경 시 페이지를 1로 리셋
   useEffect(() => { setDocPage(1); }, [searchQuery, docFilter, publicFilter]);
   useEffect(() => { setTablePage(1); }, [searchQuery, tableFilter, publicFilter]);
+  useEffect(() => { setKnowledgePage(1); }, [searchQuery, knowledgeFilter]);
 
   // 뷰어 상태 관리
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -54,6 +58,9 @@ export default function Dashboard() {
       if (activeTab === 'documents') {
         const res = await axios.get('http://127.0.0.1:8000/catalog/documents');
         if (res.data.status === 'success') setDocuments(res.data.data);
+      } else if (activeTab === 'knowledge') {
+        const res = await axios.get('http://127.0.0.1:8000/catalog/supplemental-knowledge');
+        if (res.data.status === 'success') setSupplementalList(res.data.data);
       } else {
         const res = await axios.get('http://127.0.0.1:8000/catalog/tables');
         if (res.data.status === 'success') setTables(res.data.data);
@@ -89,6 +96,17 @@ export default function Dashboard() {
     return matchSearch && matchType && matchPublic;
   });
 
+  const filteredSupplemental = supplementalList.filter(item => {
+    const safeContent = item.content || '';
+    const safeCategory = item.category || '';
+    const safeAuthor = item.author || '';
+    const matchSearch = safeContent.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        safeCategory.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        safeAuthor.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchCategory = knowledgeFilter === 'all' || item.category === knowledgeFilter;
+    return matchSearch && matchCategory;
+  }).sort((a, b) => b.id - a.id);
+
   // [NEW] 페이지네이션 계산
   const docTotalPages = Math.ceil(filteredDocuments.length / ITEMS_PER_PAGE) || 1;
   const paginatedDocuments = filteredDocuments.slice((docPage - 1) * ITEMS_PER_PAGE, docPage * ITEMS_PER_PAGE);
@@ -96,24 +114,37 @@ export default function Dashboard() {
   const tableTotalPages = Math.ceil(filteredTables.length / ITEMS_PER_PAGE) || 1;
   const paginatedTables = filteredTables.slice((tablePage - 1) * ITEMS_PER_PAGE, tablePage * ITEMS_PER_PAGE);
 
+  const knowledgeTotalPages = Math.ceil(filteredSupplemental.length / ITEMS_PER_PAGE) || 1;
+  const paginatedSupplemental = filteredSupplemental.slice((knowledgePage - 1) * ITEMS_PER_PAGE, knowledgePage * ITEMS_PER_PAGE);
+
   // [NEW] 공통 페이지네이션 렌더링 함수
-  const renderPagination = (currentPage: number, totalPages: number, setPageFn: (page: number) => void) => (
-    <div className="flex justify-center items-center mt-6 mb-2 gap-1.5 min-w-0">
-      <button onClick={() => setPageFn(Math.max(1, currentPage - 1))} disabled={currentPage === 1} className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-300 text-gray-500 disabled:opacity-30 hover:bg-gray-50 transition-colors">
-        <ChevronLeft size={16} />
-      </button>
-      <div className="flex gap-1 min-w-0">
-        {Array.from({ length: totalPages }, (_, i) => i + 1).map(pageNum => (
-          <button key={pageNum} onClick={() => setPageFn(pageNum)} className={`w-7 h-7 rounded-md text-xs font-bold transition-all ${currentPage === pageNum ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-600 hover:bg-indigo-50 border border-transparent'}`}>
-            {pageNum}
+  const renderPagination = (currentPage: number, totalPages: number, setPageFn: (page: number) => void, totalItems: number) => {
+    const startIdx = totalItems === 0 ? 0 : (currentPage - 1) * ITEMS_PER_PAGE + 1;
+    const endIdx = Math.min(currentPage * ITEMS_PER_PAGE, totalItems);
+
+    return (
+      <div className="flex flex-col sm:flex-row justify-between items-center mt-6 mb-2 gap-3 min-w-0 px-2">
+        <div className="text-[11px] md:text-xs text-gray-500 font-bold">
+          총 {totalItems}건 중 {startIdx} - {endIdx}건 표시
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button onClick={() => setPageFn(Math.max(1, currentPage - 1))} disabled={currentPage === 1} className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-300 text-gray-500 disabled:opacity-30 hover:bg-gray-50 transition-colors">
+            <ChevronLeft size={16} />
           </button>
-        ))}
+          <div className="flex gap-1 min-w-0">
+            {Array.from({ length: totalPages }, (_, i) => i + 1).map(pageNum => (
+              <button key={pageNum} onClick={() => setPageFn(pageNum)} className={`w-7 h-7 rounded-md text-xs font-bold transition-all ${currentPage === pageNum ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-600 hover:bg-indigo-50 border border-transparent'}`}>
+                {pageNum}
+              </button>
+            ))}
+          </div>
+          <button onClick={() => setPageFn(Math.min(totalPages, currentPage + 1))} disabled={currentPage === totalPages} className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-300 text-gray-500 disabled:opacity-30 hover:bg-gray-50 transition-colors">
+            <ChevronRight size={16} />
+          </button>
+        </div>
       </div>
-      <button onClick={() => setPageFn(Math.min(totalPages, currentPage + 1))} disabled={currentPage === totalPages} className="w-7 h-7 flex items-center justify-center rounded-md border border-gray-300 text-gray-500 disabled:opacity-30 hover:bg-gray-50 transition-colors">
-        <ChevronRight size={16} />
-      </button>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="h-full flex flex-col min-w-0 pb-24 md:pb-6">
@@ -137,7 +168,10 @@ export default function Dashboard() {
             }`}
           >
             <FileText size={16} className="shrink-0" /> 
-            <span>비정형 문서</span>
+            <span>
+              <span className="inline md:hidden">비정형</span>
+              <span className="hidden md:inline">비정형 문서</span>
+            </span>
           </button>
           <button
             onClick={() => { setActiveTab('tables'); setSearchQuery(''); }}
@@ -146,7 +180,22 @@ export default function Dashboard() {
             }`}
           >
             <Database size={16} className="shrink-0" /> 
-            <span>정형 데이터(DB)</span>
+            <span>
+              <span className="inline md:hidden">정형</span>
+              <span className="hidden md:inline">정형 데이터(DB)</span>
+            </span>
+          </button>
+          <button
+            onClick={() => { setActiveTab('knowledge'); setSearchQuery(''); }}
+            className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap flex items-center gap-2 ${
+              activeTab === 'knowledge' ? 'bg-slate-50 text-indigo-900 font-bold' : 'bg-indigo-800/50 text-indigo-200 hover:bg-indigo-800 hover:text-white'
+            }`}
+          >
+            <ShieldHalf size={16} className="shrink-0" /> 
+            <span>
+              <span className="inline md:hidden">사전지식</span>
+              <span className="hidden md:inline">사전지식 (예외규정)</span>
+            </span>
           </button>
         </div>
       </div>
@@ -167,6 +216,14 @@ export default function Dashboard() {
                     <button onClick={() => setDocFilter('rule')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${docFilter === 'rule' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Rule (규정)</button>
                     <button onClick={() => setDocFilter('reference')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${docFilter === 'reference' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Ref (양식)</button>
                   </>
+                ) : activeTab === 'knowledge' ? (
+                  <>
+                    <button onClick={() => setKnowledgeFilter('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === 'all' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>전체</button>
+                    <button onClick={() => setKnowledgeFilter('인사/조직')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === '인사/조직' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>인사/조직</button>
+                    <button onClick={() => setKnowledgeFilter('결재라인')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === '결재라인' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>결재라인</button>
+                    <button onClick={() => setKnowledgeFilter('예외규정')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === '예외규정' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>예외규정</button>
+                    <button onClick={() => setKnowledgeFilter('기타')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === '기타' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>기타</button>
+                  </>
                 ) : (
                   <>
                     <button onClick={() => setTableFilter('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${tableFilter === 'all' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>전체</button>
@@ -177,14 +234,16 @@ export default function Dashboard() {
               </div>
               
               {/* Public/Private Filter Buttons */}
-              <div className="flex bg-slate-100 p-1 rounded-lg shrink-0 overflow-x-auto custom-scrollbar">
-                <button onClick={() => setPublicFilter('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${publicFilter === 'all' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>모든 권한</button>
-                <button onClick={() => setPublicFilter('Y')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap flex items-center gap-1 ${publicFilter === 'Y' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Globe size={12}/> {activeTab === 'documents' ? '대외공개' : '전체공개'}</button>
-                {activeTab === 'tables' && (
-                  <button onClick={() => setPublicFilter('P')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap flex items-center gap-1 ${publicFilter === 'P' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><ShieldHalf size={12}/> 부분공개</button>
-                )}
-                <button onClick={() => setPublicFilter('N')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap flex items-center gap-1 ${publicFilter === 'N' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Lock size={12}/> 직원전용</button>
-              </div>
+              {activeTab !== 'knowledge' && (
+                <div className="flex bg-slate-100 p-1 rounded-lg shrink-0 overflow-x-auto custom-scrollbar">
+                  <button onClick={() => setPublicFilter('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${publicFilter === 'all' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>모든 권한</button>
+                  <button onClick={() => setPublicFilter('Y')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap flex items-center gap-1 ${publicFilter === 'Y' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Globe size={12}/> {activeTab === 'documents' ? '대외공개' : '전체공개'}</button>
+                  {activeTab === 'tables' && (
+                    <button onClick={() => setPublicFilter('P')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap flex items-center gap-1 ${publicFilter === 'P' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><ShieldHalf size={12}/> 부분공개</button>
+                  )}
+                  <button onClick={() => setPublicFilter('N')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap flex items-center gap-1 ${publicFilter === 'N' ? 'bg-white text-red-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Lock size={12}/> 직원전용</button>
+                </div>
+              )}
             </div>
             
             {/* Right: Search Bar & Add Button */}
@@ -193,7 +252,13 @@ export default function Dashboard() {
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
                 <input
                   type="text"
-                  placeholder="제목, 파일명, 뷰 검색..."
+                  placeholder={
+                    activeTab === 'documents' 
+                      ? "제목, 파일명 검색..." 
+                      : activeTab === 'knowledge' 
+                        ? "내용, 분류, 등록자 검색..." 
+                        : "테이블 한글명, 영문명 검색..."
+                  }
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all"
@@ -293,7 +358,7 @@ export default function Dashboard() {
                   ))
                 )}
               </div>
-              {filteredDocuments.length > 0 && renderPagination(docPage, docTotalPages, setDocPage)}
+              {filteredDocuments.length > 0 && renderPagination(docPage, docTotalPages, setDocPage, filteredDocuments.length)}
             </>
           )}
 
@@ -375,7 +440,89 @@ export default function Dashboard() {
                   ))
                 )}
               </div>
-              {filteredTables.length > 0 && renderPagination(tablePage, tableTotalPages, setTablePage)}
+              {filteredTables.length > 0 && renderPagination(tablePage, tableTotalPages, setTablePage, filteredTables.length)}
+            </>
+          )}
+
+          {/* TAB 3: Knowledge (Supplemental Knowledge) List */}
+          {activeTab === 'knowledge' && (
+            <>
+              {/* PC Desktop View */}
+              <div className="hidden md:block bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden min-w-0">
+                <div className="overflow-x-auto min-w-0">
+                  <table className="w-full text-left border-collapse min-w-[600px]">
+                    <thead>
+                      <tr className="bg-slate-100 border-b border-slate-300">
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-32 text-center">분류</th>
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700">보완 지식 내용</th>
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">등록자</th>
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">등록일</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {paginatedSupplemental.length === 0 ? (
+                        <tr><td colSpan={4} className="py-12 text-center text-slate-400 font-medium">등록된 사전지식이 없습니다.</td></tr>
+                      ) : (
+                        paginatedSupplemental.map(item => (
+                          <tr key={item.id} onClick={() => { setSelectedDoc(item); setIsModalOpen(true); }} className="border-b border-gray-100 hover:bg-indigo-50/30 transition-colors cursor-pointer group">
+                            <td className="px-4 py-3 text-center whitespace-nowrap">
+                              <span className={`text-[10px] px-2 py-1 rounded font-bold ${
+                                item.category === '인사/조직' ? 'bg-blue-50 text-blue-600' :
+                                item.category === '결재라인' ? 'bg-purple-50 text-purple-600' :
+                                item.category === '예외규정' ? 'bg-amber-50 text-amber-600' :
+                                'bg-gray-50 text-gray-600'
+                              }`}>
+                                {item.category}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 min-w-0">
+                              <p className="text-sm text-gray-800 font-medium whitespace-pre-line leading-relaxed truncate max-w-xl" title={item.content}>
+                                {item.content}
+                              </p>
+                            </td>
+                            <td className="px-4 py-3 text-center text-sm font-semibold text-gray-600 whitespace-nowrap">
+                              {item.author || '시스템'}
+                            </td>
+                            <td className="px-4 py-3 text-center text-[11px] text-gray-500 font-mono whitespace-nowrap">
+                              {item.created_at || '-'}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Mobile View */}
+              <div className="md:hidden bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden min-w-0 divide-y divide-gray-100">
+                {filteredSupplemental.length === 0 ? (
+                  <div className="py-8 text-center text-slate-400 font-medium text-sm">등록된 사전지식이 없습니다.</div>
+                ) : (
+                  filteredSupplemental.map(item => (
+                    <div key={item.id} onClick={() => { setSelectedDoc(item); setIsModalOpen(true); }} className="p-3 hover:bg-indigo-50/50 active:bg-indigo-50 transition-colors cursor-pointer flex flex-col gap-1.5 min-w-0">
+                      <div className="flex justify-between items-start min-w-0">
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold shrink-0 ${
+                          item.category === '인사/조직' ? 'bg-blue-50 text-blue-600' :
+                          item.category === '결재라인' ? 'bg-purple-50 text-purple-600' :
+                          item.category === '예외규정' ? 'bg-amber-50 text-amber-600' :
+                          'bg-gray-50 text-gray-600'
+                        }`}>
+                          {item.category}
+                        </span>
+                        <span className="text-[11px] text-gray-400 font-mono">
+                          {item.created_at ? new Date(item.created_at).toLocaleDateString('ko-KR') : ''}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-700 line-clamp-2 mt-0.5 leading-relaxed">{item.content}</p>
+                      <div className="flex items-center justify-between text-[10px] text-gray-400 min-w-0 mt-1 pt-1 border-t border-gray-50">
+                        <span>등록자: <span className="font-bold text-gray-600">{item.author || '시스템'}</span></span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+              {filteredSupplemental.length > 0 && renderPagination(knowledgePage, knowledgeTotalPages, setKnowledgePage, filteredSupplemental.length)}
             </>
           )}
 

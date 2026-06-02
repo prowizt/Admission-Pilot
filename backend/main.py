@@ -1264,6 +1264,107 @@ async def get_document_catalog():
         conn.close()
 
 
+class SupplementalKnowledgePayload(BaseModel):
+    category: str
+    content: str
+    author: Optional[str] = "staff"
+
+
+@app.get("/catalog/supplemental-knowledge")
+async def get_supplemental_knowledge_catalog():
+    """MS-SQL의 Sys_SupplementalKnowledge에서 활성화된 보완 지식 목록을 조회합니다."""
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, category, content, is_active, 
+                   CONVERT(VARCHAR(10), created_at, 120) AS created_at, 
+                   author 
+            FROM Sys_SupplementalKnowledge
+            WHERE is_active = 'Y'
+            ORDER BY id DESC
+        """)
+        columns = [column[0] for column in cursor.description]
+        data = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return {
+            "status": "success",
+            "total_count": len(data),
+            "data": data
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"보완 지식 조회 에러: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.post("/catalog/supplemental-knowledge")
+async def add_supplemental_knowledge(payload: SupplementalKnowledgePayload):
+    """신규 보완 지식을 수동 등록합니다."""
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO Sys_SupplementalKnowledge (category, content, is_active, author)
+            VALUES (?, ?, 'Y', ?)
+        """, (payload.category, payload.content, payload.author))
+        conn.commit()
+        return {"status": "success", "message": "사전지식이 성공적으로 등록되었습니다."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"보완 지식 등록 에러: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.put("/catalog/supplemental-knowledge/{knowledge_id}")
+async def update_supplemental_knowledge(knowledge_id: int, payload: SupplementalKnowledgePayload):
+    """기존 보완 지식을 수정합니다."""
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE Sys_SupplementalKnowledge
+            SET category = ?, content = ?
+            WHERE id = ?
+        """, (payload.category, payload.content, knowledge_id))
+        conn.commit()
+        return {"status": "success", "message": "사전지식이 성공적으로 수정되었습니다."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"보완 지식 수정 에러: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.delete("/catalog/supplemental-knowledge/{knowledge_id}")
+async def delete_supplemental_knowledge(knowledge_id: int):
+    """보완 지식을 삭제(비활성화) 처리합니다."""
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE Sys_SupplementalKnowledge
+            SET is_active = 'N'
+            WHERE id = ?
+        """, (knowledge_id,))
+        conn.commit()
+        return {"status": "success", "message": "사전지식이 성공적으로 삭제되었습니다."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"보완 지식 삭제 에러: {str(e)}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @app.get("/columns/{table_name}")
 async def get_columns(table_name: str):
     """특정 테이블/뷰의 컬럼 카탈로그 정보를 반환합니다."""
@@ -1300,6 +1401,5 @@ async def update_columns(table_name: str, payload: ColumnUpdatePayload):
 
 if __name__ == "__main__":
     import uvicorn
-    # 코드 수정 시 자동 재시작(reload=True)을 끄고 안정적인 단일 프로세스 유지를 위해 reload=False 적용
-    # 실제 배포 시에도 host="0.0.0.0", reload=False 로 구동
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)
+    # 코드 수정 시 자동 재시작(reload=True)을 켜서 개발 편의성을 극대화합니다.
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
