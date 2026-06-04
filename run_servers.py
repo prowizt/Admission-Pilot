@@ -119,6 +119,7 @@ def start_servers():
     # 파이썬 실시간 출력 보장 환경변수 주입
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     
     # 1. 백엔드 FastAPI 서버 실행
     print("[시스템] 백엔드 FastAPI 서버 준비 중...")

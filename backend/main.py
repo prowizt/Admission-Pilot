@@ -63,6 +63,7 @@ class ChatRequest(BaseModel):
     scraped_file_name: Optional[str] = "" # [NEW] 첨부 파일명
     model_name: str = "gemini-2.5-flash"
     user_role: str = "staff" # 권한: "staff"(교직원) 또는 "student"(일반학생)
+    history: Optional[List[dict]] = []
 
 class ColumnUpdateItem(BaseModel):
     id: int
@@ -793,7 +794,7 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         {{
             "sql_query": "정형 데이터 조회가 필요하면 T-SQL SELECT 문을, 필요 없으면 'NONE'을 입력",
             "need_rag": true 혹은 false (비정형 문서 목록에서 찾아봐야 할 정보가 있다면 true),
-            "rag_search_query": "need_rag가 true일 경우, 문서를 검색할 핵심 키워드 문장 (예: '간호학부 모집인원')",
+            "rag_search_query": "need_rag가 true일 경우, 문서를 검색할 핵심 키워드. 만약 검토해야 할 연관된 여러 개의 규정/문서가 있을 경우, 각 키워드나 문서명을 쉼표(,)로 연결하여 모두 나열하십시오. (예: '구매 규정, 법인카드 사용 규정, 예산 회계 규정, 위임전결 규정')",
             "rag_year_filter": "특정 학년도의 문서만 찾아야 할 경우 해당 4자리 숫자 입력. 단, 학칙 등 상시 적용되는 문서를 찾아야 하거나 연도를 모르면 'ALL' 입력",
             "knowledge_action": {{
                 "action": "INSERT" 또는 "DELETE" 또는 "NONE",
@@ -996,45 +997,120 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             # [최적화] CSV 등 텍스트 더미가 쿼리에 섞여 코사인 유사도를 망치지 않도록,
             # RAG 임베딩 검색 시에는 scraped_context를 생략하고 오직 자연어 질문(rag_query)만 쿼리로 사용합니다.
             chroma_query = rag_query
+            
+            # [스마트 RAG 키워드 확장]
+            # 사용자 질문에 없더라도, 스크랩/첨부된 문서(scraped_context) 내에 규정 검토에 핵심적인 키워드가 발견되면
+            # ChromaDB 검색 시 관련 규정 문서가 확실히 끌려오도록 검색 쿼리를 콤마로 결합해 확장합니다.
+            if request.scraped_context:
+                extra_keywords = []
+                scraped_lower = request.scraped_context.lower()
+                
+                # 핵심 검토 도메인 키워드 매핑 (오매칭 및 토큰 낭비 방지를 위해 검색 필터 정교화)
+                keyword_mappings = {
+                    "학교폭력": ["학교폭력", "학폭"],  # '감점', '퇴학', '전학', '조치사항' 등 다른 문서에서도 흔한 단어는 오매칭 방지를 위해 제외
+                    "위임전결": ["위임전결", "결재권", "전결"],  # '결재선' 등 흔한 일반 단어 제외
+                    "문서보존": ["보존기한", "보존기간", "문서보존"],  # '문서보관', '보존기 간' 등 모호한 단어 제외
+                    "예산": ["예산계획", "기안 금액", "부서 운영 계획"]  # 단독 '예산', '계획서'는 너무 흔한 일반 단어이므로 복합어로 정교화
+                }
+                
+                for key_query, synonyms in keyword_mappings.items():
+                    if any(syn in scraped_lower for syn in synonyms):
+                        extra_keywords.append(key_query)
+                        
+                if extra_keywords:
+                    chroma_query += "," + ",".join(extra_keywords)
+                    print(f"[RAG 스마트 확장] 스크랩 문서 내 핵심 키워드가 발견되어 쿼리를 확장합니다: {extra_keywords}")
 
             try:
+                # 쉼표(,)를 기준으로 쿼리 분할
+                queries = [q.strip() for q in chroma_query.split(",") if q.strip()]
+                if not queries:
+                    queries = [chroma_query]
+
+                rule_docs_map = {}
+                ref_docs_map = {}
+
                 # [상시 적용 문서 지원] 특정 연도(예: 2028)를 필터링하더라도, year가 'ALL'인 상시 적용 규정(학칙 등)도 함께 검색되도록 $in 연산자를 사용합니다.
                 where_clause = {"year": {"$in": [rag_year_filter, "ALL"]}} if rag_year_filter and rag_year_filter != "ALL" else None
                 
-                # [RAG 범위 극대화] 통째 문서 검색 시 누락 방지를 위해 n_results를 기존 5에서 8로 확장합니다.
-                # (통째 문서는 파일 개수가 적어 n_results=8 설정 시 해당 학년도의 모든 규정이 100% 한 번에 수집됩니다)
-                rule_res = rule_db.query(query_texts=[chroma_query], n_results=8, where=where_clause)
-                ref_res = reference_db.query(query_texts=[chroma_query], n_results=8, where=where_clause)
-                
-                # [터미널 검색 현황 출력 - cp949 인코딩 에러 방지를 위해 이모지 제거]
-                if rule_res and rule_res.get("metadatas") and rule_res["metadatas"][0]:
-                    matched_files = [m.get("filename", "이름없음") for m in rule_res["metadatas"][0]]
-                    print(f"[RAG 검색 성공] Rule DB 매칭 문서: {matched_files}")
-                if ref_res and ref_res.get("metadatas") and ref_res["metadatas"][0]:
-                    matched_files = [m.get("filename", "이름없음") for m in ref_res["metadatas"][0]]
-                    print(f"[RAG 검색 성공] Reference DB 매칭 문서: {matched_files}")
+                # [개선] 영어 임베딩 모델의 한글 매칭 한계를 메우기 위해, 후보군을 넓게(60개) 가져온 후 파일명 매칭 보정을 적용합니다.
+                n_results_per_query = 60
 
-                if rule_res and rule_res.get("documents") and rule_res["documents"][0]:
+                for q in queries:
+                    try:
+                        rule_res = rule_db.query(query_texts=[q], n_results=n_results_per_query, where=where_clause)
+                        if rule_res and rule_res.get("documents") and rule_res["documents"][0]:
+                            for i, doc_text in enumerate(rule_res["documents"][0]):
+                                meta = rule_res["metadatas"][0][i] if rule_res.get("metadatas") else {}
+                                dist = rule_res["distances"][0][i] if rule_res.get("distances") else 1.0
+                                fname = meta.get("filename", "이름없음")
+                                
+                                # [보정 알고리즘] 쿼리 텍스트와 파일명 키워드 매칭 보너스 부여
+                                fname_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', fname.replace(".pdf", "")).lower()
+                                q_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', q).lower()
+                                if q_clean and fname_clean:
+                                    if q_clean in fname_clean or fname_clean in q_clean:
+                                        dist = min(dist, 0.1)
+                                
+                                # 중복 제거 시 최소 distance 유지
+                                if fname not in rule_docs_map or dist < rule_docs_map[fname]["distance"]:
+                                    rule_docs_map[fname] = {"doc_text": doc_text, "meta": meta, "distance": dist}
+                    except Exception as q_err:
+                        print(f"Rule DB query error for '{q}': {q_err}")
+
+                    try:
+                        ref_res = reference_db.query(query_texts=[q], n_results=n_results_per_query, where=where_clause)
+                        if ref_res and ref_res.get("documents") and ref_res["documents"][0]:
+                            for i, doc_text in enumerate(ref_res["documents"][0]):
+                                meta = ref_res["metadatas"][0][i] if ref_res.get("metadatas") else {}
+                                dist = ref_res["distances"][0][i] if ref_res.get("distances") else 1.0
+                                fname = meta.get("filename", "이름없음")
+                                
+                                # [보정 알고리즘] 쿼리 텍스트와 파일명 키워드 매칭 보너스 부여
+                                fname_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', fname.replace(".pdf", "")).lower()
+                                q_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', q).lower()
+                                if q_clean and fname_clean:
+                                    if q_clean in fname_clean or fname_clean in q_clean:
+                                        dist = min(dist, 0.1)
+
+                                if fname not in ref_docs_map or dist < ref_docs_map[fname]["distance"]:
+                                    ref_docs_map[fname] = {"doc_text": doc_text, "meta": meta, "distance": dist}
+                    except Exception as q_err:
+                        print(f"Reference DB query error for '{q}': {q_err}")
+
+                # distance 기준 오름차순 통합 정렬 후 상위 최대 6개 추출 (Safe Limit)
+                sorted_rules = sorted(rule_docs_map.values(), key=lambda x: x["distance"])
+                sorted_refs = sorted(ref_docs_map.values(), key=lambda x: x["distance"])
+
+                final_rules = sorted_rules[:6]
+                final_refs = sorted_refs[:6]
+
+
+                # [터미널 검색 현황 출력 - cp949 인코딩 에러 방지를 위해 이모지 제거]
+                matched_rule_files = [d["meta"].get("filename", "이름없음") for d in final_rules]
+                matched_ref_files = [d["meta"].get("filename", "이름없음") for d in final_refs]
+                print(f"[RAG 검색 성공] Rule DB 매칭 문서: {matched_rule_files}")
+                print(f"[RAG 검색 성공] Reference DB 매칭 문서: {matched_ref_files}")
+
+                if final_rules:
                     formatted_docs = []
-                    for i, doc_text in enumerate(rule_res["documents"][0]):
-                        meta = rule_res["metadatas"][0][i] if rule_res.get("metadatas") else {}
-                        meta_title = meta.get("title", "출처 불명")
-                        formatted_docs.append(f"◆ [출처 문서: {meta_title}]\n{doc_text}")
-                        
+                    for d in final_rules:
+                        meta_title = d["meta"].get("title", "출처 불명")
+                        formatted_docs.append(f"◆ [출처 문서: {meta_title}]\n{d['doc_text']}")
                     chroma_context += "[규정/팩트 문서]\n" + "\n\n".join(formatted_docs) + "\n\n"
-                    if rule_res.get("metadatas"): results_metadatas.extend(rule_res["metadatas"][0])
+                    results_metadatas.extend([d["meta"] for d in final_rules])
                     
-                if ref_res and ref_res.get("documents") and ref_res["documents"][0]:
+                if final_refs:
                     formatted_refs = []
-                    for i, doc_text in enumerate(ref_res["documents"][0]):
-                        meta = ref_res["metadatas"][0][i] if ref_res.get("metadatas") else {}
-                        meta_title = meta.get("title", "출처 불명")
-                        formatted_refs.append(f"◆ [참조/양식 문서: {meta_title}]\n{doc_text}")
-                        
+                    for d in final_refs:
+                        meta_title = d["meta"].get("title", "출처 불명")
+                        formatted_refs.append(f"◆ [참조/양식 문서: {meta_title}]\n{d['doc_text']}")
                     chroma_context += "[참조/양식 문서]\n" + "\n\n".join(formatted_refs) + "\n\n"
-                    if ref_res.get("metadatas"): results_metadatas.extend(ref_res["metadatas"][0])
+                    results_metadatas.extend([d["meta"] for d in final_refs])
+
             except Exception as chroma_err:
                 print(f"ChromaDB 검색 오류: {chroma_err}")
+
 
         # =======================================================
         # [Step 4] 최종 하이브리드 답변 생성
@@ -1049,6 +1125,15 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 print(f"=== [수신된 스크랩 컨텍스트 (미리보기)] ===\n{request.scraped_context[:200]}...\n===========================")
         else:
             print("=== [스크랩 컨텍스트 없음] ===")
+
+        # [NEW] 이전 대화 기록 가공
+        history_context = ""
+        if request.history:
+            for msg in request.history:
+                role = "사용자" if msg.get("isUser", False) else "AI"
+                history_context += f"{role}: {msg.get('text', '')}\n"
+        else:
+            history_context = "이전 대화 내역 없음"
 
         prompt = f"""
 너는 대동대학교 입시처 행정 검토 전문 AI 아키텍트야.
@@ -1073,6 +1158,11 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 (과거 규정/조직 문서(판단 기준 2)에 기재된 정보보다 우선하여 적용할 실시간 변경 팩트 및 예외 규정입니다. 대조 대상 문서 내 인명이나 결재선 정보가 아래 팩트와 상충할 경우, 반드시 아래 팩트를 기준으로 최종 정합성을 판단하세요.)
 {supplemental_context if supplemental_context else "등록된 실시간 보완 지식 없음"}
 </판단 기준 3: 실시간 보완 지식 (최신 인사 정보 및 행정 예외 정책)>
+
+<이전 대화 기록>
+(사용자와 주고받은 최근 대화 맥락입니다. 질문의 대명사나 지칭 대상이 모호할 경우 이 맥락을 바탕으로 이해하세요.)
+{history_context}
+</이전 대화 기록>
 
 <사용자 지시사항>
 {request.question}
@@ -1107,16 +1197,21 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 13. **[LaTeX 수학 기호 사용 절대 금지 및 유니코드 화살표 기호 사용]**:
    - 답변 내에 LaTeX 수학 기호(예: `\rightarrow`, `\implies`, `\times` 등)를 절대로 사용하지 마십시오. 마크다운 환경에서 렌더링되지 않고 텍스트 그대로 노출되어 가독성을 저해합니다.
    - 대신 반드시 일반 유니코드 화살표 기호(예: `→`, `⇒`, `×` 등)를 사용해 가독성 있게 작성하십시오. (예: `622명 → 623명`)
- 14. **[실시간 보완 지식 활용 및 분석 평가 출력 금지 지침 (엄격 적용)]**:
-    - <판단 기준 3: 실시간 보완 지식>에 나열된 모든 사전지식 정보(인사/조직, 결재라인, 예외규정, 기타 등 모든 분류 포함)는 문서 검토 시 **오류나 결함으로 오판하여 잘못 지적하는 것을 차단하기 위한 '무죄 증명(예외 처리)' 용도**로만 조용히 참고하십시오.
-    - 해당 사전지식을 정상적으로 반영하여 정합성이 검증된 사항에 대하여, **답변 본문에서 'OOO 규정/인사는 사전지식에 따라 적정하다', 'OOO 규칙은 예외 적용되므로 문제 없다' 등과 같이 개별 사항의 적정성이나 확인 여부를 구구절절 변호하고 나열하는 분석/평가 문구를 절대 출력하지 마십시오.**
-    - 문제가 없는 정상적인 사항은 본문에 일절 언급하지 않고 조용히 패스하고, 오직 실제 위반되거나 헛점이 있는 결함 사항들 위주로만 답변을 명료하게 구성하십시오.
+ 14. **[🚨 실시간 보완 지식 한정 변호/해명 서술 금지 및 일반 RAG 규정/예산 대조 성공 팩트 노출 허용]**:
+     - <판단 기준 3: 실시간 보완 지식>에 등재된 최신 인사정보 및 행정 예외 정책에 의하여 정상(무죄) 참작된 건에 대해서만 "인사 발령이므로 적법하다", "전결권 예외 정책에 부합한다" 등의 구구절절한 변호, 해명, 적정성 해설 문구를 최종 답변 본문의 어떤 영역에서도 절대 서술하지 말고 침묵(생략)하십시오.
+     - 그러나 <판단 기준 2: 사내 규정 및 과거 문서 (RAG)>에 있는 예산서나 부서 운영 계획서 등의 수치와 대조하여 기안 금액이 적정 범위 내에 있음이 확인된 일반 팩트 검증 사항은 **"예산 한도 대조 결과: 부서 계획서상 예산 범위(4,000,000원) 내 적정 집행 확인"**과 같이 객관적인 교차 검증 성공 사실을 답변 본문에 포함하여 보고할 수 있습니다.
+     - 즉, 예외 지식(판단 기준 3)으로 인하여 면죄부를 받은 항목에 한해서만 변호하지 말고 감춰야 하며, 일반 사내 규정(판단 기준 2)에 부합하는 일반적인 팩트 검증 성공 사항은 답변에 간결하게 반영하십시오.
  15. **[사용자 질문 의도 파악 및 우선순위 구성 지침]**:
    - 사용자가 질문을 던졌을 때, 단순 기계적으로 미리 정해진 고정된 포맷만 따르지 마십시오.
    - **사용자가 무엇을 가장 먼저 보고 싶어 하는지(의도)를 먼저 면밀히 파악**하십시오. 
    - 예를 들어, 서류와 DB의 정합성 대조가 주 목적이라면 대조 결과 리스트(일치/불일치)를 최상단에 바로 배치하고, 학칙/규정 준수 여부 검토가 핵심이라면 검토 의견 및 규정 근거를 최상단에 배치하여 답변의 순서와 구성을 질문 의도에 완벽히 정렬하십시오.
 16. **[실시간 지식 업데이트 성공 시 피드백 알림 강제]**:
    - 만약 아래 <지식 업데이트 반영 내역>에 저장 성공 또는 삭제 완료와 관련된 알림 메시지(예: `[알림] ...`)가 포함되어 있다면, **해당 알림 메시지를 답변의 가장 최상단 첫 줄에 마크다운 굵은 글씨 또는 인용구 형태로 100% 원문 그대로 노출**하고 한 줄 띄운 다음 본 답변을 작성하십시오.
+17. **[RAG 검색 한계 인지 및 오판 방지 지침 (엄격 적용)]**:
+    - AI 모델은 RAG(<판단 기준 2: 사내 규정 및 과거 문서 (RAG)>)로 인출된 텍스트 조각들이 해당 규정/문서 전체를 완벽히 대변하지 않음을 명확히 인지해야 합니다.
+    - RAG로 인출된 문서 본문 조각에 특정 수치(예: 학교폭력 9호 퇴학 감점 조항 등)가 명시적으로 보이지 않더라도, "사내 규정이나 모집요강에 해당 조항이 누락되었다"거나 "정량평가 표의 항목이 일치하지 않는다"고 성급하게 오판하여 사용자의 서류(스크랩/첨부 문서)에 기재된 정상적인 항목을 누락 및 오류로 지적하지 마십시오.
+    - 본인이 RAG로 인출한 텍스트 조각 중 1~8호 등의 일부만 식별되어 9호 조치가 실제 규정에 존재하는지 확신할 수 없을 경우, 이를 누락 오류로 지적하는 대신 "모집요강 본문 규정 확인이 필요합니다" 또는 "관련 규정의 전체 표를 재확인해야 합니다"와 같이 유보적으로 답변하거나, 아예 지적하지 마십시오. (참고: 대동대학교 2027학년도 모집요강 43페이지에는 1호부터 9호 감점 기준이 실재합니다.)
+
 
 <지식 업데이트 반영 내역>
 {k_feedback_msg if k_feedback_msg else "수행된 업데이트 내역 없음"}

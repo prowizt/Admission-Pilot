@@ -291,7 +291,8 @@ async function sendMessage() {
   const payload = {
     question: text,
     user_role: 'staff',
-    model_name: currentActiveModel.modelName
+    model_name: currentActiveModel.modelName,
+    history: chatHistory.slice(-6)
   };
 
   if (scrapedContext) {
@@ -535,7 +536,7 @@ async function processFile(file) {
     if (data.status === 'success') {
       resetScrapState(); // 기존 상태 모두 초기화
       
-      scrapedContext = data.text.substring(0, 5000); // 파싱된 텍스트 저장 (최대 5000자)
+      scrapedContext = data.text.substring(0, 50000); // 파싱된 텍스트 저장 (최대 50000자)
       scrapedFileName = file.name; // [NEW] 파일명 저장
       uploadFilename.innerText = file.name;
       uploadFilename.title = file.name;
