@@ -14,6 +14,7 @@ import pyodbc
 import pdfplumber
 import openpyxl
 import google.generativeai as genai
+from fastapi.staticfiles import StaticFiles
 
 # 서버 초기화: 입시처 통합 AI 지식 관리 시스템 중앙 통제소
 app = FastAPI(
@@ -29,6 +30,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# [정적 파일 배포] 크롬 확장 프로그램 소스(HTML/JS)를 웹 대시보드에서 이중개발 없이 그대로 재사용할 수 있도록 호스팅합니다.
+app.mount("/extension", StaticFiles(directory="../extension"), name="extension")
 
 # ==========================================
 # [0] AI 페르소나 및 시스템 프롬프트

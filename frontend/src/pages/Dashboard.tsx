@@ -296,8 +296,8 @@ export default function Dashboard() {
                         paginatedDocuments.map(doc => (
                           <tr key={doc.doc_id} onClick={() => { setSelectedDoc(doc); setIsModalOpen(true); }} className="border-b border-gray-100 hover:bg-indigo-50/30 transition-colors cursor-pointer group">
                             <td className="px-4 py-3 min-w-0 text-center">
-                              <span className={`text-[10px] px-2 py-1 rounded font-bold block mb-1 ${doc.doc_type === 'rule' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
-                                {doc.doc_type.toUpperCase()}
+                              <span className={`text-[10px] px-2 py-1 rounded font-bold block mb-1 ${(doc.doc_type || '').toLowerCase() === 'rule' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
+                                {(doc.doc_type || 'UNKNOWN').toUpperCase()}
                               </span>
                               <span className="text-[11px] font-bold text-gray-400">{doc.year}</span>
                             </td>
@@ -340,8 +340,8 @@ export default function Dashboard() {
                     <div key={doc.doc_id} onClick={() => { setSelectedDoc(doc); setIsModalOpen(true); }} className="p-3 hover:bg-indigo-50/50 active:bg-indigo-50 transition-colors cursor-pointer flex flex-col gap-1.5 min-w-0">
                       <div className="flex justify-between items-start min-w-0">
                         <div className="flex items-center gap-1.5 min-w-0 pr-2">
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold shrink-0 ${doc.doc_type === 'rule' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
-                            {doc.doc_type.toUpperCase()}
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold shrink-0 ${(doc.doc_type || '').toLowerCase() === 'rule' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
+                            {(doc.doc_type || 'UNKNOWN').toUpperCase()}
                           </span>
                           <span className="font-bold text-gray-800 text-sm truncate">{doc.title}</span>
                         </div>

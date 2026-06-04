@@ -8,8 +8,15 @@ export default function App() {
       <Routes>
         <Route path="/" element={<MainLayout />}>
           <Route index element={<Dashboard />} />
-          {/* 향후 Chat, Settings 라우트 추가 예정 */}
-          <Route path="chat" element={<div className="p-4">AI 챗봇 화면 준비 중...</div>} />
+          <Route path="chat" element={
+            <div className="w-full h-[calc(100vh-140px)] min-h-[550px] border border-slate-200/80 rounded-2xl overflow-hidden shadow-lg bg-white flex flex-col transition-all duration-300 hover:shadow-xl">
+              <iframe 
+                src="/extension/sidepanel.html" 
+                className="w-full flex-1 border-none m-0 p-0"
+                title="대동대 AI 헬퍼 (웹 테스트 환경)"
+              />
+            </div>
+          } />
         </Route>
       </Routes>
     </BrowserRouter>

@@ -1,3 +1,39 @@
+// ==========================================
+// [웹 호스팅 대응] 크롬 확장 API가 없는 일반 웹 브라우저(iframe) 환경 지원을 위한 Mocking 로직
+// ==========================================
+if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+  window.chrome = {
+    storage: {
+      local: {
+        get: (keys, callback) => {
+          const result = {};
+          keys.forEach(key => {
+            const val = localStorage.getItem(key);
+            try {
+              result[key] = val ? JSON.parse(val) : null;
+            } catch (e) {
+              result[key] = val;
+            }
+          });
+          callback(result);
+        },
+        set: (items, callback) => {
+          Object.entries(items).forEach(([key, val]) => {
+            localStorage.setItem(key, JSON.stringify(val));
+          });
+          if (callback) callback();
+        }
+      }
+    },
+    tabs: {
+      query: (queryInfo, callback) => {
+        // 일반 웹페이지 환경에서는 브라우저 탭 텍스트 스크랩을 수행할 수 없으므로 빈 결과를 반환합니다.
+        callback([]);
+      }
+    }
+  };
+}
+
 const chatContainer = document.getElementById('chat-container');
 const chatInput = document.getElementById('chat-input');
 const btnSend = document.getElementById('btn-send');
@@ -401,7 +437,7 @@ btnClearUpload.addEventListener('click', (e) => {
 });
 
 // 탭 활성화 감지하여 스크랩 상태 초기화
-if (typeof chrome !== 'undefined' && chrome.tabs) {
+if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.onActivated && chrome.tabs.onUpdated) {
   chrome.tabs.onActivated.addListener((activeInfo) => {
     if (scrapedContext) resetScrapState();
   });
@@ -418,6 +454,12 @@ if (typeof chrome !== 'undefined' && chrome.tabs) {
 }
 
 btnScrap.addEventListener('click', async () => {
+  // 일반 웹 브라우저(iframe) 환경인 경우 브라우저 보안 제약 안내
+  if (typeof chrome === 'undefined' || !chrome.tabs || !chrome.tabs.query || !chrome.scripting) {
+    alert("ℹ️ 웹 테스트 대시보드 환경에서는 브라우저 보안 정책상 다른 탭 화면을 강제 스크랩할 수 없습니다.\n\n정확한 1:1 대조 및 검토 테스트를 원하시면 파일 첨부(📎) 기능을 이용하시거나, 실제 크롬 확장 프로그램을 구동하여 사용해 주시기 바랍니다!");
+    return;
+  }
+
   // 이미 스크랩된 상태라면 해제 (토글 오프)
   if (scrapedContext) {
     resetScrapState();
