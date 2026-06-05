@@ -9,6 +9,21 @@ Columns:
  - created_at (datetime(8)) NULL
 
 =========================================
+Table: Sys_AIAuditLog (AI 챗봇 대화 및 모니터링 로그)
+=========================================
+Columns:
+ - [PK] id (int(4)) NOT NULL
+ - user_role (varchar(50)) NULL -- 사용자 직군(부서)
+ - model_name (varchar(100)) NULL -- 사용된 AI 모델명
+ - question (nvarchar) NULL -- 사용자 실제 질문 원문
+ - scraped_context (nvarchar) NULL -- 참고한 웹/스크랩 텍스트
+ - sql_query (nvarchar) NULL -- 생성된 T-SQL 쿼리 (없으면 NONE)
+ - rag_query (nvarchar) NULL -- RAG 문서 검색 키워드
+ - answer (nvarchar) NULL -- AI가 응답한 최종 답변
+ - latency_ms (int(4)) NULL -- 응답 소요 시간(ms)
+ - created_at (datetime(8)) NULL -- 로그 생성 일시
+
+=========================================
 Table: Sys_ColumnCatalog (컬럼 레벨 보안(CLS) 및 AI 힌트 카탈로그)
 =========================================
 Columns:

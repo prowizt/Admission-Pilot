@@ -123,7 +123,7 @@ export default function Dashboard() {
     const endIdx = Math.min(currentPage * ITEMS_PER_PAGE, totalItems);
 
     return (
-      <div className="flex flex-col sm:flex-row justify-between items-center mt-6 mb-2 gap-3 min-w-0 px-2">
+      <div className="flex flex-col sm:flex-row justify-between items-center my-3 gap-3 min-w-0 px-2">
         <div className="text-[11px] md:text-xs text-gray-500 font-bold">
           총 {totalItems}건 중 {startIdx} - {endIdx}건 표시
         </div>
@@ -282,9 +282,9 @@ export default function Dashboard() {
                   <table className="w-full text-left border-collapse min-w-[600px]">
                     <thead>
                       <tr className="bg-slate-100 border-b border-slate-300">
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-24">유형/연도</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-1/3">문서 제목 (파일명)</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700">AI 참조 설명 (Hint)</th>
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-20 text-center">유형</th>
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-20 text-center">연도</th>
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700">문서 제목</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">권한</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">등록일</th>
                       </tr>
@@ -295,38 +295,45 @@ export default function Dashboard() {
                       ) : (
                         paginatedDocuments.map(doc => (
                           <tr key={doc.doc_id} onClick={() => { setSelectedDoc(doc); setIsModalOpen(true); }} className="border-b border-gray-100 hover:bg-indigo-50/30 transition-colors cursor-pointer group">
-                            <td className="px-4 py-3 min-w-0 text-center">
-                              <span className={`text-[10px] px-2 py-1 rounded font-bold block mb-1 ${(doc.doc_type || '').toLowerCase() === 'rule' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
+                            <td className="px-4 py-4 min-w-0 text-center whitespace-nowrap">
+                              <span className={`text-[10px] px-2 py-1 rounded font-bold inline-block ${(doc.doc_type || '').toLowerCase() === 'rule' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
                                 {(doc.doc_type || 'UNKNOWN').toUpperCase()}
                               </span>
-                              <span className="text-[11px] font-bold text-gray-400">{doc.year}</span>
                             </td>
-                            <td className="px-4 py-3 min-w-0">
+                            <td className="px-4 py-4 min-w-0 text-center whitespace-nowrap">
+                              <span className="text-xs font-bold text-gray-500">{doc.year}</span>
+                            </td>
+                            <td className="px-4 py-4 min-w-0">
                               <div className="flex items-center gap-2">
                                 <div className="font-bold text-gray-800 text-sm truncate">{doc.title}</div>
-                                <button onClick={(e) => { e.stopPropagation(); handlePreview(doc.doc_type, doc.doc_id, doc.title); }} className="px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded text-[10px] font-bold hover:bg-indigo-100 flex items-center gap-1 whitespace-nowrap">
+                                <button onClick={(e) => { e.stopPropagation(); handlePreview(doc.doc_type, doc.doc_id, doc.title); }} className="px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded text-[10px] font-bold hover:bg-indigo-100 flex items-center gap-1 whitespace-nowrap shrink-0">
                                   <Eye size={10} /> 본문
                                 </button>
                               </div>
-                              <div className="text-[11px] text-gray-400 truncate mt-0.5">{doc.filename}</div>
                             </td>
-                            <td className="px-4 py-3 min-w-0">
-                              <p className="text-[11px] text-gray-500 truncate max-w-sm" title={doc.description}>{doc.description}</p>
-                            </td>
-                            <td className="px-4 py-3 text-center whitespace-nowrap">
+                            <td className="px-4 py-4 text-center whitespace-nowrap">
                               {doc.is_public === 'Y' ? (
                                 <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded whitespace-nowrap"><Globe size={12}/> 대외공개</span>
                               ) : (
                                 <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded whitespace-nowrap"><Lock size={12}/> 직원전용</span>
                               )}
                             </td>
-                            <td className="px-4 py-3 text-center text-[11px] text-gray-500 font-mono whitespace-nowrap">
+                            <td className="px-4 py-4 text-center text-[11px] text-gray-500 font-mono whitespace-nowrap">
                               {doc.uploaded_at}
                             </td>
                           </tr>
                         ))
                       )}
                     </tbody>
+                    {filteredDocuments.length > 0 && (
+                      <tfoot className="bg-slate-100 border-t border-slate-300">
+                        <tr>
+                          <td colSpan={5} className="py-1 px-4">
+                            {renderPagination(docPage, docTotalPages, setDocPage, filteredDocuments.length)}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    )}
                   </table>
                 </div>
               </div>
@@ -358,7 +365,9 @@ export default function Dashboard() {
                   ))
                 )}
               </div>
-              {filteredDocuments.length > 0 && renderPagination(docPage, docTotalPages, setDocPage, filteredDocuments.length)}
+              <div className="md:hidden">
+                {filteredDocuments.length > 0 && renderPagination(docPage, docTotalPages, setDocPage, filteredDocuments.length)}
+              </div>
             </>
           )}
 
@@ -408,6 +417,15 @@ export default function Dashboard() {
                         ))
                       )}
                     </tbody>
+                    {filteredTables.length > 0 && (
+                      <tfoot className="bg-slate-100 border-t border-slate-300">
+                        <tr>
+                          <td colSpan={5} className="py-1 px-4">
+                            {renderPagination(tablePage, tableTotalPages, setTablePage, filteredTables.length)}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    )}
                   </table>
                 </div>
               </div>
@@ -440,7 +458,9 @@ export default function Dashboard() {
                   ))
                 )}
               </div>
-              {filteredTables.length > 0 && renderPagination(tablePage, tableTotalPages, setTablePage, filteredTables.length)}
+              <div className="md:hidden">
+                {filteredTables.length > 0 && renderPagination(tablePage, tableTotalPages, setTablePage, filteredTables.length)}
+              </div>
             </>
           )}
 
@@ -490,6 +510,15 @@ export default function Dashboard() {
                         ))
                       )}
                     </tbody>
+                    {filteredSupplemental.length > 0 && (
+                      <tfoot className="bg-slate-100 border-t border-slate-300">
+                        <tr>
+                          <td colSpan={4} className="py-1 px-4">
+                            {renderPagination(knowledgePage, knowledgeTotalPages, setKnowledgePage, filteredSupplemental.length)}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    )}
                   </table>
                 </div>
               </div>
@@ -522,7 +551,9 @@ export default function Dashboard() {
                   ))
                 )}
               </div>
-              {filteredSupplemental.length > 0 && renderPagination(knowledgePage, knowledgeTotalPages, setKnowledgePage, filteredSupplemental.length)}
+              <div className="md:hidden">
+                {filteredSupplemental.length > 0 && renderPagination(knowledgePage, knowledgeTotalPages, setKnowledgePage, filteredSupplemental.length)}
+              </div>
             </>
           )}
 

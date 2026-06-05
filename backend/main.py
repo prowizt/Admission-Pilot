@@ -5,6 +5,7 @@ import os
 import re
 import io
 import uuid
+import time
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -733,6 +734,7 @@ async def sync_external_table(
 
 @app.post("/chat")
 async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
+    start_time = time.time()
     if not x_gemini_key:
         raise HTTPException(status_code=401, detail="Gemini API Key가 필요합니다.")
 
@@ -786,6 +788,9 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
            - 사용자가 제시한 `[질문]` 하단에는 스크랩되거나 첨부된 문서의 표 내용(예: 학과명, 지원인원, 최종등록자수, 정원내외구분, 신입편입여부 등)이 포함되어 있습니다.
            - 너는 이 문서 내용의 데이터 레이아웃과 구체적인 표 구조를 자세히 파악해야 해.
            - 만약 표에 **학과별 지원 수치 및 등록 수치**, **신입생/편입생 구분**, **정원내/외 구분** 등이 있다면, DB에서 이 수치들과 1:1로 직접 교차 검토(대조)가 가능하도록, **`[지원학과명]`, `[신입편입구분]`, `[정원내외명]`을 GROUP BY 절과 SELECT 절에 반드시 누락 없이 반영하여 학과별/전형구분별 세부 데이터(지원인원 수 및 등록자 수)를 집계하는 T-SQL 쿼리**를 영리하게 빌드해 내야 합니다. 단순히 전체 합계만 조회하는 쿼리로 퉁치지 말고, 서류의 표 구조와 1:1 매칭되는 상세 통계 쿼리를 작성하세요.
+        9. **[구매/예산/계약 문서 감지 및 RAG 쿼리 확장 규칙]**:
+           - 사용자의 [질문]이나 스크랩된 문서 내용(제목 등)에 '원인기안', '제작 계획', '구입', '품의', '지출', '계약' 등의 실무 행정/예산 집행 키워드가 감지될 경우, 명시적으로 '구매'나 '예산'이라는 단어가 없더라도 이는 100% 구매 및 예산 관련 기안문으로 간주해야 합니다.
+           - 이 경우 AI는 행정 결재선뿐만 아니라 금액 및 예산 한도의 적정성을 필수적으로 검토해야 하므로, **반드시 `rag_search_query`에 '구매예산규정, 재무회계규정' 등 사내 예산/구매 관련 핵심 규정 문서 명칭을 강제로 추가**하여 RAG 검색 풀에 포함시키십시오.
 
 
         {dynamic_schema}
@@ -1203,6 +1208,8 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
    - 대신 반드시 일반 유니코드 화살표 기호(예: `→`, `⇒`, `×` 등)를 사용해 가독성 있게 작성하십시오. (예: `622명 → 623명`)
  14. **[🚨 실시간 보완 지식 한정 변호/해명 서술 금지 및 일반 RAG 규정/예산 대조 성공 팩트 노출 허용]**:
      - <판단 기준 3: 실시간 보완 지식>에 등재된 최신 인사정보 및 행정 예외 정책에 의하여 정상(무죄) 참작된 건에 대해서만 "인사 발령이므로 적법하다", "전결권 예외 정책에 부합한다" 등의 구구절절한 변호, 해명, 적정성 해설 문구를 최종 답변 본문의 어떤 영역에서도 절대 서술하지 말고 침묵(생략)하십시오.
+ 15. **[상세/빠짐없는 분석 요청 시 동적 분량 조절]**:
+     - 사용자가 질문에서 "빠짐없이", "상세히", "길게", "모두 다" 등 전체를 심층 분석해 달라는 명시적 지시를 한 경우, 기본 요약 방식을 해제하고 문서를 처음부터 끝까지 샅샅이 뒤져 발견된 모든 규정 위반, 예산 문제, 팩트 오류를 생략 없이 최대한 구체적이고 길게 리포트 형식으로 작성하십시오.
      - 그러나 <판단 기준 2: 사내 규정 및 과거 문서 (RAG)>에 있는 예산서나 부서 운영 계획서 등의 수치와 대조하여 기안 금액이 적정 범위 내에 있음이 확인된 일반 팩트 검증 사항은 **"예산 한도 대조 결과: 부서 계획서상 예산 범위(4,000,000원) 내 적정 집행 확인"**과 같이 객관적인 교차 검증 성공 사실을 답변 본문에 포함하여 보고할 수 있습니다.
      - 즉, 예외 지식(판단 기준 3)으로 인하여 면죄부를 받은 항목에 한해서만 변호하지 말고 감춰야 하며, 일반 사내 규정(판단 기준 2)에 부합하는 일반적인 팩트 검증 성공 사항은 답변에 간결하게 반영하십시오.
  15. **[사용자 질문 의도 파악 및 우선순위 구성 지침]**:
@@ -1225,6 +1232,34 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         
         # 스크랩된 대량의 텍스트를 처리할 수 있도록 타임아웃을 60초로 넉넉하게 연장
         response = final_model.generate_content(prompt, request_options={"timeout": 60})
+        
+        # [NEW] Audit Log 기록
+        latency_ms = int((time.time() - start_time) * 1000)
+        try:
+            audit_conn = get_mssql_connection()
+            if audit_conn:
+                cursor = audit_conn.cursor()
+                
+                # cp949 인코딩 에러 방지를 위해 호환되지 않는 특수문자/이모지 제거
+                def safe_str(txt):
+                    if not txt: return ""
+                    return str(txt).encode('cp949', errors='ignore').decode('cp949')
+
+                cursor.execute("""
+                    INSERT INTO Sys_AIAuditLog (
+                        user_role, model_name, question, scraped_context, 
+                        sql_query, rag_query, answer, latency_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    safe_str(request.user_role), safe_str(request.model_name), safe_str(request.question), safe_str(request.scraped_context),
+                    safe_str(sql_query), safe_str(rag_query), safe_str(response.text), latency_ms
+                ))
+                audit_conn.commit()
+                cursor.close()
+                audit_conn.close()
+        except Exception as audit_err:
+            print(f"Audit Log 기록 오류: {audit_err}")
+
         return {
             "status": "success",
             "answer": response.text,
@@ -1233,6 +1268,69 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI 답변 생성 중 오류 발생: {str(e)}")
+
+
+class AnalyticsRequest(BaseModel):
+    questions: List[str]
+
+@app.get("/logs/audit")
+async def get_audit_logs():
+    """최근 대화 모니터링 로그 100건 조회"""
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL 연결 실패")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT TOP 100 id, user_role, model_name, question, scraped_context, 
+                   sql_query, rag_query, answer, latency_ms,
+                   CONVERT(VARCHAR(19), created_at, 120) AS created_at
+            FROM Sys_AIAuditLog
+            ORDER BY id DESC
+        """)
+        columns = [column[0] for column in cursor.description]
+        logs = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return {"status": "success", "data": logs}
+    except Exception as e:
+        print(f"Audit Log 조회 오류: {e}")
+        return {"status": "error", "data": []}
+    finally:
+        if conn:
+            conn.close()
+
+@app.post("/logs/analytics")
+async def analyze_audit_logs(req: AnalyticsRequest, x_gemini_key: str = Header(None)):
+    """최근 로그 기반 핵심 키워드 및 개선점 AI 추출"""
+    if not x_gemini_key:
+        raise HTTPException(status_code=401, detail="Gemini API Key가 필요합니다.")
+    try:
+        genai.configure(api_key=x_gemini_key)
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        
+        prompt = f"""
+        너는 대학교 입시처의 데이터 분석가야.
+        교직원들이 입시 챗봇에 최근 질문한 아래 {len(req.questions)}개의 질의 내역을 분석해서, 
+        어떤 규정이나 정보가 더 보완되어야 할지, 어떤 주제가 핫한지 인사이트를 도출해줘.
+        
+        출력 형식(반드시 마크다운 기호 없이 순수 JSON만 출력해):
+        {{
+            "keywords": ["핫키워드1", "핫키워드2", "핫키워드3", "핫키워드4", "핫키워드5"],
+            "weak_points": [
+                {{"topic": "취약 주제 1", "reason": "이 질문 패턴이 많아서 RAG 보완 필요"}},
+                {{"topic": "취약 주제 2", "reason": "이런 세부 수치 비교 요청이 늘고 있음"}}
+            ]
+        }}
+        
+        질문 리스트:
+        {req.questions}
+        """
+        resp = model.generate_content(prompt)
+        text = resp.text.strip().replace("```json", "").replace("```", "")
+        import json
+        return {"status": "success", "data": json.loads(text)}
+    except Exception as e:
+        print(f"Analytics 오류: {e}")
+        return {"status": "error", "message": str(e)}
 
 
 @app.get("/catalog/tables")
