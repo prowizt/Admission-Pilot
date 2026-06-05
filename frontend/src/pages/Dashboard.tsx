@@ -147,20 +147,27 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="h-full flex flex-col min-w-0 pb-24 md:pb-6">
+    <div className="h-full flex flex-col min-w-0 pb-24 md:pb-6 overflow-y-auto bg-slate-50/50 p-4 md:p-6">
       
       {/* 1. Header & Tabs */}
-      <div className="bg-indigo-900 rounded-t-xl shadow-md pt-4 px-6 shrink-0 min-w-0 flex flex-col">
-        <div className="flex justify-between items-center mb-4 min-w-0">
-          <div className="min-w-0">
+      <div className="bg-gradient-to-br from-indigo-900 via-indigo-800 to-purple-900 rounded-t-xl shadow-md pt-4 px-6 shrink-0 min-w-0 flex flex-col relative overflow-hidden text-white">
+        <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none">
+          <Database size={120} />
+        </div>
+
+        <div className="relative z-10 flex justify-between items-center mb-4 min-w-0">
+          <div className="min-w-0 flex items-center gap-3">
+            <div className="bg-white/10 p-2 rounded-lg backdrop-blur-sm border border-white/10">
+              <Database className="text-amber-400" size={20} />
+            </div>
             <h1 className="text-lg md:text-xl font-extrabold text-white tracking-tight flex items-center gap-2">
-              <Database className="text-indigo-300" size={20} /> 지식 카탈로그 관리
+              지식 카탈로그 관리
             </h1>
           </div>
         </div>
 
         {/* Custom Tab Menu */}
-        <div className="flex gap-1 overflow-x-auto min-w-0">
+        <div className="relative z-10 flex gap-1 overflow-x-auto min-w-0 mt-2">
           <button
             onClick={() => { setActiveTab('documents'); setSearchQuery(''); }}
             className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap flex items-center gap-2 ${

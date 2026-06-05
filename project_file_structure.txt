@@ -1,10 +1,11 @@
 =========================================
  Admission-Pilot Structure Tree
- Generated at: 2026-06-05 08:54:22
+ Generated at: 2026-06-06 08:17:54
 =========================================
 .
 ├── 2026학년도 입학전형 운영 결과 보고.pdf
 ├── AI_GUIDELINES.md
+├── [입학홍보처] 2027학년도 신입생 모집요강 및 입학원서 제작 계획 (원인기안).pdf
 ├── backend/
 │   ├── main.py  # 메인 서버 및 API 엔드포인트
 │   └── requirements.txt

@@ -406,7 +406,7 @@ export default function Logs() {
       {selectedLog && createPortal(
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-slate-900/60 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-            <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-900 text-white shrink-0">
+            <div className="px-6 py-4 border-b border-indigo-800 flex justify-between items-center bg-indigo-900 text-white shrink-0">
               <h3 className="font-bold flex items-center gap-2">
                 <TerminalSquare size={18} className="text-indigo-400" />
                 로그 상세 (ID: #{selectedLog.id})
@@ -436,7 +436,6 @@ export default function Logs() {
               </div>
 
               <div className="bg-white p-5 rounded-xl border border-indigo-100 shadow-sm relative overflow-hidden">
-                <div className="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div>
                 <h4 className="font-bold text-indigo-900 mb-3 flex items-center gap-2">
                   <MessageSquare size={16} className="text-indigo-500"/> 원본 질문 (Question)
                 </h4>
@@ -477,7 +476,6 @@ export default function Logs() {
               ) : null}
 
               <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm relative overflow-hidden">
-                <div className="absolute top-0 left-0 w-1 h-full bg-slate-800"></div>
                 <h4 className="font-bold text-slate-800 mb-3 flex items-center gap-2">
                   <Sparkles size={16} className="text-slate-600"/> 최종 AI 답변 (Answer)
                 </h4>
