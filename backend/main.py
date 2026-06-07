@@ -746,6 +746,35 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         dynamic_schema = get_dynamic_db_schema(conn, request.user_role) if conn else "DB 연결 불가"
         
         # =======================================================
+        # [Step 1-0] 스크랩 데이터 클렌징 (그룹웨어 메뉴, 결재선 등 불필요한 텍스트 제거)
+        # =======================================================
+        if request.scraped_context:
+            def clean_scraped_context(text: str) -> str:
+                if not text: return ""
+                lines = text.split('\n')
+                cleaned = []
+                junk_keywords = {
+                    "메일", "전자결재", "일정", "공지사항", "자료실", "공유자원", "더보기",
+                    "완결문서", "회람지정", "인쇄", "COPY기안", "추가기능", "이전", "다음", "목록",
+                    "기안작성", "미결문서", "진행문서", "임시저장문서", "문서옵션", "대면결재", 
+                    "문서공개", "전체 다운로드", "전체다운로드(ZIP)", "선택파일 다운로드",
+                    "결재[대기]", "기안자[승인]" # UI 요소만 제거, 실제 이름과 직급은 보존
+                }
+                for line in lines:
+                    s = line.strip()
+                    if not s: continue
+                    if s in junk_keywords: continue
+                    
+                    if len(s) < 20:
+                        if "회람문서 (" in s or "완결문서 (" in s: continue
+                    if s.startswith("var uTop") or s.startswith("var uLeft") or s.startswith("var idx"): continue
+                    
+                    cleaned.append(s)
+                return "\n".join(cleaned)
+            
+            request.scraped_context = clean_scraped_context(request.scraped_context)
+
+        # =======================================================
         # [Step 1] NL2SQL: 사용자 질문 -> T-SQL 생성
         # =======================================================
         # 스크랩된 내용이 있다면 질문과 앞부분 키워드를 조합하여 관련된 DB 통계를 찾을 수 있도록 유도
@@ -1129,11 +1158,32 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         # [디버그] 프론트엔드에서 스크랩 컨텍스트가 분리되어 제대로 넘어왔는지 확인
         if request.scraped_context:
             if request.scraped_file_name:
-                print(f"=== [수신된 스크랩 컨텍스트 (미리보기: {request.scraped_file_name})] ===\n{request.scraped_context[:200]}...\n===========================")
+                print(f"[BACKEND] === [수신된 스크랩 컨텍스트 (미리보기: {request.scraped_file_name})] ===")
             else:
-                print(f"=== [수신된 스크랩 컨텍스트 (미리보기)] ===\n{request.scraped_context[:200]}...\n===========================")
+                print(f"[BACKEND] === [수신된 스크랩 컨텍스트 (미리보기)] ===")
+            
+            # 빈 줄을 제외하고 유효한 텍스트 라인만 추출
+            valid_lines = [line.strip() for line in request.scraped_context.split('\n') if line.strip()]
+            
+            # 처음 15줄 (제목/결재선 등)
+            for line in valid_lines[:15]:
+                print(f"[BACKEND] {line}")
+                
+            if len(valid_lines) > 30:
+                print("[BACKEND] ... [중간 생략] ...")
+                # 정중앙 부근의 15줄 (실제 본문/알맹이가 위치할 확률이 높음)
+                mid = len(valid_lines) // 2
+                for line in valid_lines[mid:mid+15]:
+                    print(f"[BACKEND] {line}")
+                print("[BACKEND] ... [하단 생략] ...")
+            else:
+                for line in valid_lines[15:]:
+                    print(f"[BACKEND] {line}")
+                    
+            print(f"[BACKEND] (총 {len(request.scraped_context)}자, 유효 텍스트 {len(valid_lines)}줄 정상 수신됨)")
+            print("[BACKEND] ===========================")
         else:
-            print("=== [스크랩 컨텍스트 없음] ===")
+            print("[BACKEND] === [스크랩 컨텍스트 없음] ===")
 
         # [NEW] 이전 대화 기록 가공
         history_context = ""
@@ -1249,11 +1299,15 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     INSERT INTO Sys_AIAuditLog (
                         user_role, model_name, question, scraped_context, 
                         sql_query, rag_query, answer, latency_ms
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ) 
+                    OUTPUT INSERTED.id
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     safe_str(request.user_role), safe_str(request.model_name), safe_str(request.question), safe_str(request.scraped_context),
                     safe_str(sql_query), safe_str(rag_query), safe_str(response.text), latency_ms
                 ))
+                inserted_row = cursor.fetchone()
+                log_id = inserted_row[0] if inserted_row else None
                 audit_conn.commit()
                 cursor.close()
                 audit_conn.close()
@@ -1262,6 +1316,7 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 
         return {
             "status": "success",
+            "log_id": log_id,
             "answer": response.text,
             "references": results_metadatas
         }
@@ -1283,7 +1338,7 @@ async def get_audit_logs():
         cursor = conn.cursor()
         cursor.execute("""
             SELECT TOP 100 id, user_role, model_name, question, scraped_context, 
-                   sql_query, rag_query, answer, latency_ms,
+                   sql_query, rag_query, answer, latency_ms, user_feedback,
                    CONVERT(VARCHAR(19), created_at, 120) AS created_at
             FROM Sys_AIAuditLog
             ORDER BY id DESC
@@ -1297,6 +1352,29 @@ async def get_audit_logs():
     finally:
         if conn:
             conn.close()
+
+class FeedbackRequest(BaseModel):
+    feedback: str = None  # 'UP', 'DOWN', or None
+
+@app.put("/logs/audit/{log_id}/feedback")
+async def update_log_feedback(log_id: int, req: FeedbackRequest):
+    """사용자/관리자 피드백 반영"""
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL 연결 실패")
+    try:
+        cursor = conn.cursor()
+        if req.feedback not in ['UP', 'DOWN']:
+            cursor.execute("UPDATE Sys_AIAuditLog SET user_feedback = NULL WHERE id = ?", (log_id,))
+        else:
+            cursor.execute("UPDATE Sys_AIAuditLog SET user_feedback = ? WHERE id = ?", (req.feedback, log_id))
+        conn.commit()
+        return {"status": "success", "message": "피드백이 반영되었습니다."}
+    except Exception as e:
+        print(f"피드백 반영 오류: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
 
 @app.post("/logs/analytics")
 async def analyze_audit_logs(req: AnalyticsRequest, x_gemini_key: str = Header(None)):

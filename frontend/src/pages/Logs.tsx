@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import axios from 'axios';
-import { Activity, BrainCircuit, MessageSquare, Database, Sparkles, AlertTriangle, Clock, RefreshCw, ChevronRight, X, TerminalSquare, BookOpen, Key, ChevronLeft } from 'lucide-react';
+import { Activity, BrainCircuit, MessageSquare, Database, Sparkles, AlertTriangle, Clock, RefreshCw, ChevronRight, X, TerminalSquare, BookOpen, Key, ChevronLeft, ThumbsUp, ThumbsDown } from 'lucide-react';
 
 export default function Logs() {
   const [activeTab, setActiveTab] = useState('logs');
@@ -43,7 +43,7 @@ export default function Logs() {
 
     try {
       setIsAnalyzing(true);
-      const questions = logs.slice(0, 50).map(l => l.question).filter(q => q && q.trim() !== '');
+      const questions = logs.filter(l => l.user_feedback !== 'UP').slice(0, 50).map(l => l.question).filter(q => q && q.trim() !== '');
       if (questions.length === 0) return alert('유효한 질문 데이터가 없습니다.');
       
       const res = await axios.post('http://127.0.0.1:8000/logs/analytics', 
@@ -63,6 +63,23 @@ export default function Logs() {
       setIsAnalyzing(false);
     }
   };
+
+  const toggleFeedback = async (logId: number, currentFeedback: string | null, targetFeedback: 'UP' | 'DOWN') => {
+    try {
+      const newFeedback = currentFeedback === targetFeedback ? null : targetFeedback;
+      const res = await axios.put(`http://127.0.0.1:8000/logs/audit/${logId}/feedback`, { feedback: newFeedback });
+      if (res.data.status === 'success') {
+        setLogs(prev => prev.map(l => l.id === logId ? { ...l, user_feedback: newFeedback } : l));
+        if (selectedLog && selectedLog.id === logId) {
+          setSelectedLog((prev: any) => ({ ...prev, user_feedback: newFeedback }));
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      alert('피드백 업데이트 실패');
+    }
+  };
+
 
   // Pagination Logic
   const totalPages = Math.ceil(logs.length / ITEMS_PER_PAGE) || 1;
@@ -195,12 +212,13 @@ export default function Logs() {
                       <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider w-[120px]">직군 / 모델</th>
                       <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider">질문 요약</th>
                       <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-center w-[100px]">반응 속도</th>
+                      <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-center w-[100px]">관리자 평가</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {paginatedLogs.length === 0 ? (
                       <tr>
-                        <td colSpan={4} className="py-16 text-center text-slate-400 font-medium text-sm bg-slate-50/50">
+                        <td colSpan={5} className="py-16 text-center text-slate-400 font-medium text-sm bg-slate-50/50">
                           아직 수집된 대화 로그가 없습니다.
                         </td>
                       </tr>
@@ -238,6 +256,24 @@ export default function Logs() {
                               {log.latency_ms ? `${(log.latency_ms / 1000).toFixed(1)}s` : '-'}
                             </span>
                           </td>
+                          <td className="px-4 py-3 align-middle text-center" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex justify-center gap-1">
+                              <button 
+                                onClick={() => toggleFeedback(log.id, log.user_feedback, 'UP')}
+                                className={`p-1.5 rounded-md transition-colors ${log.user_feedback === 'UP' ? 'bg-indigo-100 text-indigo-600' : 'text-slate-300 hover:bg-slate-100 hover:text-slate-500'}`}
+                                title="분석 제외 (좋아요)"
+                              >
+                                <ThumbsUp size={16} className={log.user_feedback === 'UP' ? 'fill-current' : ''} />
+                              </button>
+                              <button 
+                                onClick={() => toggleFeedback(log.id, log.user_feedback, 'DOWN')}
+                                className={`p-1.5 rounded-md transition-colors ${log.user_feedback === 'DOWN' ? 'bg-rose-100 text-rose-600' : 'text-slate-300 hover:bg-slate-100 hover:text-slate-500'}`}
+                                title="분석 포함 (싫어요)"
+                              >
+                                <ThumbsDown size={16} className={log.user_feedback === 'DOWN' ? 'fill-current' : ''} />
+                              </button>
+                            </div>
+                          </td>
                         </tr>
                       ))
                     )}
@@ -245,7 +281,7 @@ export default function Logs() {
                   {logs.length > 0 && (
                     <tfoot className="bg-slate-100 border-t border-slate-300">
                       <tr>
-                        <td colSpan={4} className="py-1 px-4">
+                        <td colSpan={5} className="py-1 px-4">
                           {renderPagination()}
                         </td>
                       </tr>
@@ -282,10 +318,24 @@ export default function Logs() {
                         <span className="text-indigo-400 font-bold mr-1">Q.</span> {log.question}
                       </div>
                       
-                      <div className="flex items-center mt-2 pt-2 border-t border-slate-100/80 border-dashed">
-                         <span className="text-[9px] text-slate-400 truncate font-mono bg-slate-50 px-1.5 py-0.5 rounded border border-slate-100 max-w-full" title={log.model_name}>
+                      <div className="flex justify-between items-center mt-2 pt-2 border-t border-slate-100/80 border-dashed">
+                         <span className="text-[9px] text-slate-400 truncate font-mono bg-slate-50 px-1.5 py-0.5 rounded border border-slate-100 max-w-[150px]" title={log.model_name}>
                            {log.model_name}
                          </span>
+                         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+                           <button 
+                             onClick={() => toggleFeedback(log.id, log.user_feedback, 'UP')}
+                             className={`p-1.5 rounded-md transition-colors ${log.user_feedback === 'UP' ? 'bg-indigo-100 text-indigo-600' : 'text-slate-300'}`}
+                           >
+                             <ThumbsUp size={14} className={log.user_feedback === 'UP' ? 'fill-current' : ''} />
+                           </button>
+                           <button 
+                             onClick={() => toggleFeedback(log.id, log.user_feedback, 'DOWN')}
+                             className={`p-1.5 rounded-md transition-colors ${log.user_feedback === 'DOWN' ? 'bg-rose-100 text-rose-600' : 'text-slate-300'}`}
+                           >
+                             <ThumbsDown size={14} className={log.user_feedback === 'DOWN' ? 'fill-current' : ''} />
+                           </button>
+                         </div>
                       </div>
                     </div>
                   ))
@@ -481,6 +531,24 @@ export default function Logs() {
                 </h4>
                 <div className="text-slate-700 whitespace-pre-wrap text-sm leading-relaxed bg-slate-50/50 p-4 rounded-lg border border-slate-100">
                   {selectedLog.answer}
+                </div>
+                
+                <div className="mt-4 flex items-center justify-end gap-2 pt-4 border-t border-slate-100">
+                  <span className="text-xs font-bold text-slate-400 mr-2">관리자 평가:</span>
+                  <button 
+                    onClick={() => toggleFeedback(selectedLog.id, selectedLog.user_feedback, 'UP')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors text-sm font-bold ${selectedLog.user_feedback === 'UP' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}
+                  >
+                    <ThumbsUp size={16} className={selectedLog.user_feedback === 'UP' ? 'fill-current' : ''} />
+                    분석 제외 (좋아요)
+                  </button>
+                  <button 
+                    onClick={() => toggleFeedback(selectedLog.id, selectedLog.user_feedback, 'DOWN')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors text-sm font-bold ${selectedLog.user_feedback === 'DOWN' ? 'bg-rose-100 text-rose-700' : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}
+                  >
+                    <ThumbsDown size={16} className={selectedLog.user_feedback === 'DOWN' ? 'fill-current' : ''} />
+                    분석 포함 (싫어요)
+                  </button>
                 </div>
               </div>
 

@@ -102,7 +102,7 @@ document.addEventListener('DOMContentLoaded', () => {
         chatContainer.innerHTML = "";
         
         chatHistory.forEach(msg => {
-          addMessage(msg.text, msg.isUser, false);
+          addMessage(msg.text, msg.isUser, false, msg.logId, msg.userFeedback);
         });
       }
     });
@@ -275,7 +275,7 @@ btnAddModel.addEventListener('click', () => {
   }
 });
 
-function addMessage(text, isUser = false, saveToStorage = true) {
+function addMessage(text, isUser = false, saveToStorage = true, logId = null, initialFeedback = null) {
   const msgDiv = document.createElement('div');
   msgDiv.className = `flex ${isUser ? 'justify-end' : 'justify-start'}`;
   
@@ -287,13 +287,83 @@ function addMessage(text, isUser = false, saveToStorage = true) {
   }`;
   innerDiv.innerText = text;
   
+  if (!isUser && logId) {
+    const feedbackDiv = document.createElement('div');
+    feedbackDiv.className = 'mt-2 pt-2 border-t border-gray-100 flex justify-end gap-1';
+    
+    const getThumbSvg = (type, isActive) => {
+      const fillClass = isActive ? 'fill-current' : 'fill-transparent';
+      if (type === 'UP') {
+        return `<svg class="w-3.5 h-3.5 ${fillClass}" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/></svg>`;
+      } else {
+        return `<svg class="w-3.5 h-3.5 ${fillClass}" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/></svg>`;
+      }
+    };
+
+    const upBtn = document.createElement('button');
+    upBtn.className = `feedback-btn up p-1.5 rounded transition-colors text-xs ${initialFeedback === 'UP' ? 'bg-indigo-50 text-indigo-600 active' : 'text-gray-400 hover:bg-gray-100 hover:text-indigo-500'}`;
+    upBtn.title = "이 답변이 도움이 되었습니다 (분석 제외)";
+    upBtn.innerHTML = getThumbSvg('UP', initialFeedback === 'UP');
+    
+    const downBtn = document.createElement('button');
+    downBtn.className = `feedback-btn down p-1.5 rounded transition-colors text-xs ${initialFeedback === 'DOWN' ? 'bg-rose-50 text-rose-600 active' : 'text-gray-400 hover:bg-gray-100 hover:text-rose-500'}`;
+    downBtn.title = "이 답변이 부정확합니다 (분석 포함)";
+    downBtn.innerHTML = getThumbSvg('DOWN', initialFeedback === 'DOWN');
+    
+    const handleFeedback = async (btn, type) => {
+      try {
+        const isActive = btn.classList.contains('active');
+        const newType = isActive ? null : type;
+        
+        await fetch(`http://127.0.0.1:8000/logs/audit/${logId}/feedback`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ feedback: newType })
+        });
+        
+        // UI Reset
+        upBtn.className = 'feedback-btn up p-1.5 rounded transition-colors text-xs text-gray-400 hover:bg-gray-100 hover:text-indigo-500';
+        downBtn.className = 'feedback-btn down p-1.5 rounded transition-colors text-xs text-gray-400 hover:bg-gray-100 hover:text-rose-500';
+        upBtn.innerHTML = getThumbSvg('UP', false);
+        downBtn.innerHTML = getThumbSvg('DOWN', false);
+        
+        // Update new state
+        if (newType === 'UP') {
+          upBtn.className = 'feedback-btn up p-1.5 rounded transition-colors text-xs bg-indigo-50 text-indigo-600 active';
+          upBtn.innerHTML = getThumbSvg('UP', true);
+        } else if (newType === 'DOWN') {
+          downBtn.className = 'feedback-btn down p-1.5 rounded transition-colors text-xs bg-rose-50 text-rose-600 active';
+          downBtn.innerHTML = getThumbSvg('DOWN', true);
+        }
+        
+        // Update local storage history
+        const chatItem = chatHistory.find(c => c.logId === logId);
+        if (chatItem) {
+          chatItem.userFeedback = newType;
+          if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+            chrome.storage.local.set({ chatHistory: chatHistory });
+          }
+        }
+      } catch (e) {
+        console.error("피드백 전송 실패:", e);
+      }
+    };
+    
+    upBtn.addEventListener('click', () => handleFeedback(upBtn, 'UP'));
+    downBtn.addEventListener('click', () => handleFeedback(downBtn, 'DOWN'));
+    
+    feedbackDiv.appendChild(upBtn);
+    feedbackDiv.appendChild(downBtn);
+    innerDiv.appendChild(feedbackDiv);
+  }
+  
   msgDiv.appendChild(innerDiv);
   chatContainer.appendChild(msgDiv);
   chatContainer.scrollTop = chatContainer.scrollHeight;
 
   // 대화 기록을 스토리지에 동기화
   if (saveToStorage) {
-    chatHistory.push({ text, isUser });
+    chatHistory.push({ text, isUser, logId, userFeedback: initialFeedback });
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       chrome.storage.local.set({ chatHistory: chatHistory });
     }
@@ -352,10 +422,10 @@ async function sendMessage() {
     document.getElementById(loadingId).remove();
     
     if (data.status === 'success') {
-      addMessage(data.answer);
+      addMessage(data.answer, false, true, data.log_id);
       resetScrapState(); // 전송 성공 시 스크랩/업로드 상태 모두 초기화
     } else {
-      addMessage("오류가 발생했습니다: " + data.detail);
+      addMessage("오류가 발생했습니다: " + data.detail, false, true);
     }
   } catch (error) {
     document.getElementById(loadingId).remove();
@@ -531,7 +601,7 @@ btnScrap.addEventListener('click', async () => {
       const combinedText = results.map(r => r.result).filter(t => t && t.trim().length > 0).join('\n\n');
       resetScrapState(); // 기존 상태 모두 초기화
       
-      scrapedContext = combinedText.substring(0, 3000); 
+      scrapedContext = combinedText.substring(0, 50000); 
       btnScrap.innerHTML = "✅ 스크랩 완료";
       btnScrap.className = "text-[11px] font-bold px-2.5 py-1.5 bg-emerald-600 text-white hover:bg-emerald-700 rounded-md border border-emerald-700 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
       chatInput.placeholder = "스크랩 화면에 대해 무엇이든 물어보세요!";
