@@ -774,7 +774,7 @@ async def sync_external_table(
 
 
 @app.post("/chat")
-async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
+def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
     start_time = time.time()
     if not x_gemini_key:
         raise HTTPException(status_code=401, detail="Gemini API Key가 필요합니다.")
@@ -1387,7 +1387,8 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             "status": "success",
             "log_id": log_id,
             "answer": response.text,
-            "references": results_metadatas
+            "references": results_metadatas,
+            "latency_ms": latency_ms
         }
 
     except Exception as e:
@@ -1446,7 +1447,7 @@ async def update_log_feedback(log_id: int, req: FeedbackRequest):
         conn.close()
 
 @app.post("/logs/analytics")
-async def analyze_audit_logs(req: AnalyticsRequest, x_gemini_key: str = Header(None)):
+def analyze_audit_logs(req: AnalyticsRequest, x_gemini_key: str = Header(None)):
     """최근 로그 기반 핵심 키워드 및 개선점 AI 추출"""
     if not x_gemini_key:
         raise HTTPException(status_code=401, detail="Gemini API Key가 필요합니다.")

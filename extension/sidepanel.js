@@ -102,7 +102,7 @@ document.addEventListener('DOMContentLoaded', () => {
         chatContainer.innerHTML = "";
         
         chatHistory.forEach(msg => {
-          addMessage(msg.text, msg.isUser, false, msg.logId, msg.userFeedback);
+          addMessage(msg.text, msg.isUser, false, msg.logId, msg.userFeedback, msg.latencyMs);
         });
       }
     });
@@ -275,7 +275,7 @@ btnAddModel.addEventListener('click', () => {
   }
 });
 
-function addMessage(text, isUser = false, saveToStorage = true, logId = null, initialFeedback = null) {
+function addMessage(text, isUser = false, saveToStorage = true, logId = null, initialFeedback = null, latencyMs = null) {
   const msgDiv = document.createElement('div');
   msgDiv.className = `flex ${isUser ? 'justify-end' : 'justify-start'}`;
   
@@ -352,6 +352,14 @@ function addMessage(text, isUser = false, saveToStorage = true, logId = null, in
     upBtn.addEventListener('click', () => handleFeedback(upBtn, 'UP'));
     downBtn.addEventListener('click', () => handleFeedback(downBtn, 'DOWN'));
     
+    if (latencyMs) {
+      const timeText = (latencyMs / 1000).toFixed(1) + "초 소요";
+      const latencySpan = document.createElement('span');
+      latencySpan.className = 'text-xs text-gray-400 mr-auto flex items-center font-medium';
+      latencySpan.innerText = `⏱️ ${timeText}`;
+      feedbackDiv.appendChild(latencySpan);
+    }
+    
     feedbackDiv.appendChild(upBtn);
     feedbackDiv.appendChild(downBtn);
     innerDiv.appendChild(feedbackDiv);
@@ -363,7 +371,7 @@ function addMessage(text, isUser = false, saveToStorage = true, logId = null, in
 
   // 대화 기록을 스토리지에 동기화
   if (saveToStorage) {
-    chatHistory.push({ text, isUser, logId, userFeedback: initialFeedback });
+    chatHistory.push({ text, isUser, logId, userFeedback: initialFeedback, latencyMs });
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       chrome.storage.local.set({ chatHistory: chatHistory });
     }
@@ -440,7 +448,7 @@ async function sendMessage() {
     const data = await response.json();
     
     if (data.status === 'success') {
-      addMessage(data.answer, false, true, data.log_id);
+      addMessage(data.answer, false, true, data.log_id, null, data.latency_ms);
       resetScrapState(); // 전송 성공 시 스크랩/업로드 상태 모두 초기화
     } else {
       addMessage("오류가 발생했습니다: " + data.detail, false, true);
