@@ -390,9 +390,28 @@ async function sendMessage() {
   const loadingDiv = document.createElement('div');
   loadingDiv.id = loadingId;
   loadingDiv.className = 'flex justify-start items-center gap-2 text-xs font-bold text-indigo-500 p-2 ml-1';
-  loadingDiv.innerHTML = `<span class="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></span>AI(${currentActiveModel.modelName})가 규정과 DB를 검토 중입니다...`;
+  loadingDiv.innerHTML = `
+    <span class="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></span>
+    <span>AI(${currentActiveModel.modelName})가 규정과 DB를 검토 중입니다... <span id="timer-${loadingId}" class="text-orange-500 ml-1">(0초 경과)</span></span>
+  `;
   chatContainer.appendChild(loadingDiv);
   chatContainer.scrollTop = chatContainer.scrollHeight;
+
+  // [NEW] 로딩 타이머 시작
+  let secondsPassed = 0;
+  const timerInterval = setInterval(() => {
+    secondsPassed++;
+    const timerSpan = document.getElementById(`timer-${loadingId}`);
+    if (timerSpan) {
+      if (secondsPassed >= 60) {
+        const mins = Math.floor(secondsPassed / 60);
+        const secs = secondsPassed % 60;
+        timerSpan.innerText = `(${mins}분 ${secs}초 경과)`;
+      } else {
+        timerSpan.innerText = `(${secondsPassed}초 경과)`;
+      }
+    }
+  }, 1000);
 
   const payload = {
     question: text,
@@ -419,7 +438,6 @@ async function sendMessage() {
     });
 
     const data = await response.json();
-    document.getElementById(loadingId).remove();
     
     if (data.status === 'success') {
       addMessage(data.answer, false, true, data.log_id);
@@ -428,9 +446,12 @@ async function sendMessage() {
       addMessage("오류가 발생했습니다: " + data.detail, false, true);
     }
   } catch (error) {
-    document.getElementById(loadingId).remove();
     addMessage("서버 연결에 실패했습니다. 파이썬 백엔드 서버가 켜져 있는지 확인하세요.");
   } finally {
+    clearInterval(timerInterval); // 타이머 안전 종료
+    const ld = document.getElementById(loadingId);
+    if (ld) ld.remove(); // 로딩 UI 제거
+    
     btnSend.disabled = false;
     chatInput.disabled = false;
     chatInput.focus();
@@ -623,8 +644,9 @@ async function processFile(file) {
 
   // 드래그 앤 드롭 시 확장자 필터링 안전 검증
   const filename = file.name.toLowerCase();
-  if (!(filename.endsWith('.pdf') || filename.endsWith('.txt') || filename.endsWith('.csv'))) {
-    alert("현재는 PDF, TXT, CSV 파일만 지원합니다.");
+  if (!(filename.endsWith('.pdf') || filename.endsWith('.txt') || filename.endsWith('.csv') || filename.endsWith('.xlsx'))) {
+    alert("현재는 PDF, TXT, CSV, XLSX 파일만 지원합니다.");
+    fileUploadInput.value = ""; // 먹통 방지: 얼리 리턴 전에도 파일 선택 초기화
     return;
   }
 
@@ -660,11 +682,11 @@ async function processFile(file) {
       chatInput.placeholder = "첨부된 파일 내용에 대해 무엇이든 물어보세요!";
     } else {
       resetScrapState();
-      alert("파싱 오류: " + data.detail);
+      addMessage("⚠️ 파일 첨부 실패: " + data.detail + "\n(혹시 옛날 .xls 파일을 이름만 .xlsx로 바꾸셨다면 엑셀에서 '다른 이름으로 저장'을 해주세요!)", false, true);
     }
   } catch (error) {
     resetScrapState();
-    alert("서버 연결 실패. 파이썬 백엔드가 켜져 있는지 확인하세요.");
+    addMessage("⚠️ 파일 파싱 서버 연결 실패: 파이썬 백엔드가 켜져 있는지 확인하세요.", false, true);
   } finally {
     chatInput.disabled = false;
     chatInput.focus();

@@ -1,11 +1,11 @@
 =========================================
  Admission-Pilot Structure Tree
- Generated at: 2026-06-06 08:17:54
+ Generated at: 2026-06-09 15:24:29
 =========================================
 .
 ├── 2026학년도 입학전형 운영 결과 보고.pdf
+├── 2027학년도 모집요강.pdf
 ├── AI_GUIDELINES.md
-├── [입학홍보처] 2027학년도 신입생 모집요강 및 입학원서 제작 계획 (원인기안).pdf
 ├── backend/
 │   ├── main.py  # 메인 서버 및 API 엔드포인트
 │   └── requirements.txt
@@ -22,7 +22,10 @@
 ├── extract_schema.py  # Admission-Pilot DB 스키마 완벽 추출기
 ├── frontend/
 │   ├── .gitignore
+│   ├── 2026학년도 입학전형 운영 결과 보고.pdf
+│   ├── 2027학년도 전형별모집인원및전형유형별성적반영비율.pdf
 │   ├── README.md
+│   ├── _20260608.pdf
 │   ├── components.json
 │   ├── db_schema_full.txt
 │   ├── eslint.config.js
@@ -78,4 +81,5 @@
 ├── recovered_chat.txt
 ├── run_servers.py  # 스레드 안전한 통합 로그 출력을 위한 락 및 마지막 로그 출력 타임스탬프 변수
 ├── scan_project.py  # Admission-Pilot 디렉터리 구조 생성
+├── test.xlsx
 └── 붙임1._2026학년도(수시)입학정보_모집자료(대동대학교).pdf

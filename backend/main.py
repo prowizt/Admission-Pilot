@@ -16,6 +16,10 @@ import pdfplumber
 import openpyxl
 import google.generativeai as genai
 from fastapi.staticfiles import StaticFiles
+from dotenv import load_dotenv
+
+# .env 파일에서 환경변수를 불러옵니다.
+load_dotenv()
 
 # 서버 초기화: 입시처 통합 AI 지식 관리 시스템 중앙 통제소
 app = FastAPI(
@@ -415,8 +419,8 @@ async def parse_file(file: UploadFile = File(...)):
     (ChromaDB나 SQL에 저장하지 않고 순수 파싱 용도로만 사용됨)
     """
     filename = file.filename.lower()
-    if not (filename.endswith('.pdf') or filename.endswith('.txt') or filename.endswith('.csv')):
-        raise HTTPException(status_code=400, detail="현재는 PDF, TXT, CSV 파일만 지원합니다.")
+    if not (filename.endswith('.pdf') or filename.endswith('.txt') or filename.endswith('.csv') or filename.endswith('.xlsx')):
+        raise HTTPException(status_code=400, detail="현재는 PDF, TXT, CSV, XLSX 파일만 지원합니다.")
 
     try:
         content = await file.read()
@@ -432,6 +436,42 @@ async def parse_file(file: UploadFile = File(...)):
                     if tables:
                         for table in tables:
                             extracted_text += table_to_markdown(table)
+        elif filename.endswith('.xlsx'):
+            import openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+            # 확실하게 맨 첫 번째(왼쪽) 시트를 선택 (wb.active는 마지막으로 보고 있던 시트가 잡히는 문제 방지)
+            sheet = wb.worksheets[0]
+            
+            max_row = sheet.max_row
+            max_col = sheet.max_column
+            
+            # 2차원 리스트(grid) 생성 후 데이터 복사
+            grid = [[None for _ in range(max_col)] for _ in range(max_row)]
+            for row in range(max_row):
+                for col in range(max_col):
+                    val = sheet.cell(row=row+1, column=col+1).value
+                    if isinstance(val, str):
+                        val = val.replace('\n', ' ').strip()
+                    grid[row][col] = val
+                    
+            # 병합된 셀(merged cells) 처리: 병합된 영역 내 모든 셀에 좌상단 값 복사 (Flatten)
+            for merged_range in sheet.merged_cells.ranges:
+                min_col, min_row, max_col_merged, max_row_merged = merged_range.bounds
+                top_left_value = grid[min_row-1][min_col-1]
+                
+                for row in range(min_row-1, max_row_merged):
+                    for col in range(min_col-1, max_col_merged):
+                        grid[row][col] = top_left_value
+                        
+            # 마크다운 표로 변환
+            md_lines = []
+            for i, row in enumerate(grid):
+                str_row = [str(x) if x is not None else "" for x in row]
+                md_lines.append("| " + " | ".join(str_row) + " |")
+                if i == 0:
+                    md_lines.append("|" + "|".join(["---"] * max_col) + "|")
+                    
+            extracted_text = "\n".join(md_lines)
         else:
             # TXT, CSV 등 순수 텍스트 파일 처리
             # csv도 일반 텍스트 읽기로 처리 (단순 RAG용이므로)
@@ -609,7 +649,8 @@ async def upload_dynamic_statistics(
     try:
         content = await file.read()
         wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
-        sheet = wb.active
+        # 확실하게 맨 첫 번째(왼쪽) 시트를 선택
+        sheet = wb.worksheets[0]
         conn = get_mssql_connection()
         if not conn: raise HTTPException(status_code=500, detail="DB 연결 실패")
         cursor = conn.cursor()
@@ -773,7 +814,20 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 return "\n".join(cleaned)
             
             request.scraped_context = clean_scraped_context(request.scraped_context)
-
+            
+            # [NEW] 스크랩된 원문의 출처(첨부 파일 vs 웹 화면)를 텍스트 맨 앞에 병합하여 DB 및 AI 프롬프트에 제공
+            prefix = ""
+            if request.scraped_file_name:
+                prefix = f"### [첨부 파일 스크랩] 파일명: {request.scraped_file_name}\n\n"
+            else:
+                prefix = f"### [웹 화면 텍스트 스크랩]\n\n"
+            
+            # 이미 prefix가 붙어있지 않은 경우에만 추가 (중복 방지)
+            if not request.scraped_context.startswith("### [첨부 파일 스크랩]") and not request.scraped_context.startswith("### [웹 화면 텍스트 스크랩]"):
+                request.scraped_context = prefix + request.scraped_context
+                print(f"\n[BACKEND] === [스크랩 원문 감지] ===")
+                print(f"[BACKEND] 출처: {prefix.strip()}")
+                print(f"[BACKEND] ===============================\n")
         # =======================================================
         # [Step 1] NL2SQL: 사용자 질문 -> T-SQL 생성
         # =======================================================
@@ -841,9 +895,23 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             }}
         }}
         """
-        # SQL 생성용은 빠르고 논리적인 모델 사용
-        sql_model = genai.GenerativeModel("gemini-2.5-flash")
+        # [라우터 전용 API 키 분리] 
+        # 3.5 모델의 과도한 사용을 막기 위해, 라우터(SQL 판별)는 2.5-flash와 별도의 API 키를 사용합니다.
+        router_api_key = os.getenv("ROUTER_API_KEY", "")
+        router_model_name = os.getenv("ROUTER_MODEL", "gemini-2.5-flash")
+        
+        if router_api_key and router_api_key != "여기에_새로운_API키를_입력하세요":
+            genai.configure(api_key=router_api_key)
+            sql_model = genai.GenerativeModel(router_model_name)
+        else:
+            # 새 키를 안 넣었을 경우 원래 사용자 키 & 모델을 그대로 씀 (에러 방지용)
+            sql_model = genai.GenerativeModel(request.model_name)
+            
         sql_response = sql_model.generate_content(sql_router_prompt)
+        
+        # 라우터 작업이 끝난 후, 반드시 사용자가 프론트에서 넘겨준 원래 API 키로 다시 되돌려 놓아야 합니다.
+        if router_api_key and router_api_key != "여기에_새로운_API키를_입력하세요":
+            genai.configure(api_key=x_gemini_key)
         
         # JSON 파싱
         try:
@@ -1281,8 +1349,8 @@ async def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 
         
         # 스크랩된 대량의 텍스트를 처리할 수 있도록 타임아웃을 60초로 넉넉하게 연장
-        # 타임아웃을 60초에서 300초(5분)로 대폭 늘려서 긴 답변 생성 시 504 에러 방지
-        response = final_model.generate_content(prompt, request_options={"timeout": 300})
+        # 타임아웃을 300초에서 600초(10분)로 대폭 늘려서 긴 답변(예: 40줄 나열 등) 생성 시 504 에러 방지
+        response = final_model.generate_content(prompt, request_options={"timeout": 600})
         
         # [NEW] Audit Log 기록
         latency_ms = int((time.time() - start_time) * 1000)
