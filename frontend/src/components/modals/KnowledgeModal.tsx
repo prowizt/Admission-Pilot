@@ -383,7 +383,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
                       >
                         <option value="인사/조직">인사/조직 (부서원 변경, 퇴사/입사 등)</option>
                         <option value="결재라인">결재라인 (특정 결재선 규정, 부서 협조 등)</option>
-                        <option value="예외규정">예외규정 (행정 처리 및 입시 지침 예외 등)</option>
+                        <option value="예외규정">사전지식 (핵심 규칙 및 행정 지침 예외 등)</option>
                         <option value="기타">기타</option>
                       </select>
                     </div>

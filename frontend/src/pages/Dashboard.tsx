@@ -201,7 +201,7 @@ export default function Dashboard() {
             <ShieldHalf size={16} className="shrink-0" /> 
             <span>
               <span className="inline md:hidden">사전지식</span>
-              <span className="hidden md:inline">사전지식 (예외규정)</span>
+              <span className="hidden md:inline">사전지식 (핵심규칙 및 예외)</span>
             </span>
           </button>
         </div>
@@ -228,7 +228,7 @@ export default function Dashboard() {
                     <button onClick={() => setKnowledgeFilter('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === 'all' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>전체</button>
                     <button onClick={() => setKnowledgeFilter('인사/조직')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === '인사/조직' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>인사/조직</button>
                     <button onClick={() => setKnowledgeFilter('결재라인')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === '결재라인' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>결재라인</button>
-                    <button onClick={() => setKnowledgeFilter('예외규정')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === '예외규정' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>예외규정</button>
+                    <button onClick={() => setKnowledgeFilter('예외규정')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === '예외규정' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>사전지식</button>
                     <button onClick={() => setKnowledgeFilter('기타')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === '기타' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>기타</button>
                   </>
                 ) : (
@@ -499,7 +499,7 @@ export default function Dashboard() {
                                 item.category === '예외규정' ? 'bg-amber-50 text-amber-600' :
                                 'bg-gray-50 text-gray-600'
                               }`}>
-                                {item.category}
+                                {item.category === '예외규정' ? '사전지식' : item.category}
                               </span>
                             </td>
                             <td className="px-4 py-3 min-w-0">
@@ -544,7 +544,7 @@ export default function Dashboard() {
                           item.category === '예외규정' ? 'bg-amber-50 text-amber-600' :
                           'bg-gray-50 text-gray-600'
                         }`}>
-                          {item.category}
+                          {item.category === '예외규정' ? '사전지식' : item.category}
                         </span>
                         <span className="text-[11px] text-gray-400 font-mono">
                           {item.created_at ? new Date(item.created_at).toLocaleDateString('ko-KR') : ''}

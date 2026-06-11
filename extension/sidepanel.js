@@ -37,6 +37,8 @@ if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
 const chatContainer = document.getElementById('chat-container');
 const chatInput = document.getElementById('chat-input');
 const btnSend = document.getElementById('btn-send');
+const btnStop = document.getElementById('btn-stop');
+let currentAbortController = null;
 const btnScrap = document.getElementById('btn-scrap');
 const scrapStatus = document.getElementById('scrap-status');
 const btnClearChat = document.getElementById('btn-clear-chat'); // 대화 비우기 버튼
@@ -280,14 +282,46 @@ function addMessage(text, isUser = false, saveToStorage = true, logId = null, in
   msgDiv.className = `flex ${isUser ? 'justify-end' : 'justify-start'}`;
   
   const innerDiv = document.createElement('div');
-  innerDiv.className = `p-3 rounded-2xl shadow-sm max-w-[85%] leading-relaxed text-sm whitespace-pre-wrap word-break break-words ${
+  innerDiv.className = `group p-3 rounded-2xl shadow-sm max-w-[85%] leading-relaxed text-sm whitespace-pre-wrap word-break break-words relative ${
     isUser 
       ? 'bg-indigo-600 text-white rounded-tr-none' 
       : 'bg-white border border-gray-200 text-gray-700 rounded-tl-none'
   }`;
   innerDiv.innerText = text;
   
-  if (!isUser && logId) {
+  // --- Copy Button SVG & Logic ---
+  const getCopySvg = () => `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3.5 h-3.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>`;
+  const getCheckSvg = () => `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-3.5 h-3.5 text-emerald-500"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>`;
+
+  const createCopyBtn = (textToCopy, isUserMsg) => {
+    const btn = document.createElement('button');
+    btn.className = `p-1.5 rounded transition-colors text-xs flex items-center justify-center ${
+      isUserMsg 
+      ? 'text-indigo-300 hover:text-white hover:bg-indigo-500' 
+      : 'text-gray-400 hover:bg-gray-100 hover:text-gray-700'
+    }`;
+    btn.title = "텍스트 복사";
+    btn.innerHTML = getCopySvg();
+    btn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(textToCopy);
+        btn.innerHTML = getCheckSvg();
+        setTimeout(() => { btn.innerHTML = getCopySvg(); }, 1500);
+      } catch (err) {
+        console.error('Failed to copy', err);
+      }
+    });
+    return btn;
+  };
+  
+  if (isUser) {
+    const actionDiv = document.createElement('div');
+    actionDiv.className = 'absolute -left-9 bottom-0 flex justify-end opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200';
+    const userCopyBtn = createCopyBtn(text, true);
+    userCopyBtn.className = 'p-1.5 rounded-full bg-white text-gray-400 hover:bg-gray-100 hover:text-gray-700 shadow border border-gray-200';
+    actionDiv.appendChild(userCopyBtn);
+    innerDiv.appendChild(actionDiv);
+  } else if (logId) {
     const feedbackDiv = document.createElement('div');
     feedbackDiv.className = 'mt-2 pt-2 border-t border-gray-100 flex justify-end gap-1';
     
@@ -360,6 +394,7 @@ function addMessage(text, isUser = false, saveToStorage = true, logId = null, in
       feedbackDiv.appendChild(latencySpan);
     }
     
+    feedbackDiv.appendChild(createCopyBtn(text, false));
     feedbackDiv.appendChild(upBtn);
     feedbackDiv.appendChild(downBtn);
     innerDiv.appendChild(feedbackDiv);
@@ -391,8 +426,13 @@ async function sendMessage() {
 
   addMessage(text, true);
   chatInput.value = '';
+  chatInput.style.height = 'auto';
   btnSend.disabled = true;
   chatInput.disabled = true;
+
+  currentAbortController = new AbortController();
+  btnSend.classList.add('hidden');
+  btnStop.classList.remove('hidden');
 
   const loadingId = 'loading-' + Date.now();
   const loadingDiv = document.createElement('div');
@@ -442,7 +482,8 @@ async function sendMessage() {
         'Content-Type': 'application/json',
         'x-gemini-key': currentActiveModel.apiKey
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: currentAbortController.signal
     });
 
     const data = await response.json();
@@ -454,17 +495,29 @@ async function sendMessage() {
       addMessage("오류가 발생했습니다: " + data.detail, false, true);
     }
   } catch (error) {
-    addMessage("서버 연결에 실패했습니다. 파이썬 백엔드 서버가 켜져 있는지 확인하세요.");
+    if (error.name === 'AbortError') {
+      addMessage("⚠️ 답변 생성이 사용자에 의해 취소되었습니다.", false, false);
+    } else {
+      addMessage("서버 연결에 실패했습니다. 파이썬 백엔드 서버가 켜져 있는지 확인하세요.");
+    }
   } finally {
     clearInterval(timerInterval); // 타이머 안전 종료
     const ld = document.getElementById(loadingId);
     if (ld) ld.remove(); // 로딩 UI 제거
     
+    btnStop.classList.add('hidden');
+    btnSend.classList.remove('hidden');
     btnSend.disabled = false;
     chatInput.disabled = false;
     chatInput.focus();
+    currentAbortController = null;
   }
 }
+
+chatInput.addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = (this.scrollHeight) + 'px';
+});
 
 chatInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -474,6 +527,12 @@ chatInput.addEventListener('keydown', (e) => {
 });
 
 btnSend.addEventListener('click', sendMessage);
+
+btnStop.addEventListener('click', () => {
+  if (currentAbortController) {
+    currentAbortController.abort();
+  }
+});
 
 // 대화 내역 초기화(비우기)
 btnClearChat.addEventListener('click', () => {

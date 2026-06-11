@@ -117,13 +117,19 @@
 
     <div class="relative">
       <textarea id="chat-input" rows="2" placeholder="질문을 입력하세요... (Shift+Enter로 줄바꿈)"
-        class="w-full text-sm px-3 py-2.5 pr-12 bg-white border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 resize-none custom-scrollbar shadow-inner"></textarea>
+        class="w-full text-sm px-3 py-2.5 pr-12 bg-white border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 resize-none custom-scrollbar shadow-inner max-h-[150px] overflow-y-auto"></textarea>
       <button id="btn-send"
         class="absolute right-2 bottom-2.5 w-8 h-8 flex items-center justify-center bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-all shadow-md active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"
           class="w-4 h-4 translate-x-[-1px] translate-y-[1px]">
           <path stroke-linecap="round" stroke-linejoin="round"
             d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+        </svg>
+      </button>
+      <button id="btn-stop"
+        class="hidden absolute right-2 bottom-2.5 w-8 h-8 flex items-center justify-center bg-rose-600 text-white rounded-md hover:bg-rose-700 transition-all shadow-md active:scale-90" title="생성 중지">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="3" stroke="currentColor" class="w-4 h-4">
+          <rect x="7" y="7" width="10" height="10" rx="1" ry="1" />
         </svg>
       </button>
     </div>
