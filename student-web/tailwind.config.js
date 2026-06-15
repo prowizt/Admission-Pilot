@@ -13,7 +13,7 @@ export default {
         'daedong-red': '#ef4a47',
       },
       fontFamily: {
-        sans: ['"Inter"', 'sans-serif'],
+        sans: ['"Pretendard"', 'sans-serif'],
       }
     },
   },

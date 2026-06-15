@@ -34,6 +34,7 @@ function App() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // 자동 스크롤
   const scrollToBottom = () => {
@@ -49,6 +50,9 @@ function App() {
     const userMsg: Message = { id: Date.now().toString(), role: 'user', content: text };
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto'; // 리셋
+    }
     setIsLoading(true);
 
     try {
@@ -83,10 +87,25 @@ function App() {
   return (
     <div className="flex flex-col h-screen bg-slate-50 font-sans">
       {/* Header */}
-      <header className="flex items-center justify-center p-4 bg-daedong-navy text-white shadow-md z-10 relative overflow-hidden">
+      <header className="flex justify-between items-center py-6 px-5 bg-indigo-900 text-white shadow-md z-10 relative overflow-hidden rounded-br-3xl">
         <div className="absolute inset-0 opacity-10 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-white via-transparent to-transparent"></div>
-        <Sparkles className="w-6 h-6 mr-2 text-daedong-cyan animate-pulse" />
-        <h1 className="text-xl font-bold tracking-wide">대동대학교 입시 AI 도우미</h1>
+        
+        {/* Left: Logo & Title */}
+        <div className="flex items-center z-10">
+          <div className="flex-shrink-0 bg-white rounded-full p-1 mr-3 flex items-center justify-center shadow-sm">
+            <img src="/logo.png" alt="대동대학교 로고" className="w-7 h-7 object-contain" />
+          </div>
+          <div>
+            <h1 className="text-lg sm:text-xl font-bold tracking-wide">대동대 입시 AI 도우미</h1>
+            <p className="text-[10px] sm:text-xs text-indigo-200 font-medium mt-0.5">Student Mode</p>
+          </div>
+        </div>
+
+        {/* Right: Online Indicator */}
+        <div className="flex items-center gap-1.5 z-10">
+          <span className="text-[10px] sm:text-xs text-indigo-300 font-medium">Online</span>
+          <div className="w-2 h-2 bg-emerald-400 rounded-full shadow-[0_0_8px_rgba(52,211,153,0.8)] animate-pulse"></div>
+        </div>
       </header>
 
       {/* Chat Container */}
@@ -101,28 +120,28 @@ function App() {
           >
             <div
               className={cn(
-                "max-w-[85%] sm:max-w-[70%] rounded-2xl p-4 shadow-sm flex gap-3",
+                "max-w-[85%] sm:max-w-[70%] rounded-2xl p-4 shadow-sm block flow-root",
                 msg.role === 'user'
-                  ? "bg-daedong-navy text-white rounded-tr-none"
+                  ? "bg-indigo-900 text-white rounded-tr-none"
                   : msg.isError 
                     ? "bg-red-50 text-red-800 border border-red-200 rounded-tl-none"
                     : "bg-white/70 backdrop-blur-md border border-white/40 shadow-lg text-slate-800 rounded-tl-none"
               )}
             >
               {msg.role === 'assistant' && (
-                <div className="flex-shrink-0 mt-1">
+                <div className="mb-2">
                   <div className="w-8 h-8 rounded-full bg-daedong-cyan/20 flex items-center justify-center border border-daedong-cyan/50">
                     <Bot className="w-5 h-5 text-daedong-navy" />
                   </div>
                 </div>
               )}
               
-              <div className="whitespace-pre-wrap leading-relaxed text-[15px] flex-1">
+              <div className="whitespace-pre-wrap leading-relaxed text-[15px]">
                 {msg.content}
               </div>
 
               {msg.role === 'user' && (
-                <div className="flex-shrink-0 mt-1">
+                <div className="float-right ml-3 mt-1">
                   <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
                     <User className="w-5 h-5 text-white" />
                   </div>
@@ -146,15 +165,15 @@ function App() {
 
       {/* Quick Replies */}
       {messages.length < 3 && !isLoading && (
-        <div className="px-4 pb-2 sm:px-6 flex gap-2 overflow-x-auto no-scrollbar">
+        <div className="px-4 pb-2 sm:px-6 flex flex-wrap justify-start gap-2">
           {QUICK_REPLIES.map((reply, idx) => (
             <button
               key={idx}
               onClick={() => sendMessage(reply)}
-              className="bg-daedong-cyan/10 hover:bg-daedong-cyan/20 text-daedong-navy border border-daedong-cyan/30 backdrop-blur-sm transition-all duration-300 flex-shrink-0 flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium shadow-sm whitespace-nowrap"
+              className="bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 backdrop-blur-sm transition-all duration-300 flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium shadow-sm break-keep"
             >
-              <HelpCircle className="w-4 h-4" />
-              {reply}
+              <HelpCircle className="w-4 h-4 flex-shrink-0" />
+              <span>{reply}</span>
             </button>
           ))}
         </div>
@@ -167,22 +186,34 @@ function App() {
             e.preventDefault();
             sendMessage(input);
           }}
-          className="flex gap-2 max-w-4xl mx-auto relative"
+          className="flex max-w-4xl mx-auto relative bg-slate-50 border border-slate-200 rounded-2xl focus-within:ring-2 focus-within:ring-indigo-900/50 focus-within:bg-white transition-all shadow-sm"
         >
-          <input
-            type="text"
+          <textarea
+            ref={textareaRef}
+            rows={1}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value);
+              e.target.style.height = 'auto';
+              e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage(input);
+              }
+            }}
             disabled={isLoading}
-            placeholder="어떤 점이 궁금하신가요?"
-            className="flex-1 rounded-full px-6 py-4 bg-slate-50 border border-slate-200 focus:outline-none focus:ring-2 focus:ring-daedong-cyan/50 focus:bg-white transition-all disabled:opacity-50 text-[15px]"
+            placeholder="궁금한 점을 질문해 주세요."
+            className="flex-1 bg-transparent pl-5 pr-16 py-4 min-h-[56px] max-h-[120px] resize-none focus:outline-none disabled:opacity-50 text-[15px] leading-relaxed no-scrollbar"
+            style={{ overflowY: input.split('\n').length > 4 || (textareaRef.current && textareaRef.current.scrollHeight > 120) ? 'auto' : 'hidden' }}
           />
           <button
             type="submit"
             disabled={!input.trim() || isLoading}
-            className="absolute right-2 top-2 bottom-2 aspect-square rounded-full bg-daedong-navy hover:bg-daedong-navy/90 text-white flex items-center justify-center disabled:opacity-50 transition-colors shadow-md"
+            className="absolute right-2 bottom-2 w-10 h-10 rounded-full bg-indigo-900 hover:bg-indigo-950 text-white flex items-center justify-center disabled:opacity-50 transition-colors shadow-md flex-shrink-0"
           >
-            {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5 ml-1" />}
+            {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-4 h-4 ml-1" />}
           </button>
         </form>
         <p className="text-center text-xs text-slate-400 mt-3 font-medium">
