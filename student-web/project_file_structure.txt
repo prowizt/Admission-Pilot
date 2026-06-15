@@ -1,0 +1,29 @@
+=========================================
+ Admission-Pilot Structure Tree
+ Generated at: 2026-06-15 11:45:52
+=========================================
+.
+├── .gitignore
+├── README.md
+├── eslint.config.js
+├── index.html
+├── package-lock.json
+├── package.json
+├── postcss.config.js
+├── public/
+│   ├── favicon.svg
+│   └── icons.svg
+├── src/
+│   ├── App.css
+│   ├── App.tsx  # 유틸리티 함수: Tailwind 클래스 병합
+│   ├── assets/
+│   │   ├── hero.png
+│   │   ├── react.svg
+│   │   └── vite.svg
+│   ├── index.css
+│   └── main.tsx
+├── tailwind.config.js
+├── tsconfig.app.json
+├── tsconfig.json
+├── tsconfig.node.json
+└── vite.config.ts
