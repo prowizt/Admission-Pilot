@@ -784,10 +784,31 @@ async def sync_external_table(
         raise HTTPException(status_code=500, detail=f"동기화 중 오류 발생: {str(e)}")
 
 
+def mask_pii(text: str) -> str:
+    if not text:
+        return text
+    # 1. 주민등록번호 마스킹 (하이픈 있/없)
+    text = re.sub(
+        r'(\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))-?([1-4])(\d{6})',
+        r'\1-\2******',
+        text
+    )
+    # 2. 휴대전화번호 마스킹 (하이픈 있/없)
+    text = re.sub(
+        r'(01[016789])-?(\d{3,4})-?(\d{4})',
+        r'\1-****-\3',
+        text
+    )
+    return text
+
 @app.post("/chat")
 def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
     start_time = time.time()
     
+    # [보안 통제] 사용자의 질문(question) 내에 포함된 민감한 개인정보(주민번호, 휴대전화번호)를 백엔드 초입에서 원천 마스킹
+    if request.question:
+        request.question = mask_pii(request.question)
+        
     # [NEW] 학생용 웹 챗봇은 API 키를 직접 입력하지 않으므로, 서버 환경변수(ROUTER_API_KEY)를 공통으로 사용합니다.
     if not x_gemini_key and request.user_role == "student":
         x_gemini_key = os.getenv("ROUTER_API_KEY", "")
@@ -1260,18 +1281,11 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 sorted_rules = sorted(rule_docs_map.values(), key=lambda x: x["distance"])
                 sorted_refs = sorted(ref_docs_map.values(), key=lambda x: x["distance"])
 
-                final_rules = sorted_rules[:6]
-                final_refs = sorted_refs[:6]
-
-
-                # [터미널 검색 현황 출력 - cp949 인코딩 에러 방지를 위해 이모지 제거]
-                matched_rule_files = [d["meta"].get("filename", "이름없음") for d in final_rules]
-                matched_ref_files = [d["meta"].get("filename", "이름없음") for d in final_refs]
-                print(f"[RAG 검색 성공] Rule DB 매칭 문서: {matched_rule_files}")
-                print(f"[RAG 검색 성공] Reference DB 매칭 문서: {matched_ref_files}")
-
                 # [NEW] 조회된 문서들의 관리자 힌트(description)와 공개여부(is_public)를 DB에서 가져와 맵핑
-                all_matched_files = list(set(matched_rule_files + matched_ref_files))
+                all_matched_files = list(set(
+                    [d["meta"].get("filename", "이름없음") for d in sorted_rules] + 
+                    [d["meta"].get("filename", "이름없음") for d in sorted_refs]
+                ))
                 doc_hints = {}
                 public_status = {}
                 if all_matched_files:
@@ -1292,9 +1306,18 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 
                 # [보안 필터링] 학생 권한인 경우 비공개 문서 강제 제거
                 if request.user_role == "student":
-                    final_rules = [d for d in final_rules if public_status.get(d["meta"].get("filename", ""), "N") == "Y"]
-                    final_refs = [d for d in final_refs if public_status.get(d["meta"].get("filename", ""), "N") == "Y"]
+                    sorted_rules = [d for d in sorted_rules if public_status.get(d["meta"].get("filename", ""), "N") == "Y"]
+                    sorted_refs = [d for d in sorted_refs if public_status.get(d["meta"].get("filename", ""), "N") == "Y"]
                     print("[보안 통제] 학생 권한 필터링 - 비공개 문서를 RAG 컨텍스트에서 제외합니다.")
+
+                final_rules = sorted_rules[:6]
+                final_refs = sorted_refs[:6]
+
+                # [터미널 검색 현황 출력 - cp949 인코딩 에러 방지를 위해 이모지 제거]
+                matched_rule_files = [d["meta"].get("filename", "이름없음") for d in final_rules]
+                matched_ref_files = [d["meta"].get("filename", "이름없음") for d in final_refs]
+                print(f"[RAG 검색 성공] Rule DB 매칭 문서: {matched_rule_files}")
+                print(f"[RAG 검색 성공] Reference DB 매칭 문서: {matched_ref_files}")
 
                 if final_rules:
                     formatted_docs = []
@@ -1372,7 +1395,6 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 <시스템 DB 및 규정 문서 팩트>
 {sql_context if sql_context else ""}
 {chroma_context if chroma_context else ""}
-{supplemental_context if supplemental_context else ""}
 </시스템 DB 및 규정 문서 팩트>
 
 <이전 대화 기록>
@@ -1388,7 +1410,9 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 2. 학생이 한눈에 이해하기 쉽게, 길게 나열하지 말고 요점만 간단하게(단답형이나 짧은 문장으로) 정리해서 답변해.
 3. 표에 나와있는 경쟁률, 후보 순위, 등급 등의 팩트는 주저하지 말고 확신을 가지고 대답해.
 4. **[빠른 답변(Fail-Fast) 의무]**: 만약 위 팩트 정보들에 질문과 관련된 데이터가 존재하지 않는다면(예: 없는 기숙사를 묻는 경우 등), 절대 억지로 고민하거나 지어내지 마. 즉시 "죄송합니다. 해당 질문에 관련된 정보를 찾을 수 없습니다."라고 짧게 답변을 끝내고 즉각 종료해.
-5. 유니코드 화살표 기호(예: →)를 사용하고, LaTeX 기호는 쓰지 마.
+5. **[개인정보 보호 안내 의무]**: 만약 사용자의 질문에 마스킹 처리된 개인정보(예: `010-****-7001`, `900101-1******` 등)가 포함되어 있다면, 답변의 최상단에 **'⚠️ 개인정보 보호를 위해 입력하신 정보는 시스템에 의해 안전하게 마스킹 처리되었습니다. 추가적인 개인정보 입력은 자제해 주시기 바랍니다.'** 라는 안내 문구를 반드시 포함하여 답변해.
+6. 유니코드 화살표 기호(예: →)를 사용하고, LaTeX 기호는 쓰지 마.
+7. **[정보 임의 생성 엄격 금지]**: <시스템 DB 및 규정 문서 팩트>에 명시적으로 기재되어 있지 않은 대동대학교 입학처 전화번호, 홈페이지 링크, 부서명 등을 절대로 임의로 지어내서 안내하지 마. 모르는 연락처는 아예 적지 마.
 """
         else:
             prompt = f"""
