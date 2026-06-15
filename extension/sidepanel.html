@@ -37,12 +37,15 @@
       </div>
     </div>
     <div class="flex items-center gap-3">
-      <button id="btn-clear-chat" class="text-indigo-200 hover:text-white transition-colors text-xs flex items-center gap-1 bg-indigo-950/40 hover:bg-indigo-950/80 px-2 py-1 rounded border border-indigo-700/30" title="대화 기록 비우기">
+      <button id="btn-clear-chat"
+        class="text-indigo-200 hover:text-white transition-colors text-xs flex items-center gap-1 bg-indigo-950/40 hover:bg-indigo-950/80 px-2 py-1 rounded border border-indigo-700/30"
+        title="대화 기록 비우기">
         <span>🗑️ 비우기</span>
       </button>
       <div class="flex items-center gap-1.5 border-l border-indigo-800/80 pl-3">
-        <span class="text-[10px] text-indigo-200">Server</span>
-        <div class="w-2 h-2 bg-emerald-400 rounded-full animate-pulse shadow-[0_0_5px_#34d399]" title="Online"></div>
+        <span id="server-status-text" class="text-[10px] text-indigo-300 transition-colors">Offline</span>
+        <div id="server-status-dot" class="w-2 h-2 bg-rose-500 rounded-full shadow-sm transition-colors"
+          title="Offline"></div>
       </div>
     </div>
   </div>
@@ -109,8 +112,9 @@
         📎 파일 첨부
       </button>
       <input type="file" id="file-upload-input" accept=".pdf,.txt,.csv,.xlsx" class="hidden" />
-      <span id="upload-status" class="text-[11px] text-lime-900 font-extrabold hidden bg-lime-100 px-2.5 py-1.5 rounded-md border border-lime-300 flex items-center gap-1.5 shadow-sm">
-        <span id="upload-filename" class="truncate max-w-[120px]">filename.pdf</span> 
+      <span id="upload-status"
+        class="text-[11px] text-lime-900 font-extrabold hidden bg-lime-100 px-2.5 py-1.5 rounded-md border border-lime-300 flex items-center gap-1.5 shadow-sm">
+        <span id="upload-filename" class="truncate max-w-[120px]">filename.pdf</span>
         <button id="btn-clear-upload" class="hover:text-lime-950 font-extrabold px-1 cursor-pointer">✕</button>
       </span>
     </div>
@@ -127,8 +131,10 @@
         </svg>
       </button>
       <button id="btn-stop"
-        class="hidden absolute right-2 bottom-2.5 w-8 h-8 flex items-center justify-center bg-rose-600 text-white rounded-md hover:bg-rose-700 transition-all shadow-md active:scale-90" title="생성 중지">
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="3" stroke="currentColor" class="w-4 h-4">
+        class="hidden absolute right-2 bottom-2.5 w-8 h-8 flex items-center justify-center bg-rose-600 text-white rounded-md hover:bg-rose-700 transition-all shadow-md active:scale-90"
+        title="생성 중지">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="3" stroke="currentColor"
+          class="w-4 h-4">
           <rect x="7" y="7" width="10" height="10" rx="1" ry="1" />
         </svg>
       </button>

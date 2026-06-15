@@ -1,12 +1,14 @@
 =========================================
  Admission-Pilot Structure Tree
- Generated at: 2026-06-09 15:24:29
+ Generated at: 2026-06-12 17:31:22
 =========================================
 .
+├── .gitignore
 ├── 2026학년도 입학전형 운영 결과 보고.pdf
 ├── 2027학년도 모집요강.pdf
 ├── AI_GUIDELINES.md
 ├── backend/
+│   ├── .env
 │   ├── main.py  # 메인 서버 및 API 엔드포인트
 │   └── requirements.txt
 ├── create_audit_table.py
@@ -77,9 +79,11 @@
 │   ├── vite.config.ts.timestamp-1780290332670-a1b2f6905d0498.mjs
 │   └── vite.config.ts.timestamp-1780290566077-3cfc405e237a38.mjs
 ├── git_push.py  # Windows 환경에서 한글 및 이모지 입출력 cp949 에러 방지
+├── latency_results.txt
 ├── project_file_structure.txt
 ├── recovered_chat.txt
 ├── run_servers.py  # 스레드 안전한 통합 로그 출력을 위한 락 및 마지막 로그 출력 타임스탬프 변수
 ├── scan_project.py  # Admission-Pilot 디렉터리 구조 생성
+├── scratch_analyze_latency.py
 ├── test.xlsx
 └── 붙임1._2026학년도(수시)입학정보_모집자료(대동대학교).pdf

@@ -65,7 +65,7 @@ const newModelId = document.getElementById('new-model-id');
 const newModelApiKey = document.getElementById('new-model-apikey');
 const btnAddModel = document.getElementById('btn-add-model');
 
-let scrapedContext = ""; 
+let scrapedContext = "";
 let scrapedFileName = ""; // [NEW] 첨부 파일명 기록용 변수
 let chatHistory = []; // 대화 기록 저장용 전역 배열
 
@@ -102,7 +102,7 @@ document.addEventListener('DOMContentLoaded', () => {
         chatHistory = result.chatHistory;
         // 기존 환영 메시지 삭제
         chatContainer.innerHTML = "";
-        
+
         chatHistory.forEach(msg => {
           addMessage(msg.text, msg.isUser, false, msg.logId, msg.userFeedback, msg.latencyMs);
         });
@@ -118,7 +118,7 @@ document.addEventListener('DOMContentLoaded', () => {
 function renderModelSelect(activeId) {
   savedModelsSelect.innerHTML = "";
   const allModels = [...defaultModels, ...customModels];
-  
+
   allModels.forEach(m => {
     const opt = document.createElement('option');
     opt.value = m.id;
@@ -135,7 +135,7 @@ function renderModelSelect(activeId) {
     currentActiveModel = allModels[0];
     savedModelsSelect.value = currentActiveModel.id;
   }
-  
+
   // 커스텀 모델일 때만 수정/삭제 버튼 노출
   if (currentActiveModel && currentActiveModel.id.startsWith("custom_")) {
     btnEditModel.classList.remove('hidden');
@@ -151,11 +151,11 @@ savedModelsSelect.addEventListener('change', () => {
   const selectedId = savedModelsSelect.value;
   const allModels = [...defaultModels, ...customModels];
   currentActiveModel = allModels.find(m => m.id === selectedId);
-  
+
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
     chrome.storage.local.set({ activeModelId: selectedId });
   }
-  
+
   if (currentActiveModel && currentActiveModel.id.startsWith("custom_")) {
     btnEditModel.classList.remove('hidden');
     btnDeleteModel.classList.remove('hidden');
@@ -169,17 +169,17 @@ savedModelsSelect.addEventListener('change', () => {
 // 모델 삭제 로직 (수정)
 btnDeleteModel.addEventListener('click', () => {
   if (!currentActiveModel || !currentActiveModel.id.startsWith("custom_")) return;
-  
+
   if (confirm(`[${currentActiveModel.alias}] 모델 세트를 정말 삭제하시겠습니까?`)) {
     customModels = customModels.filter(m => m.id !== currentActiveModel.id);
-    
+
     // 삭제 후 기본 모델 선택
     const nextActiveId = defaultModels[0]?.id || null;
-    
+
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-      chrome.storage.local.set({ 
+      chrome.storage.local.set({
         customModels: customModels,
-        activeModelId: nextActiveId 
+        activeModelId: nextActiveId
       }, () => {
         renderModelSelect(nextActiveId);
         resetForm();
@@ -194,16 +194,16 @@ btnDeleteModel.addEventListener('click', () => {
 // 모델 수정 준비 로직
 btnEditModel.addEventListener('click', () => {
   if (!currentActiveModel || !currentActiveModel.id.startsWith("custom_")) return;
-  
+
   newModelAlias.value = currentActiveModel.alias;
   newModelId.value = currentActiveModel.modelName;
   newModelApiKey.value = currentActiveModel.apiKey;
   editModelId.value = currentActiveModel.id;
-  
+
   formTitle.innerText = "✏️ AI 모델 세트 수정";
   btnAddModel.innerText = "수정완료";
   btnCancelEdit.classList.remove('hidden');
-  
+
   // 수정 시 설정창이 열려있어야 함
   settingsBody.classList.remove('hidden');
   settingsArrow.innerText = "▲";
@@ -259,11 +259,11 @@ btnAddModel.addEventListener('click', () => {
     customModels.push(newModel);
     finalActiveId = newModel.id;
   }
-  
+
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-    chrome.storage.local.set({ 
+    chrome.storage.local.set({
       customModels: customModels,
-      activeModelId: finalActiveId 
+      activeModelId: finalActiveId
     }, () => {
       resetForm();
       renderModelSelect(finalActiveId);
@@ -280,26 +280,24 @@ btnAddModel.addEventListener('click', () => {
 function addMessage(text, isUser = false, saveToStorage = true, logId = null, initialFeedback = null, latencyMs = null) {
   const msgDiv = document.createElement('div');
   msgDiv.className = `flex ${isUser ? 'justify-end' : 'justify-start'}`;
-  
+
   const innerDiv = document.createElement('div');
-  innerDiv.className = `group p-3 rounded-2xl shadow-sm max-w-[85%] leading-relaxed text-sm whitespace-pre-wrap word-break break-words relative ${
-    isUser 
-      ? 'bg-indigo-600 text-white rounded-tr-none' 
-      : 'bg-white border border-gray-200 text-gray-700 rounded-tl-none'
-  }`;
+  innerDiv.className = `group p-3 rounded-2xl shadow-sm max-w-[85%] leading-relaxed text-sm whitespace-pre-wrap word-break break-words relative ${isUser
+    ? 'bg-indigo-600 text-white rounded-tr-none'
+    : 'bg-white border border-gray-200 text-gray-700 rounded-tl-none'
+    }`;
   innerDiv.innerText = text;
-  
+
   // --- Copy Button SVG & Logic ---
   const getCopySvg = () => `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3.5 h-3.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>`;
   const getCheckSvg = () => `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-3.5 h-3.5 text-emerald-500"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>`;
 
   const createCopyBtn = (textToCopy, isUserMsg) => {
     const btn = document.createElement('button');
-    btn.className = `p-1.5 rounded transition-colors text-xs flex items-center justify-center ${
-      isUserMsg 
-      ? 'text-indigo-300 hover:text-white hover:bg-indigo-500' 
+    btn.className = `p-1.5 rounded transition-colors text-xs flex items-center justify-center ${isUserMsg
+      ? 'text-indigo-300 hover:text-white hover:bg-indigo-500'
       : 'text-gray-400 hover:bg-gray-100 hover:text-gray-700'
-    }`;
+      }`;
     btn.title = "텍스트 복사";
     btn.innerHTML = getCopySvg();
     btn.addEventListener('click', async () => {
@@ -313,7 +311,7 @@ function addMessage(text, isUser = false, saveToStorage = true, logId = null, in
     });
     return btn;
   };
-  
+
   if (isUser) {
     const actionDiv = document.createElement('div');
     actionDiv.className = 'absolute -left-9 bottom-0 flex justify-end opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200';
@@ -324,7 +322,7 @@ function addMessage(text, isUser = false, saveToStorage = true, logId = null, in
   } else if (logId) {
     const feedbackDiv = document.createElement('div');
     feedbackDiv.className = 'mt-2 pt-2 border-t border-gray-100 flex justify-end gap-1';
-    
+
     const getThumbSvg = (type, isActive) => {
       const fillClass = isActive ? 'fill-current' : 'fill-transparent';
       if (type === 'UP') {
@@ -338,29 +336,29 @@ function addMessage(text, isUser = false, saveToStorage = true, logId = null, in
     upBtn.className = `feedback-btn up p-1.5 rounded transition-colors text-xs ${initialFeedback === 'UP' ? 'bg-indigo-50 text-indigo-600 active' : 'text-gray-400 hover:bg-gray-100 hover:text-indigo-500'}`;
     upBtn.title = "이 답변이 도움이 되었습니다 (분석 제외)";
     upBtn.innerHTML = getThumbSvg('UP', initialFeedback === 'UP');
-    
+
     const downBtn = document.createElement('button');
     downBtn.className = `feedback-btn down p-1.5 rounded transition-colors text-xs ${initialFeedback === 'DOWN' ? 'bg-rose-50 text-rose-600 active' : 'text-gray-400 hover:bg-gray-100 hover:text-rose-500'}`;
     downBtn.title = "이 답변이 부정확합니다 (분석 포함)";
     downBtn.innerHTML = getThumbSvg('DOWN', initialFeedback === 'DOWN');
-    
+
     const handleFeedback = async (btn, type) => {
       try {
         const isActive = btn.classList.contains('active');
         const newType = isActive ? null : type;
-        
+
         await fetch(`http://127.0.0.1:8000/logs/audit/${logId}/feedback`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ feedback: newType })
         });
-        
+
         // UI Reset
         upBtn.className = 'feedback-btn up p-1.5 rounded transition-colors text-xs text-gray-400 hover:bg-gray-100 hover:text-indigo-500';
         downBtn.className = 'feedback-btn down p-1.5 rounded transition-colors text-xs text-gray-400 hover:bg-gray-100 hover:text-rose-500';
         upBtn.innerHTML = getThumbSvg('UP', false);
         downBtn.innerHTML = getThumbSvg('DOWN', false);
-        
+
         // Update new state
         if (newType === 'UP') {
           upBtn.className = 'feedback-btn up p-1.5 rounded transition-colors text-xs bg-indigo-50 text-indigo-600 active';
@@ -369,7 +367,7 @@ function addMessage(text, isUser = false, saveToStorage = true, logId = null, in
           downBtn.className = 'feedback-btn down p-1.5 rounded transition-colors text-xs bg-rose-50 text-rose-600 active';
           downBtn.innerHTML = getThumbSvg('DOWN', true);
         }
-        
+
         // Update local storage history
         const chatItem = chatHistory.find(c => c.logId === logId);
         if (chatItem) {
@@ -382,10 +380,10 @@ function addMessage(text, isUser = false, saveToStorage = true, logId = null, in
         console.error("피드백 전송 실패:", e);
       }
     };
-    
+
     upBtn.addEventListener('click', () => handleFeedback(upBtn, 'UP'));
     downBtn.addEventListener('click', () => handleFeedback(downBtn, 'DOWN'));
-    
+
     if (latencyMs) {
       const timeText = (latencyMs / 1000).toFixed(1) + "초 소요";
       const latencySpan = document.createElement('span');
@@ -393,13 +391,13 @@ function addMessage(text, isUser = false, saveToStorage = true, logId = null, in
       latencySpan.innerText = `⏱️ ${timeText}`;
       feedbackDiv.appendChild(latencySpan);
     }
-    
+
     feedbackDiv.appendChild(createCopyBtn(text, false));
     feedbackDiv.appendChild(upBtn);
     feedbackDiv.appendChild(downBtn);
     innerDiv.appendChild(feedbackDiv);
   }
-  
+
   msgDiv.appendChild(innerDiv);
   chatContainer.appendChild(msgDiv);
   chatContainer.scrollTop = chatContainer.scrollHeight;
@@ -415,7 +413,7 @@ function addMessage(text, isUser = false, saveToStorage = true, logId = null, in
 
 async function sendMessage() {
   const text = chatInput.value.trim();
-  
+
   if (!text) return;
   if (!currentActiveModel || !currentActiveModel.apiKey) {
     alert("선택된 모델에 연결된 API Key가 없습니다.\n⚙️ 내 AI 모델 관리 패널에서 키가 포함된 모델을 추가하고 선택해주세요.");
@@ -487,7 +485,7 @@ async function sendMessage() {
     });
 
     const data = await response.json();
-    
+
     if (data.status === 'success') {
       addMessage(data.answer, false, true, data.log_id, null, data.latency_ms);
       resetScrapState(); // 전송 성공 시 스크랩/업로드 상태 모두 초기화
@@ -504,7 +502,7 @@ async function sendMessage() {
     clearInterval(timerInterval); // 타이머 안전 종료
     const ld = document.getElementById(loadingId);
     if (ld) ld.remove(); // 로딩 UI 제거
-    
+
     btnStop.classList.add('hidden');
     btnSend.classList.remove('hidden');
     btnSend.disabled = false;
@@ -514,7 +512,7 @@ async function sendMessage() {
   }
 }
 
-chatInput.addEventListener('input', function() {
+chatInput.addEventListener('input', function () {
   this.style.height = 'auto';
   this.style.height = (this.scrollHeight) + 'px';
 });
@@ -555,11 +553,10 @@ function addDefaultWelcomeMessage() {
   const welcomeDiv = document.createElement('div');
   welcomeDiv.className = 'flex justify-start';
   welcomeDiv.innerHTML = `
-    <div class="p-3 rounded-2xl shadow-sm max-w-[85%] leading-relaxed text-sm whitespace-pre-wrap word-break break-words bg-white border border-gray-200 text-gray-700 rounded-tl-none">
-안녕하세요! 대동대학교 입시처 AI 부사수입니다.
-상단의 톱니바퀴 아이콘을 클릭하여 작동할 AI 모델을 설정해 주시고,
-궁금한 점(통계 조회, 규정 분석 등)을 입력해 주세요! 😊
-    </div>
+    <div
+        class="bg-white border border-gray-200 text-gray-700 p-3 rounded-2xl rounded-tl-none shadow-sm max-w-[85%] leading-relaxed text-sm">
+        안녕하세요! 교직원 전용 업무 헬퍼입니다.<br />질문을 입력하시거나, 현재 화면을 스크랩하여 검토를 지시해 주세요.
+      </div>
   `;
   chatContainer.appendChild(welcomeDiv);
 }
@@ -568,21 +565,21 @@ function addDefaultWelcomeMessage() {
 function resetScrapState() {
   scrapedContext = "";
   scrapedFileName = ""; // [NEW] 파일명 초기화
-  
+
   // 스크랩 버튼 초기화
   btnScrap.innerHTML = "📄 스크랩";
   btnScrap.className = "text-[11px] font-bold px-2.5 py-1.5 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-md border border-slate-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
-  
+
   // 파일 첨부 버튼 초기화
   btnUpload.innerHTML = "📎 파일 첨부";
   btnUpload.className = "text-[11px] font-bold px-2.5 py-1.5 bg-indigo-100 text-indigo-700 hover:bg-indigo-200 rounded-md border border-indigo-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
 
   chatInput.placeholder = "질문을 입력하세요... (Shift+Enter로 줄바꿈)";
-  
+
   if (scrapStatus) {
     scrapStatus.classList.add('hidden');
   }
-  
+
   uploadStatus.classList.add('hidden');
   uploadFilename.innerText = "";
   fileUploadInput.value = "";
@@ -599,7 +596,7 @@ if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.onActivated && c
   chrome.tabs.onActivated.addListener((activeInfo) => {
     if (scrapedContext) resetScrapState();
   });
-  
+
   chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.status === 'loading' && scrapedContext) {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -632,25 +629,25 @@ btnScrap.addEventListener('click', async () => {
     func: () => {
       const tables = Array.from(document.querySelectorAll('table'));
       const originalPlaceholders = [];
-      
+
       tables.forEach((table) => {
         if (!table.parentNode) return;
-        
+
         let markdownTable = '\n\n';
         const rows = table.querySelectorAll('tr');
         if (rows.length === 0) return;
-        
+
         rows.forEach((row, rowIndex) => {
           const cells = row.querySelectorAll('th, td');
           if (cells.length === 0) return;
-          
+
           let rowText = '|';
           cells.forEach(cell => {
             let cellText = cell.innerText.replace(/\s+/g, ' ').trim();
             rowText += ` ${cellText} |`;
           });
           markdownTable += rowText + '\n';
-          
+
           if (rowIndex === 0 && rows.length > 1) {
             let separator = '|';
             cells.forEach(() => {
@@ -660,27 +657,27 @@ btnScrap.addEventListener('click', async () => {
           }
         });
         markdownTable += '\n';
-        
+
         const placeholder = document.createElement('div');
         placeholder.innerText = markdownTable;
-        
+
         originalPlaceholders.push({
           parent: table.parentNode,
           table: table,
           placeholder: placeholder
         });
-        
+
         table.parentNode.replaceChild(placeholder, table);
       });
 
       let text = document.body.innerText;
-      
+
       originalPlaceholders.forEach(item => {
         if (item.parent && item.placeholder.parentNode) {
           item.parent.replaceChild(item.table, item.placeholder);
         }
       });
-      
+
       text = text.replace(/\n{3,}/g, '\n\n');
       return text.trim();
     }
@@ -688,8 +685,8 @@ btnScrap.addEventListener('click', async () => {
     if (results && results.length > 0) {
       const combinedText = results.map(r => r.result).filter(t => t && t.trim().length > 0).join('\n\n');
       resetScrapState(); // 기존 상태 모두 초기화
-      
-      scrapedContext = combinedText.substring(0, 50000); 
+
+      scrapedContext = combinedText.substring(0, 50000);
       btnScrap.innerHTML = "✅ 스크랩 완료";
       btnScrap.className = "text-[11px] font-bold px-2.5 py-1.5 bg-emerald-600 text-white hover:bg-emerald-700 rounded-md border border-emerald-700 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
       chatInput.placeholder = "스크랩 화면에 대해 무엇이든 물어보세요!";
@@ -733,16 +730,16 @@ async function processFile(file) {
     });
 
     const data = await response.json();
-    
+
     if (data.status === 'success') {
       resetScrapState(); // 기존 상태 모두 초기화
-      
+
       scrapedContext = data.text.substring(0, 50000); // 파싱된 텍스트 저장 (최대 50000자)
       scrapedFileName = file.name; // [NEW] 파일명 저장
       uploadFilename.innerText = file.name;
       uploadFilename.title = file.name;
       uploadStatus.classList.remove('hidden');
-      
+
       // 파일 첨부 완료 시 눈에 띄는 형광색(lime)으로 버튼 스타일 변경
       btnUpload.innerHTML = "📎 파일 첨부 완료";
       btnUpload.className = "text-[11px] font-extrabold px-2.5 py-1.5 bg-lime-400 text-lime-950 hover:bg-lime-500 rounded-md border border-lime-500 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
@@ -785,9 +782,36 @@ chatInput.addEventListener('drop', async (e) => {
   e.preventDefault();
   e.stopPropagation();
   chatInput.classList.remove('border-indigo-500', 'ring-2', 'ring-indigo-100');
-  
+
   const files = e.dataTransfer.files;
   if (files && files.length > 0) {
     await processFile(files[0]);
   }
 });
+
+// --- Server Heartbeat Logic ---
+const serverStatusText = document.getElementById('server-status-text');
+const serverStatusDot = document.getElementById('server-status-dot');
+
+function checkServerStatus() {
+  fetch('http://127.0.0.1:8000/health')
+    .then(res => {
+      if (res.ok) {
+        serverStatusText.innerText = 'Online';
+        serverStatusText.className = 'text-[10px] text-emerald-200 transition-colors font-bold';
+        serverStatusDot.className = 'w-2 h-2 bg-emerald-400 rounded-full animate-pulse shadow-[0_0_5px_#34d399] transition-colors';
+        serverStatusDot.title = 'Online';
+      } else {
+        throw new Error('Server not ok');
+      }
+    })
+    .catch(err => {
+      serverStatusText.innerText = 'Offline';
+      serverStatusText.className = 'text-[10px] text-rose-300 transition-colors font-bold';
+      serverStatusDot.className = 'w-2 h-2 bg-rose-500 rounded-full shadow-[0_0_3px_#f43f5e] transition-colors';
+      serverStatusDot.title = 'Offline';
+    });
+}
+
+checkServerStatus();
+setInterval(checkServerStatus, 3000);

@@ -115,6 +115,7 @@ def start_servers():
     root_dir = os.path.dirname(os.path.abspath(__file__))
     backend_dir = os.path.join(root_dir, "backend")
     frontend_dir = os.path.join(root_dir, "frontend")
+    student_web_dir = os.path.join(root_dir, "student-web")
     
     # 파이썬 실시간 출력 보장 환경변수 주입
     env = os.environ.copy()
@@ -132,10 +133,20 @@ def start_servers():
     )
     
     # 2. 프론트엔드 Vite 서버 실행 (Windows 배치파일 기동을 위해 shell=True 사용)
-    print("[시스템] 프론트엔드 Vite React 서버 준비 중...")
+    print("[시스템] 교직원 프론트엔드 서버 준비 중...")
     frontend_proc = subprocess.Popen(
         "npm run dev",
         cwd=frontend_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        shell=True
+    )
+
+    # 2.5 학생용 프론트엔드 서버 실행
+    print("[시스템] 학생용 프론트엔드 서버 준비 중...")
+    student_proc = subprocess.Popen(
+        "npm run dev",
+        cwd=student_web_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         shell=True
@@ -152,6 +163,11 @@ def start_servers():
         args=(frontend_proc.stdout, "\033[92m[FRONTEND]\033[0m"), 
         daemon=True
     )
+    t_student = threading.Thread(
+        target=read_output, 
+        args=(student_proc.stdout, "\033[96m[STUDENT]\033[0m"), 
+        daemon=True
+    )
     t_input = threading.Thread(
         target=watch_keyboard_input,
         args=(root_dir,),
@@ -160,6 +176,7 @@ def start_servers():
     
     t_backend.start()
     t_frontend.start()
+    t_student.start()
     t_input.start()
     
     try:
@@ -171,7 +188,10 @@ def start_servers():
                 print(f"[경고] 백엔드 프로세스가 비정상 종료되었습니다 (코드: {backend_proc.poll()})")
                 break
             if frontend_proc.poll() is not None:
-                print(f"[경고] 프론트엔드 프로세스가 비정상 종료되었습니다 (코드: {frontend_proc.poll()})")
+                print(f"[경고] 교직원 프로세스가 비정상 종료되었습니다 (코드: {frontend_proc.poll()})")
+                break
+            if student_proc.poll() is not None:
+                print(f"[경고] 학생 프로세스가 비정상 종료되었습니다 (코드: {student_proc.poll()})")
                 break
     except KeyboardInterrupt:
         print("\n[시스템] 종료 신호(Ctrl+C)가 감지되어 모든 서버를 안전하게 중단합니다...")
@@ -186,6 +206,10 @@ def start_servers():
             pass
         try:
             frontend_proc.terminate()
+        except Exception:
+            pass
+        try:
+            student_proc.terminate()
         except Exception:
             pass
             
@@ -205,6 +229,16 @@ def start_servers():
         except subprocess.TimeoutExpired:
             try:
                 frontend_proc.kill()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        try:
+            student_proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                student_proc.kill()
             except Exception:
                 pass
         except Exception:
