@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
-import { Send, User, Bot, Loader2, Sparkles, HelpCircle } from 'lucide-react';
+import { Send, User, Bot, Loader2, Sparkles, HelpCircle, Square, Copy, Check, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -23,6 +23,65 @@ const QUICK_REPLIES = [
   "정원외 특별전형 자격 요건이 뭐야?"
 ];
 
+function ActionButtons({ text, isUser }: { text: string, isUser?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
+  
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error("복사 실패:", err);
+    }
+  };
+
+  return (
+    <div className={cn("flex items-center gap-1 mt-2", isUser ? "justify-end" : "justify-start")}>
+      <button 
+        onClick={handleCopy}
+        className={cn(
+          "p-1.5 rounded-md transition-colors flex items-center justify-center flex-shrink-0 group relative",
+          isUser ? "hover:bg-indigo-800" : "hover:bg-slate-200/50"
+        )}
+        title="내용 복사"
+      >
+        {copied ? (
+          <Check className={cn("w-3.5 h-3.5", isUser ? "text-emerald-300" : "text-emerald-500")} />
+        ) : (
+          <Copy className={cn("w-3.5 h-3.5", isUser ? "text-indigo-200 group-hover:text-white" : "text-slate-400 group-hover:text-indigo-600")} />
+        )}
+      </button>
+
+      {!isUser && (
+        <>
+          <button 
+            onClick={() => setFeedback('up')}
+            className={cn(
+              "p-1.5 rounded-md transition-colors flex items-center justify-center flex-shrink-0 group",
+              feedback === 'up' ? "bg-emerald-100 text-emerald-600" : "hover:bg-slate-200/50 text-slate-400 hover:text-emerald-600"
+            )}
+            title="좋은 답변입니다"
+          >
+            <ThumbsUp className={cn("w-3.5 h-3.5", feedback === 'up' && "fill-current")} />
+          </button>
+          <button 
+            onClick={() => setFeedback('down')}
+            className={cn(
+              "p-1.5 rounded-md transition-colors flex items-center justify-center flex-shrink-0 group",
+              feedback === 'down' ? "bg-red-100 text-red-600" : "hover:bg-slate-200/50 text-slate-400 hover:text-red-600"
+            )}
+            title="아쉬운 답변입니다"
+          >
+            <ThumbsDown className={cn("w-3.5 h-3.5", feedback === 'down' && "fill-current")} />
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 function App() {
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -35,6 +94,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // 자동 스크롤
   const scrollToBottom = () => {
@@ -55,6 +115,9 @@ function App() {
     }
     setIsLoading(true);
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     try {
       const response = await axios.post('http://127.0.0.1:8000/chat', {
         question: text,
@@ -62,6 +125,8 @@ function App() {
         user_role: "student", // ✅ 핵심: 학생 권한 강제 주입
         scraped_context: "", 
         scraped_file_name: ""
+      }, {
+        signal: controller.signal
       });
 
       const botMsg: Message = {
@@ -71,16 +136,27 @@ function App() {
       };
       setMessages((prev) => [...prev, botMsg]);
     } catch (error: any) {
-      console.error('Chat API Error:', error);
-      const errorMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: '죄송합니다. 통신 오류가 발생했습니다. 잠시 후 다시 시도해 주세요. 😥',
-        isError: true
-      };
-      setMessages((prev) => [...prev, errorMsg]);
+      if (axios.isCancel(error)) {
+        const cancelMsg: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: '답변 생성이 중단되었습니다.',
+          isError: true
+        };
+        setMessages((prev) => [...prev, cancelMsg]);
+      } else {
+        console.error('Chat API Error:', error);
+        const errorMsg: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: '죄송합니다. 통신 오류가 발생했습니다. 잠시 후 다시 시도해 주세요. 😥',
+          isError: true
+        };
+        setMessages((prev) => [...prev, errorMsg]);
+      }
     } finally {
       setIsLoading(false);
+      abortControllerRef.current = null;
     }
   };
 
@@ -135,11 +211,6 @@ function App() {
                   </div>
                 </div>
               )}
-              
-              <div className="whitespace-pre-wrap leading-relaxed text-[15px]">
-                {msg.content}
-              </div>
-
               {msg.role === 'user' && (
                 <div className="float-right ml-3 mt-1">
                   <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
@@ -147,6 +218,15 @@ function App() {
                   </div>
                 </div>
               )}
+              
+              <div className="whitespace-pre-wrap leading-relaxed text-[15px]">
+                {msg.content}
+              </div>
+
+              <div className="clear-both"></div>
+
+              {/* Action Buttons Area */}
+              <ActionButtons text={msg.content} isUser={msg.role === 'user'} msgId={msg.id} />
             </div>
           </div>
         ))}
@@ -208,13 +288,24 @@ function App() {
             className="flex-1 bg-transparent pl-5 pr-16 py-4 min-h-[56px] max-h-[120px] resize-none focus:outline-none disabled:opacity-50 text-[15px] leading-relaxed no-scrollbar"
             style={{ overflowY: input.split('\n').length > 4 || (textareaRef.current && textareaRef.current.scrollHeight > 120) ? 'auto' : 'hidden' }}
           />
-          <button
-            type="submit"
-            disabled={!input.trim() || isLoading}
-            className="absolute right-2 bottom-2 w-10 h-10 rounded-full bg-indigo-900 hover:bg-indigo-950 text-white flex items-center justify-center disabled:opacity-50 transition-colors shadow-md flex-shrink-0"
-          >
-            {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-4 h-4 ml-1" />}
-          </button>
+          {isLoading ? (
+            <button
+              type="button"
+              onClick={() => abortControllerRef.current?.abort()}
+              className="absolute right-2 bottom-2 w-10 h-10 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center transition-colors shadow-md flex-shrink-0 animate-pulse"
+              title="답변 중지"
+            >
+              <Square className="w-4 h-4 fill-current" />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={!input.trim()}
+              className="absolute right-2 bottom-2 w-10 h-10 rounded-full bg-indigo-900 hover:bg-indigo-950 text-white flex items-center justify-center disabled:opacity-50 transition-colors shadow-md flex-shrink-0"
+            >
+              <Send className="w-4 h-4 ml-1" />
+            </button>
+          )}
         </form>
         <p className="text-center text-xs text-slate-400 mt-3 font-medium">
           이 챗봇은 AI 모델에 의해 응답하므로, 중요 안내는 반드시 모집요강 원본을 확인해주세요.
