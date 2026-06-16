@@ -898,6 +898,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         [인사/조직 및 결재라인 변경 등의 지식 추가/삭제 판단 규칙]
         - 사용자의 [질문]이 "인사 정보 변경사항, 구성원 퇴사/입사 사실, 특정 결재라인 규정, 대학 행정 예외 정책" 등 AI가 향후 검토 시 상시 참고해야 할 새로운 규칙/정보를 **등록(저장/추가/기억) 또는 삭제(지우기/제거)**하려는 의도인 경우, 이를 감지하여 `knowledge_action`을 빌드하십시오.
         - 단순 질문(예: "~를 확인해줘", "~가 누구야?", "다른점이 있을까?")은 조회 목적이므로 `knowledge_action`의 `action`은 `"NONE"`입니다.
+        - **[사전지식 등록 예외 엄격 적용]**: 학생 또는 사용자가 "내 전화번호 외워둬", "내 이름 기억해" 등과 같이 행정 정책과 무관한 **개인정보나 사담**을 기억하라고 지시할 경우, 이는 사전지식 등록 대상이 아니므로 무조건 무시하고 `action`을 `"NONE"`으로 설정하십시오.
         - 등록 예시: "사전지식 등록해줘: 4월에 ooo 과장 퇴사했고, 5월에 ooo 주임 신규 입사" -> action: "INSERT", category: "인사/조직", content: "4월에 ooo 과장 퇴사했고, 5월에 ooo 주임 신규 입사"
         - 삭제 예시: "ooo 과장 이력 삭제해줘" -> action: "DELETE", category: "인사/조직", content: "ooo 과장" (삭제하려는 대상을 특정하는 키워드 또는 요약)
 
@@ -1538,6 +1539,16 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 audit_conn.close()
         except Exception as audit_err:
             print(f"Audit Log 기록 오류: {audit_err}")
+
+        # [NEW] 응답 소요 시간 분/초 계산 및 출력
+        total_seconds = latency_ms / 1000.0
+        if total_seconds >= 60:
+            mins = int(total_seconds // 60)
+            secs = total_seconds % 60
+            time_str = f"{mins}분 {secs:.1f}초"
+        else:
+            time_str = f"{total_seconds:.1f}초"
+        print(f"[BACKEND] ⏱️ AI 최종 응답 완료 (소요 시간: {time_str})")
 
         return {
             "status": "success",

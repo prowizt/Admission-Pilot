@@ -3,6 +3,17 @@ import { createPortal } from 'react-dom';
 import axios from 'axios';
 import { Activity, BrainCircuit, MessageSquare, Database, Sparkles, AlertTriangle, Clock, RefreshCw, ChevronRight, X, TerminalSquare, BookOpen, Key, ChevronLeft, ThumbsUp, ThumbsDown } from 'lucide-react';
 
+const formatLatency = (ms: number | undefined) => {
+  if (!ms) return '-';
+  const totalSeconds = ms / 1000;
+  if (totalSeconds >= 60) {
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = (totalSeconds % 60).toFixed(1);
+    return `${mins}분 ${secs}초`;
+  }
+  return `${totalSeconds.toFixed(1)}초`;
+};
+
 export default function Logs() {
   const [activeTab, setActiveTab] = useState('logs');
   const [logs, setLogs] = useState<any[]>([]);
@@ -211,7 +222,7 @@ export default function Logs() {
                       <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider w-[140px]">일시</th>
                       <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider w-[120px]">직군 / 모델</th>
                       <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider">질문 요약</th>
-                      <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-center w-[100px]">반응 속도</th>
+                      <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-center w-[120px]">반응 속도</th>
                       <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-center w-[100px]">관리자 평가</th>
                     </tr>
                   </thead>
@@ -249,11 +260,11 @@ export default function Logs() {
                             </div>
                           </td>
                           <td className="px-4 py-3 align-middle text-center">
-                            <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${
+                            <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border whitespace-nowrap ${
                               (log.latency_ms || 0) < 3000 ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 
                               (log.latency_ms || 0) < 8000 ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-rose-50 text-rose-600 border-rose-100'
                             }`}>
-                              {log.latency_ms ? `${(log.latency_ms / 1000).toFixed(1)}s` : '-'}
+                              {formatLatency(log.latency_ms)}
                             </span>
                           </td>
                           <td className="px-4 py-3 align-middle text-center" onClick={(e) => e.stopPropagation()}>
@@ -306,11 +317,11 @@ export default function Logs() {
                           </span>
                           <span className="text-[11px] text-slate-500 font-medium">{log.created_at}</span>
                         </div>
-                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border whitespace-nowrap ${
                           (log.latency_ms || 0) < 3000 ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 
                           (log.latency_ms || 0) < 8000 ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-rose-50 text-rose-600 border-rose-100'
                         }`}>
-                          {log.latency_ms ? `${(log.latency_ms / 1000).toFixed(1)}s` : '-'}
+                          {formatLatency(log.latency_ms)}
                         </span>
                       </div>
                       
@@ -473,7 +484,7 @@ export default function Logs() {
                   <div className="p-2 bg-indigo-50 text-indigo-500 rounded-lg"><Clock size={20}/></div>
                   <div>
                     <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">일시 및 성능</div>
-                    <div className="font-bold text-slate-700 text-sm">{selectedLog.created_at} <span className="text-indigo-600 text-xs ml-1 font-medium">({selectedLog.latency_ms}ms)</span></div>
+                    <div className="font-bold text-slate-700 text-sm">{selectedLog.created_at} <span className="text-indigo-600 text-xs ml-1 font-medium">({formatLatency(selectedLog.latency_ms)} 소요)</span></div>
                   </div>
                 </div>
                 <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center gap-3">

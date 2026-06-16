@@ -119,12 +119,19 @@ function App() {
     abortControllerRef.current = controller;
 
     try {
+      // 최근 6개 메시지(대화 3쌍) 추출하여 백엔드 전송
+      const recentHistory = messages.slice(-6).map(m => ({
+        text: m.content,
+        isUser: m.role === 'user'
+      }));
+
       const response = await axios.post('http://127.0.0.1:8000/chat', {
         question: text,
         model_name: "gemini-3.5-flash", // 기본 모델
         user_role: "student", // ✅ 핵심: 학생 권한 강제 주입
         scraped_context: "", 
-        scraped_file_name: ""
+        scraped_file_name: "",
+        history: recentHistory
       }, {
         signal: controller.signal
       });

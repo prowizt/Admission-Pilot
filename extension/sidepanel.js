@@ -385,7 +385,15 @@ function addMessage(text, isUser = false, saveToStorage = true, logId = null, in
     downBtn.addEventListener('click', () => handleFeedback(downBtn, 'DOWN'));
 
     if (latencyMs) {
-      const timeText = (latencyMs / 1000).toFixed(1) + "초 소요";
+      const totalSeconds = latencyMs / 1000;
+      let timeText;
+      if (totalSeconds >= 60) {
+        const mins = Math.floor(totalSeconds / 60);
+        const secs = (totalSeconds % 60).toFixed(1);
+        timeText = `${mins}분 ${secs}초 소요`;
+      } else {
+        timeText = `${totalSeconds.toFixed(1)}초 소요`;
+      }
       const latencySpan = document.createElement('span');
       latencySpan.className = 'text-xs text-gray-400 mr-auto flex items-center font-medium';
       latencySpan.innerText = `⏱️ ${timeText}`;
