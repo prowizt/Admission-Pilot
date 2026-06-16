@@ -277,6 +277,25 @@ btnAddModel.addEventListener('click', () => {
   }
 });
 
+function formatChatText(rawText) {
+  if (!rawText) return '';
+  // 1. HTML Escape
+  let html = rawText.replace(/&/g, '&amp;')
+                 .replace(/</g, '&lt;')
+                 .replace(/>/g, '&gt;')
+                 .replace(/"/g, '&quot;')
+                 .replace(/'/g, '&#39;');
+                 
+  // 2. Bold (**text**)
+  html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  
+  // 3. Highlight [불일치...] and [일치...]
+  html = html.replace(/\[(불일치[^\]]*)\]/g, '<span class="bg-rose-100 text-rose-700 font-bold px-1.5 py-0.5 rounded-md inline-block my-0.5 shadow-sm">[$1]</span>');
+  html = html.replace(/\[(일치[^\]]*)\]/g, '<span class="bg-emerald-50 text-emerald-600 font-bold px-1.5 py-0.5 rounded-md inline-block my-0.5 border border-emerald-200">[$1]</span>');
+
+  return html;
+}
+
 function addMessage(text, isUser = false, saveToStorage = true, logId = null, initialFeedback = null, latencyMs = null) {
   const msgDiv = document.createElement('div');
   msgDiv.className = `flex ${isUser ? 'justify-end' : 'justify-start'}`;
@@ -286,7 +305,7 @@ function addMessage(text, isUser = false, saveToStorage = true, logId = null, in
     ? 'bg-indigo-600 text-white rounded-tr-none'
     : 'bg-white border border-gray-200 text-gray-700 rounded-tl-none'
     }`;
-  innerDiv.innerText = text;
+  innerDiv.innerHTML = isUser ? formatChatText(text) : formatChatText(text);
 
   // --- Copy Button SVG & Logic ---
   const getCopySvg = () => `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3.5 h-3.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 0 1-.75.75H9a.75.75 0 0 1-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 0 1-2.25 2.25H6.75A2.25 2.25 0 0 1 4.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 0 1 1.927-.184" /></svg>`;

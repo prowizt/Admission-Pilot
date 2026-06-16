@@ -147,10 +147,10 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="h-full flex flex-col min-w-0 pb-24 md:pb-6 overflow-y-auto bg-slate-50/50 p-4 md:p-6">
+    <div className="h-full flex flex-col min-w-0 pb-24 md:pb-6 overflow-y-auto bg-slate-50/50 p-1 md:p-6">
       
       {/* 1. Header & Tabs */}
-      <div className="bg-gradient-to-br from-indigo-900 via-indigo-800 to-purple-900 rounded-t-xl shadow-md pt-4 px-6 shrink-0 min-w-0 flex flex-col relative overflow-hidden text-white">
+      <div className="bg-gradient-to-br from-indigo-900 via-indigo-800 to-purple-900 rounded-t-xl shadow-md pt-3 px-3 md:pt-4 md:px-6 shrink-0 min-w-0 flex flex-col relative overflow-hidden text-white">
         <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none">
           <Database size={120} />
         </div>
@@ -200,7 +200,7 @@ export default function Dashboard() {
           >
             <ShieldHalf size={16} className="shrink-0" /> 
             <span>
-              <span className="inline md:hidden">사전지식</span>
+              <span className="inline md:hidden">지식</span>
               <span className="hidden md:inline">사전지식 (핵심규칙 및 예외)</span>
             </span>
           </button>

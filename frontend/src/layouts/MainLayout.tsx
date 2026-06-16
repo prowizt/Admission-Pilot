@@ -4,9 +4,10 @@ import { LayoutDashboard, MessageSquare, Database, Settings, Menu, LogOut, UserC
 import { Sheet, SheetContent, SheetTrigger, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 
-const SidebarItem = ({ icon: Icon, label, to, active }: any) => (
+const SidebarItem = ({ icon: Icon, label, to, active, onClick }: any) => (
   <Link
     to={to}
+    onClick={onClick}
     className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
       active ? 'bg-indigo-800 text-white shadow-md' : 'text-indigo-200 hover:bg-indigo-800 hover:text-white'
     }`}
@@ -16,7 +17,7 @@ const SidebarItem = ({ icon: Icon, label, to, active }: any) => (
   </Link>
 );
 
-const SidebarContent = ({ pathname }: { pathname: string }) => {
+const SidebarContent = ({ pathname, onItemClick }: { pathname: string, onItemClick?: () => void }) => {
   const menuItems = [
     { icon: LayoutDashboard, label: '지식 카탈로그', to: '/' },
     { icon: MessageSquare, label: 'AI 챗봇 테스트', to: '/chat' },
@@ -36,7 +37,7 @@ const SidebarContent = ({ pathname }: { pathname: string }) => {
       <nav className="flex-1 p-4 space-y-1 overflow-y-auto custom-scrollbar">
         <div className="px-4 py-2 text-xs font-bold text-indigo-300 uppercase tracking-wider mb-2">Menu</div>
         {menuItems.map((item) => (
-          <SidebarItem key={item.to} {...item} active={pathname === item.to} />
+          <SidebarItem key={item.to} {...item} active={pathname === item.to} onClick={onItemClick} />
         ))}
       </nav>
 
@@ -83,7 +84,7 @@ export default function MainLayout() {
               className="p-0 w-[260px] border-none bg-indigo-900 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left duration-300 ease-in-out"
             >
               <SheetTitle className="sr-only">모바일 네비게이션 메뉴</SheetTitle>
-              <SidebarContent pathname={location.pathname} />
+              <SidebarContent pathname={location.pathname} onItemClick={() => setIsOpen(false)} />
             </SheetContent>
           </Sheet>
           <div className="font-bold text-indigo-900 text-lg">Admission-Pilot</div>

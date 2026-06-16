@@ -320,21 +320,21 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
               {activeTab === 'documents' ? (
                 /* ================= [비정형 문서 모달] ================= */
                 <>
-                  <div className="grid grid-cols-5 gap-4 min-w-0">
-                    <div className="col-span-3">
+                  <div className="grid grid-cols-1 md:grid-cols-5 gap-4 min-w-0">
+                    <div className="md:col-span-3">
                       <label className={labelClass}>문서 유형 *</label>
                       <div className="flex bg-gray-100 p-1 rounded-lg">
                         <button type="button" disabled={isEditMode} onClick={() => setFormData({ ...formData, doc_type: 'rule' })} className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all active:scale-95 ${formData.doc_type === 'rule' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200'} ${isEditMode ? 'opacity-70 cursor-not-allowed' : ''}`}>Rule (규정)</button>
                         <button type="button" disabled={isEditMode} onClick={() => setFormData({ ...formData, doc_type: 'reference' })} className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all active:scale-95 ${formData.doc_type === 'reference' ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200'} ${isEditMode ? 'opacity-70 cursor-not-allowed' : ''}`}>Ref (양식)</button>
                       </div>
                     </div>
-                    <div className="col-span-2">
+                    <div className="md:col-span-2">
                       <label className={labelClass}>적용 연도</label>
                       <div className="flex items-center gap-1.5">
-                        <button type="button" onClick={() => handleYearChange(-1)} className="px-2 py-1.5 bg-white border border-gray-300 rounded-md hover:bg-gray-100 active:scale-90 transition-transform shadow-sm"><ChevronLeft size={16} /></button>
-                        <input type="text" value={formData.year} onChange={(e) => setFormData({...formData, year: e.target.value.replace(/[^0-9a-zA-Z]/g, '').toUpperCase()})} className="flex-1 w-full text-center font-bold text-sm bg-white border border-gray-300 py-1.5 rounded-md outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 shadow-sm" maxLength={4} />
-                        <button type="button" onClick={() => handleYearChange(1)} className="px-2 py-1.5 bg-white border border-gray-300 rounded-md hover:bg-gray-100 active:scale-90 transition-transform shadow-sm"><ChevronRight size={16} /></button>
-                        <button type="button" onClick={() => setFormData({...formData, year: 'ALL'})} className="px-2 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-md hover:bg-indigo-100 text-[10px] font-bold active:scale-95 transition-all whitespace-nowrap shadow-sm">상시</button>
+                        <button type="button" onClick={() => handleYearChange(-1)} className="px-2 py-1.5 bg-white border border-gray-300 rounded-md hover:bg-gray-100 active:scale-90 transition-transform shadow-sm shrink-0"><ChevronLeft size={16} /></button>
+                        <input type="text" value={formData.year} onChange={(e) => setFormData({...formData, year: e.target.value.replace(/[^0-9a-zA-Z]/g, '').toUpperCase()})} className="flex-1 min-w-[50px] w-full text-center font-bold text-sm bg-white border border-gray-300 py-1.5 rounded-md outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 shadow-sm" maxLength={4} />
+                        <button type="button" onClick={() => handleYearChange(1)} className="px-2 py-1.5 bg-white border border-gray-300 rounded-md hover:bg-gray-100 active:scale-90 transition-transform shadow-sm shrink-0"><ChevronRight size={16} /></button>
+                        <button type="button" onClick={() => setFormData({...formData, year: 'ALL'})} className="px-2 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-md hover:bg-indigo-100 text-[10px] font-bold active:scale-95 transition-all whitespace-nowrap shadow-sm shrink-0">상시</button>
                       </div>
                     </div>
                   </div>
