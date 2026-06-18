@@ -38,7 +38,8 @@ def watch_keyboard_input(root_dir):
         try:
             line = sys.stdin.readline()
             if not line:
-                break
+                time.sleep(1)
+                continue
             command = line.strip().lower()
             if command in ('b', 'ㅠ'):
                 print("\n[시스템] 깃 백업 요청 감지! 외부 새 창으로 백업 스크립트를 기동합니다...")

@@ -45,6 +45,8 @@ const btnClearChat = document.getElementById('btn-clear-chat'); // 대화 비우
 
 const btnUpload = document.getElementById('btn-upload');
 const fileUploadInput = document.getElementById('file-upload-input');
+const btnAutofillExcel = document.getElementById('btn-autofill-excel');
+const autofillExcelInput = document.getElementById('autofill-excel-input');
 const uploadStatus = document.getElementById('upload-status');
 const uploadFilename = document.getElementById('upload-filename');
 const btnClearUpload = document.getElementById('btn-clear-upload');
@@ -67,6 +69,7 @@ const btnAddModel = document.getElementById('btn-add-model');
 
 let scrapedContext = "";
 let scrapedFileName = ""; // [NEW] 첨부 파일명 기록용 변수
+let attachedExcelFile = null; // [NEW] 엑셀 템플릿 파일 보관용 변수
 let chatHistory = []; // 대화 기록 저장용 전역 배열
 
 // 기본 제공되는 모델 세트 (요청에 따라 비움)
@@ -486,28 +489,51 @@ async function sendMessage() {
     }
   }, 1000);
 
-  const payload = {
-    question: text,
-    user_role: 'staff',
-    model_name: currentActiveModel.modelName,
-    history: chatHistory.slice(-6)
+  let endpoint = 'http://127.0.0.1:8000/chat';
+  let bodyData;
+  let headers = {
+    'x-gemini-key': currentActiveModel.apiKey
   };
 
-  if (scrapedContext) {
-    payload.scraped_context = scrapedContext;
-    if (scrapedFileName) {
-      payload.scraped_file_name = scrapedFileName;
+  // 엑셀 파일이 첨부되었더라도, 사용자가 '채우기' 동작을 명시적으로 요구했을 때만 Autofill 모드로 동작
+  const isAutofillIntent = /채워|작성|매핑|맵핑|생성|넣어|채우기|자동완성/.test(text);
+
+  if (attachedExcelFile && isAutofillIntent) {
+    endpoint = 'http://127.0.0.1:8000/chat-excel-autofill';
+    const formData = new FormData();
+    formData.append('file', attachedExcelFile);
+    formData.append('question', text);
+    formData.append('user_role', 'staff');
+    formData.append('model_name', currentActiveModel.modelName);
+    formData.append('history', JSON.stringify(chatHistory.slice(-6)));
+    
+    if (scrapedContext) formData.append('scraped_context', scrapedContext);
+    if (scrapedFileName) formData.append('scraped_file_name', scrapedFileName);
+    
+    bodyData = formData;
+  } else {
+    headers['Content-Type'] = 'application/json';
+    const payload = {
+      question: text,
+      user_role: 'staff',
+      model_name: currentActiveModel.modelName,
+      history: chatHistory.slice(-6)
+    };
+
+    if (scrapedContext) {
+      payload.scraped_context = scrapedContext;
+      if (scrapedFileName) {
+        payload.scraped_file_name = scrapedFileName;
+      }
     }
+    bodyData = JSON.stringify(payload);
   }
 
   try {
-    const response = await fetch('http://127.0.0.1:8000/chat', {
+    const response = await fetch(endpoint, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-gemini-key': currentActiveModel.apiKey
-      },
-      body: JSON.stringify(payload),
+      headers: headers,
+      body: bodyData,
       signal: currentAbortController.signal
     });
 
@@ -515,6 +541,26 @@ async function sendMessage() {
 
     if (data.status === 'success') {
       addMessage(data.answer, false, true, data.log_id, null, data.latency_ms);
+      
+      // 엑셀 생성 결과가 있으면 다운로드 실행
+      if (data.excel_base64) {
+        const byteCharacters = atob(data.excel_base64);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], {type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = data.excel_filename || "AutoFilled.xlsx";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+      }
+
       resetScrapState(); // 전송 성공 시 스크랩/업로드 상태 모두 초기화
     } else {
       addMessage("오류가 발생했습니다: " + data.detail, false, true);
@@ -591,7 +637,8 @@ function addDefaultWelcomeMessage() {
 // 상태 초기화 헬퍼 함수 (스크랩 및 업로드 파일 공통)
 function resetScrapState() {
   scrapedContext = "";
-  scrapedFileName = ""; // [NEW] 파일명 초기화
+  scrapedFileName = "";
+  attachedExcelFile = null; // [NEW] 파일명 초기화
 
   // 스크랩 버튼 초기화
   btnScrap.innerHTML = "📄 스크랩";
@@ -729,6 +776,8 @@ btnUpload.addEventListener('click', () => {
   fileUploadInput.click();
 });
 
+// btn-autofill-excel 삭제됨에 따라 관련 로직 완전히 제거
+
 // 파일 업로드 처리 공통 함수
 async function processFile(file) {
   if (!file) return;
@@ -766,6 +815,11 @@ async function processFile(file) {
       uploadFilename.innerText = file.name;
       uploadFilename.title = file.name;
       uploadStatus.classList.remove('hidden');
+
+      // 파일명 확장자에 따라 분기 처리
+      if (file.name.toLowerCase().endsWith('.xlsx')) {
+        attachedExcelFile = file; // 엑셀 파일 보관
+      }
 
       // 파일 첨부 완료 시 눈에 띄는 형광색(lime)으로 버튼 스타일 변경
       btnUpload.innerHTML = "📎 파일 첨부 완료";
