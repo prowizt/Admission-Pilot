@@ -96,6 +96,30 @@ function App() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // [NEW] 타자 효과를 위한 프론트엔드 큐
+  const typingQueueRef = useRef<{ text: string, msgId: string } | null>(null);
+
+  // [NEW] 30ms 마다 큐에서 글자를 하나씩 빼서 화면에 출력하는 인터벌
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (typingQueueRef.current) {
+        const { text, msgId } = typingQueueRef.current;
+        setMessages(prev => {
+          const targetMsg = prev.find(m => m.id === msgId);
+          if (!targetMsg) return prev;
+          
+          if (targetMsg.content.length < text.length) {
+            // 한 번에 출력할 글자 수 (속도 조절 가능, 기본 1글자)
+            const nextContent = text.substring(0, targetMsg.content.length + 1);
+            return prev.map(m => m.id === msgId ? { ...m, content: nextContent } : m);
+          }
+          return prev;
+        });
+      }
+    }, 30); // 30ms 간격 (초당 33글자)
+    return () => clearInterval(timer);
+  }, []);
+
   // 자동 스크롤
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -125,41 +149,102 @@ function App() {
         isUser: m.role === 'user'
       }));
 
-      const response = await axios.post('http://127.0.0.1:8000/chat', {
-        question: text,
-        model_name: "gemini-3.5-flash", // 기본 모델
-        user_role: "student", // ✅ 핵심: 학생 권한 강제 주입
-        scraped_context: "", 
-        scraped_file_name: "",
-        history: recentHistory
-      }, {
+      const botMsgId = (Date.now() + 1).toString();
+      let botMsgAdded = false;
+
+      // 2. Fetch API로 스트리밍 요청
+      const response = await fetch('http://127.0.0.1:8000/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          question: text,
+          model_name: "gemini-3.5-flash", // 기본 모델
+          user_role: "student", // ✅ 핵심: 학생 권한 강제 주입
+          scraped_context: "", 
+          scraped_file_name: "",
+          history: recentHistory
+        }),
         signal: controller.signal
       });
 
-      const botMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: response.data.answer || "응답 내용이 없습니다."
-      };
-      setMessages((prev) => [...prev, botMsg]);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      // 3. ReadableStream 리더 준비
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder('utf-8');
+
+      if (reader) {
+        let done = false;
+        let buffer = '';
+
+        // 큐 초기화 (수신된 전체 텍스트 보관용)
+        typingQueueRef.current = { text: "", msgId: botMsgId };
+
+        while (!done) {
+          const { value, done: readerDone } = await reader.read();
+          done = readerDone;
+          if (value) {
+            // 첫 번째 데이터 조각이 도착했을 때만 빈 말풍선을 추가하고 스피너를 끕니다.
+            if (!botMsgAdded) {
+              const initialBotMsg: Message = { id: botMsgId, role: 'assistant', content: "" };
+              setMessages((prev) => [...prev, initialBotMsg]);
+              setIsLoading(false);
+              botMsgAdded = true;
+            }
+            // 청크 디코딩 후 버퍼에 추가
+            buffer += decoder.decode(value, { stream: true });
+            
+            // 줄바꿈 기호(\n\n)를 기준으로 SSE 데이터 분리
+            const lines = buffer.split('\n\n');
+            
+            // 마지막 요소는 아직 완전한 '\n\n'으로 끝나지 않은 조각일 수 있으므로 버퍼에 남김
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const dataStr = line.substring(6);
+                if (dataStr.trim() === '') continue;
+                try {
+                  const data = JSON.parse(dataStr);
+                  if (data.chunk) {
+                    // UI 직접 업데이트 대신 큐에 글자 누적
+                    if (typingQueueRef.current) {
+                      typingQueueRef.current.text += data.chunk;
+                    }
+                  } else if (data.status === 'done') {
+                    // 완료 (로그 처리 등 필요시 이곳에 작성)
+                  } else if (data.error) {
+                     if (typingQueueRef.current) {
+                       typingQueueRef.current.text += '\n\n[오류 발생: ' + data.error + ']';
+                     }
+                  }
+                } catch (e) {
+                  // JSON 파싱 에러 무시 (잘못 쪼개진 청크)
+                  console.error('Error parsing JSON chunk:', e);
+                }
+              }
+            }
+          }
+        }
+      }
     } catch (error: any) {
-      if (axios.isCancel(error)) {
-        const cancelMsg: Message = {
-          id: (Date.now() + 1).toString(),
-          role: 'assistant',
-          content: '답변 생성이 중단되었습니다.',
-          isError: true
-        };
-        setMessages((prev) => [...prev, cancelMsg]);
+      if (error.name === 'AbortError' || axios.isCancel(error)) {
+        if (!botMsgAdded) {
+           setMessages((prev) => [...prev, { id: botMsgId, role: 'assistant', content: '답변 생성이 중단되었습니다.', isError: true }]);
+        } else if (typingQueueRef.current) {
+           typingQueueRef.current.text += '\n\n[답변 생성이 중단되었습니다.]';
+        }
       } else {
         console.error('Chat API Error:', error);
-        const errorMsg: Message = {
-          id: (Date.now() + 1).toString(),
-          role: 'assistant',
-          content: '죄송합니다. 통신 오류가 발생했습니다. 잠시 후 다시 시도해 주세요. 😥',
-          isError: true
-        };
-        setMessages((prev) => [...prev, errorMsg]);
+        if (!botMsgAdded) {
+           setMessages((prev) => [...prev, { id: botMsgId, role: 'assistant', content: '죄송합니다. 통신 오류가 발생했습니다. 잠시 후 다시 시도해 주세요. 😥', isError: true }]);
+        } else if (typingQueueRef.current) {
+           typingQueueRef.current.text += '\n\n[죄송합니다. 통신 오류가 발생했습니다. 잠시 후 다시 시도해 주세요. 😥]';
+        }
       }
     } finally {
       setIsLoading(false);

@@ -32,31 +32,6 @@ if sys.platform == "win32":
     except Exception as e:
         print(f"[경고] Windows 가상 터미널 프로세싱 활성화 실패: {e}")
 
-def watch_keyboard_input(root_dir):
-    print("\n💡 [백업 안내] 서버가 실행 중인 터미널에서 'b' 또는 'ㅠ'를 입력하고 [엔터]를 누르면, 개발 서버 종료 없이 외부 새 창에서 깃 백업(git_push.py)을 실행합니다!\n")
-    while True:
-        try:
-            line = sys.stdin.readline()
-            if not line:
-                time.sleep(1)
-                continue
-            command = line.strip().lower()
-            if command in ('b', 'ㅠ'):
-                print("\n[시스템] 깃 백업 요청 감지! 외부 새 창으로 백업 스크립트를 기동합니다...")
-                script_path = os.path.join(root_dir, "git_push.py")
-                if sys.platform == "win32":
-                    # cwd를 root_dir로 명시하여 새 콘솔이 띄워질 때 경로 유실을 방지합니다.
-                    # 또한 --child 인자를 처음부터 넘겨 중복 팝업(Double Spawning)을 예방합니다.
-                    subprocess.Popen(
-                        [sys.executable, script_path, "--child"], 
-                        creationflags=subprocess.CREATE_NEW_CONSOLE,
-                        cwd=root_dir
-                    )
-                else:
-                    subprocess.Popen([sys.executable, script_path], cwd=root_dir)
-        except Exception as e:
-            print(f"[오류] 입력 감지 에러: {e}")
-            break
 
 def read_output(pipe, prefix):
     global last_log_time
@@ -169,16 +144,9 @@ def start_servers():
         args=(student_proc.stdout, "\033[96m[STUDENT]\033[0m"), 
         daemon=True
     )
-    t_input = threading.Thread(
-        target=watch_keyboard_input,
-        args=(root_dir,),
-        daemon=True
-    )
-    
     t_backend.start()
     t_frontend.start()
     t_student.start()
-    t_input.start()
     
     try:
         # 두 서브프로세스가 동작하는지 주기적으로 핑 점검

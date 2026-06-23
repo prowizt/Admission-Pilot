@@ -7,6 +7,9 @@ import io
 import uuid
 import time
 import logging
+import traceback
+import base64
+from google.api_core import retry
 
 # [로그 필터 설정] /health 엔드포인트의 접근 로그(200 OK)를 필터링하여 콘솔 도배를 방지합니다.
 class HealthCheckFilter(logging.Filter):
@@ -807,6 +810,12 @@ def mask_pii(text: str) -> str:
 def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
     start_time = time.time()
     
+    # [NEW] 터미널에 사용자 권한(학생/직원) 로깅
+    role_str = "학생용(student)" if request.user_role == "student" else "교직원용(staff)"
+    print(f"\n[BACKEND] ===============================================")
+    print(f"[BACKEND] 🚀 신규 채팅 요청 수신 - 접속 권한: {role_str}")
+    print(f"[BACKEND] ===============================================\n")
+    
     # [보안 통제] 사용자의 질문(question) 내에 포함된 민감한 개인정보(주민번호, 휴대전화번호)를 백엔드 초입에서 원천 마스킹
     if request.question:
         request.question = mask_pii(request.question)
@@ -818,6 +827,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
     if not x_gemini_key:
         raise HTTPException(status_code=401, detail="Gemini API Key가 필요합니다.")
 
+    log_id = None
+    conn = None
     try:
         genai.configure(api_key=x_gemini_key)
         
@@ -892,7 +903,31 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 
         import json
         
-        sql_router_prompt = f"""
+        # [NEW] 학생용 고속화: 현재 공개된 DB 테이블이 단 하나도 없다면, 라우터를 스킵하고 즉시 문서 검색으로 직행!
+        has_public_tables = "- Table: [" in dynamic_schema
+        skip_router = (request.user_role == "student" and not has_public_tables)
+        
+        if skip_router:
+            sql_query = "NONE"
+            need_rag = True
+            rag_query = request.question
+            rag_year_filter = "ALL"
+            k_action = "NONE"
+            k_category = "기타"
+            k_content = ""
+            
+            # [연도 자동 보정]
+            all_text = (request.question or "") + " " + (request.scraped_context or "")
+            years = re.findall(r"\b(202\d)\b", all_text)
+            if years:
+                rag_year_filter = years[0]
+                print(f"[연도 보정] 질문/스크랩 내에서 {rag_year_filter}학년도를 감지하여 필터를 적용합니다.")
+                
+            time_router_end = time.time()
+            print(f"[MAIN-CHAT] ⚡ Fast-Track 발동: 공개 DB 테이블이 없으므로 라우터 AI를 생략하고 즉시 문서 검색으로 직행합니다.")
+            print(f"[BACKEND] ⏱️ 라우터 AI 소요 시간: {time_router_end - start_time:.2f}초 (건너뜀)")
+        else:
+            sql_router_prompt = f"""
         너는 대동대학교 입시처의 수석 데이터 아키텍트이자 실시간 입시 사전지식 관리자야. 
         사용자의 [질문]에 답변하기 위해 아래의 [현재 데이터베이스 및 문서 카탈로그 현황]을 분석하고, 
         어떻게 데이터를 조회 및 반영해야 할지 판단해 줘.
@@ -909,8 +944,14 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         - 위 [관리자 등록 최상위 사전지식]에 명시된 규칙은 질문의 의도 파악과 SQL 쿼리 설계 시 절대적으로 준수해야 하는 1순위 예외 규칙입니다.
         - 만약 사전지식에서 특정 조건(예: "편입 포함 말이 없으면 신입만 조회해")을 강제한다면, SQL의 WHERE 절에 반드시 해당 조건을 추가하세요.
 
+        [최우선 판별 규칙 - 지능형 카탈로그 매핑]
+        사용자의 [질문] 속에 포함된 명칭이나 조건어(예: "OOO만 보고", "XXX에서 찾아")를 위 [현재 데이터베이스 및 문서 카탈로그 현황]에 제공된 실제 카탈로그 이름들과 대조하여 스스로 검색 대상을 결정하십시오.
+        - 질문 속 단어가 **비정형 문서 목록 (ChromaDB에 저장됨)의 파일명이나 타이틀**과 의미상/텍스트상 일치한다면 (예: "2027학년도 모집요강만 보고" -> '2027학년도 모집요강.pdf' 존재 확인), `need_rag`는 반드시 `true`로 설정하고 `sql_query`는 `NONE`으로 강제 설정하십시오.
+        - 질문 속 단어가 **MS-SQL 테이블 구조의 테이블명이나 용도**와 의미상/텍스트상 일치한다면 (예: "입학정원만 보고" -> 'ADMISSIONQUOTA' 테이블 존재 확인), `need_rag`는 `false`로 설정하고 해당 테이블을 조회하는 T-SQL을 작성하십시오.
+        - 명시적 대조가 없거나 두 영역 모두 검색이 필요한 일반적인 경우: 질문에 따라 `sql_query` 작성 여부와 `need_rag`를 유연하게 결정하십시오.
+
         [기본 사전 지식 주입]
-        1. [입시 학년도 정의]: 대학교 입시에서 'N학년도 전형(모집요강)'은 'N-1년도'에 모집을 실시하는 전형을 뜻합니다. (예: 2027학년도 모집요강 = 2026년 가을/겨울에 모집 실시). 사용자가 질문한 연도가 '실시 연도'인지 '입학 학년도'인지 문맥을 파악하여 SQL과 문서 검색 타겟을 정확히 일치시키세요.
+        1. [입시 학년도 정의]: 대학교 입시에서 'N학년도 전형문서'는 'N-1년도'에 모집을 실시하는 전형을 뜻합니다. (예: 2027학년도 전형문서 = 2026년 가을/겨울에 모집 실시). 사용자가 질문한 연도가 '실시 연도'인지 '입학 학년도'인지 문맥을 파악하여 SQL과 문서 검색 타겟을 정확히 일치시키세요.
         2. [일반 학년도 정의]: 학년도(예: 2026학년도)는 3월 1일부터 다음 해 2월 말일까지를 의미합니다. (예: 2026학년도 = 2026.03 ~ 2027.02).
         3. [신입/편입 구분]: 대학 입학 결과에는 신입생 뿐만 아니라 '편입생'도 존재합니다. 사용자가 특정 전형만 지정하지 않고 '최종 모집 결과' 등 종합 검토를 요청하는 경우, `[신입편입구분]` 조건에 '신입'만 걸어 조회하지 말고, '신입'과 '편입' 데이터를 구분하여 각각 조회하거나 한꺼번에 수집하도록 T-SQL을 구성하세요.
         4. [정원내 및 정원외 전형 구분 규칙]: 
@@ -956,67 +997,69 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             }}
         }}
         """
-        # [라우터 전용 API 키 분리] 
-        # 3.5 모델의 과도한 사용을 막기 위해, 라우터(SQL 판별)는 2.5-flash와 별도의 API 키를 사용합니다.
-        router_api_key = os.getenv("ROUTER_API_KEY", "")
-        router_model_name = os.getenv("ROUTER_MODEL", "gemini-2.5-flash")
-        
-        if router_api_key and router_api_key != "여기에_새로운_API키를_입력하세요":
-            genai.configure(api_key=router_api_key)
-            sql_model = genai.GenerativeModel(router_model_name)
-        else:
-            # 새 키를 안 넣었을 경우 원래 사용자 키 & 모델을 그대로 씀 (에러 방지용)
-            sql_model = genai.GenerativeModel(request.model_name)
+            # [라우터 전용 API 키 분리] 
+            # 3.5 모델의 과도한 사용을 막기 위해, 라우터(SQL 판별)는 2.5-flash와 별도의 API 키를 사용합니다.
+            router_api_key = os.getenv("ROUTER_API_KEY", "")
+            router_model_name = os.getenv("ROUTER_MODEL", "gemini-2.5-flash")
             
-        sql_response = sql_model.generate_content(sql_router_prompt)
-        
-        # 라우터 작업이 끝난 후, 반드시 사용자가 프론트에서 넘겨준 원래 API 키로 다시 되돌려 놓아야 합니다.
-        if router_api_key and router_api_key != "여기에_새로운_API키를_입력하세요":
-            genai.configure(api_key=x_gemini_key)
-        
-        # JSON 파싱
-        try:
-            response_text = sql_response.text.strip()
-            if response_text.startswith("```json"):
-                response_text = response_text.replace("```json", "").replace("```", "").strip()
-            elif response_text.startswith("```"):
-                response_text = response_text.replace("```", "").strip()
+            if router_api_key and router_api_key != "여기에_새로운_API키를_입력하세요":
+                genai.configure(api_key=router_api_key)
+                sql_model = genai.GenerativeModel(router_model_name)
+            else:
+                # 새 키를 안 넣었을 경우 원래 사용자 키 & 모델을 그대로 씀 (에러 방지용)
+                sql_model = genai.GenerativeModel(request.model_name)
                 
-            parsed_json = json.loads(response_text)
-            sql_query = parsed_json.get("sql_query", "NONE")
-            need_rag = parsed_json.get("need_rag", False)
-            rag_query = parsed_json.get("rag_search_query", request.question)
-            rag_year_filter = parsed_json.get("rag_year_filter", "ALL")
+            no_retry = retry.Retry(initial=0, maximum=0, multiplier=0, deadline=0)
+            print(f"[MAIN-CHAT] 🧠 SQL 라우터 분석 중... (사용 모델: {router_model_name if router_api_key else request.model_name})")
+            sql_response = sql_model.generate_content(sql_router_prompt, request_options={"retry": no_retry})
             
-            # [실시간 지식 보완 액션 추출]
-            k_action_data = parsed_json.get("knowledge_action", {})
-            k_action = k_action_data.get("action", "NONE")
-            k_category = k_action_data.get("category", "기타")
-            k_content = k_action_data.get("content", "")
+            # 라우터 작업이 끝난 후, 반드시 사용자가 프론트에서 넘겨준 원래 API 키로 다시 되돌려 놓아야 합니다.
+            if router_api_key and router_api_key != "여기에_새로운_API키를_입력하세요":
+                genai.configure(api_key=x_gemini_key)
             
-            # [연도 자동 보정] 사용자 질문이나 스크랩된 문서에서 4자리 연도를 감지하여 RAG 필터에 자동 적용합니다.
-            if rag_year_filter == "ALL" or not rag_year_filter:
+            # JSON 파싱
+            try:
+                response_text = sql_response.text.strip()
+                if response_text.startswith("```json"):
+                    response_text = response_text.replace("```json", "").replace("```", "").strip()
+                elif response_text.startswith("```"):
+                    response_text = response_text.replace("```", "").strip()
+                    
+                parsed_json = json.loads(response_text)
+                sql_query = parsed_json.get("sql_query", "NONE")
+                need_rag = parsed_json.get("need_rag", False)
+                rag_query = parsed_json.get("rag_search_query", request.question)
+                rag_year_filter = parsed_json.get("rag_year_filter", "ALL")
+                
+                # [실시간 지식 보완 액션 추출]
+                k_action_data = parsed_json.get("knowledge_action", {})
+                k_action = k_action_data.get("action", "NONE")
+                k_category = k_action_data.get("category", "기타")
+                k_content = k_action_data.get("content", "")
+                
+                # [연도 자동 보정] 사용자 질문이나 스크랩된 문서에서 4자리 연도를 감지하여 RAG 필터에 자동 적용합니다.
+                if rag_year_filter == "ALL" or not rag_year_filter:
+                    all_text = (request.question or "") + " " + (request.scraped_context or "")
+                    years = re.findall(r"\b(202\d)\b", all_text)
+                    if years:
+                        rag_year_filter = years[0]
+                    print(f"[연도 보정] 질문/스크랩 내에서 {rag_year_filter}학년도를 감지하여 필터를 적용합니다.")
+            except Exception as json_err:
+                print(f"JSON 파싱 오류: {json_err} / 원본: {sql_response.text}")
+                sql_query = "NONE"
+                need_rag = True
+                rag_query = request.question
+                rag_year_filter = "ALL"
+                k_action = "NONE"
+                k_category = "기타"
+                k_content = ""
+                
+                # [연도 자동 보정]
                 all_text = (request.question or "") + " " + (request.scraped_context or "")
                 years = re.findall(r"\b(202\d)\b", all_text)
                 if years:
                     rag_year_filter = years[0]
-                    print(f"[연도 보정] 질문/스크랩 내에서 {rag_year_filter}학년도를 감지하여 필터를 적용합니다.")
-        except Exception as json_err:
-            print(f"JSON 파싱 오류: {json_err} / 원본: {sql_response.text}")
-            sql_query = "NONE"
-            need_rag = True
-            rag_query = request.question
-            rag_year_filter = "ALL"
-            k_action = "NONE"
-            k_category = "기타"
-            k_content = ""
             
-            # [연도 자동 보정]
-            all_text = (request.question or "") + " " + (request.scraped_context or "")
-            years = re.findall(r"\b(202\d)\b", all_text)
-            if years:
-                rag_year_filter = years[0]
-        
         # =======================================================
         # [Step 1-2] 실시간 보완 지식 (Supplemental Knowledge) DB 반영 및 수집
         # =======================================================
@@ -1092,6 +1135,9 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         print(f"RAG 쿼리: {rag_query}")
         print(f"메타데이터 필터(Year): {rag_year_filter}")
         print(f"===========================")
+        
+        time_router_end = time.time()
+        print(f"⏱️ 라우터 AI 소요 시간: {time_router_end - start_time:.2f}초")
 
         # =======================================================
         # [Step 2] 생성된 쿼리 실행
@@ -1180,10 +1226,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 
             except Exception as db_err:
                 print(f"SQL 실행 오류: {db_err}")
-            finally:
-                conn.close()
-        elif conn:
-            conn.close()
+
 
         # =======================================================
         # [Step 3] 비정형 DB (ChromaDB) 검색 (Rule + Ref 모두 탐색)
@@ -1232,24 +1275,54 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 rule_docs_map = {}
                 ref_docs_map = {}
 
-                # [상시 적용 문서 지원] 특정 연도(예: 2028)를 필터링하더라도, year가 'ALL'인 상시 적용 규정(학칙 등)도 함께 검색되도록 $in 연산자를 사용합니다.
-                where_clause = {"year": {"$in": [rag_year_filter, "ALL"]}} if rag_year_filter and rag_year_filter != "ALL" else None
+                # [보안 통제 및 검색 최적화] 학생인 경우, MS-SQL에서 미리 공개된 문서 목록만 가져와서 ChromaDB 검색 범위 자체를 좁힙니다.
+                public_filenames = []
+                if request.user_role == "student":
+                    if conn:
+                        try:
+                            h_cursor = conn.cursor()
+                            h_cursor.execute("SELECT filename FROM Sys_DocumentCatalog WHERE is_public = 'Y'")
+                            public_filenames = [row.filename for row in h_cursor.fetchall()]
+                        except Exception as h_err:
+                            print(f"공개 문서 조회 오류: {h_err}")
+
+                # where 조건 동적 구성
+                where_conditions = []
+                if rag_year_filter and rag_year_filter != "ALL":
+                    where_conditions.append({"year": {"$in": [rag_year_filter, "ALL"]}})
+                
+                if request.user_role == "student":
+                    if public_filenames:
+                        where_conditions.append({"filename": {"$in": public_filenames}})
+                    else:
+                        # 공개된 문서가 단 하나도 없으면 검색이 실패하도록 더미 조건
+                        where_conditions.append({"filename": "NONE_PUBLIC_DOCUMENTS_AVAILABLE"})
+
+                if len(where_conditions) == 1:
+                    where_clause = where_conditions[0]
+                elif len(where_conditions) > 1:
+                    where_clause = {"$and": where_conditions}
+                else:
+                    where_clause = None
                 
                 # [개선] 영어 임베딩 모델의 한글 매칭 한계를 메우기 위해, 후보군을 넓게(60개) 가져온 후 파일명 매칭 보정을 적용합니다.
                 n_results_per_query = 60
 
-                for q in queries:
-                    try:
-                        rule_res = rule_db.query(query_texts=[q], n_results=n_results_per_query, where=where_clause)
-                        if rule_res and rule_res.get("documents") and rule_res["documents"][0]:
-                            for i, doc_text in enumerate(rule_res["documents"][0]):
-                                meta = rule_res["metadatas"][0][i] if rule_res.get("metadatas") else {}
-                                dist = rule_res["distances"][0][i] if rule_res.get("distances") else 1.0
+                # [최적화] 여러 개의 키워드를 for문으로 각각 검색하지 않고, query_texts=queries 로 한 번에 Batch 검색하여 속도를 단축합니다.
+                try:
+                    rule_res = rule_db.query(query_texts=queries, n_results=n_results_per_query, where=where_clause)
+                    if rule_res and rule_res.get("documents"):
+                        for q_idx in range(len(queries)):
+                            if not rule_res["documents"][q_idx]: continue
+                            q_str = queries[q_idx]
+                            for i, doc_text in enumerate(rule_res["documents"][q_idx]):
+                                meta = rule_res["metadatas"][q_idx][i] if rule_res.get("metadatas") else {}
+                                dist = rule_res["distances"][q_idx][i] if rule_res.get("distances") else 1.0
                                 fname = meta.get("filename", "이름없음")
                                 
                                 # [보정 알고리즘] 쿼리 텍스트와 파일명 키워드 매칭 보너스 부여
                                 fname_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', fname.replace(".pdf", "")).lower()
-                                q_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', q).lower()
+                                q_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', q_str).lower()
                                 if q_clean and fname_clean:
                                     if q_clean in fname_clean or fname_clean in q_clean:
                                         dist = min(dist, 0.1)
@@ -1257,28 +1330,31 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                                 # 중복 제거 시 최소 distance 유지
                                 if fname not in rule_docs_map or dist < rule_docs_map[fname]["distance"]:
                                     rule_docs_map[fname] = {"doc_text": doc_text, "meta": meta, "distance": dist}
-                    except Exception as q_err:
-                        print(f"Rule DB query error for '{q}': {q_err}")
+                except Exception as q_err:
+                    print(f"Rule DB query error: {q_err}")
 
-                    try:
-                        ref_res = reference_db.query(query_texts=[q], n_results=n_results_per_query, where=where_clause)
-                        if ref_res and ref_res.get("documents") and ref_res["documents"][0]:
-                            for i, doc_text in enumerate(ref_res["documents"][0]):
-                                meta = ref_res["metadatas"][0][i] if ref_res.get("metadatas") else {}
-                                dist = ref_res["distances"][0][i] if ref_res.get("distances") else 1.0
+                try:
+                    ref_res = reference_db.query(query_texts=queries, n_results=n_results_per_query, where=where_clause)
+                    if ref_res and ref_res.get("documents"):
+                        for q_idx in range(len(queries)):
+                            if not ref_res["documents"][q_idx]: continue
+                            q_str = queries[q_idx]
+                            for i, doc_text in enumerate(ref_res["documents"][q_idx]):
+                                meta = ref_res["metadatas"][q_idx][i] if ref_res.get("metadatas") else {}
+                                dist = ref_res["distances"][q_idx][i] if ref_res.get("distances") else 1.0
                                 fname = meta.get("filename", "이름없음")
                                 
                                 # [보정 알고리즘] 쿼리 텍스트와 파일명 키워드 매칭 보너스 부여
                                 fname_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', fname.replace(".pdf", "")).lower()
-                                q_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', q).lower()
+                                q_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', q_str).lower()
                                 if q_clean and fname_clean:
                                     if q_clean in fname_clean or fname_clean in q_clean:
                                         dist = min(dist, 0.1)
 
                                 if fname not in ref_docs_map or dist < ref_docs_map[fname]["distance"]:
                                     ref_docs_map[fname] = {"doc_text": doc_text, "meta": meta, "distance": dist}
-                    except Exception as q_err:
-                        print(f"Reference DB query error for '{q}': {q_err}")
+                except Exception as q_err:
+                    print(f"Reference DB query error: {q_err}")
 
                 # distance 기준 오름차순 통합 정렬 후 상위 최대 6개 추출 (Safe Limit)
                 sorted_rules = sorted(rule_docs_map.values(), key=lambda x: x["distance"])
@@ -1292,10 +1368,9 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 doc_hints = {}
                 public_status = {}
                 if all_matched_files:
-                    hint_conn = get_mssql_connection()
-                    if hint_conn:
+                    if conn:
                         try:
-                            h_cursor = hint_conn.cursor()
+                            h_cursor = conn.cursor()
                             placeholders = ",".join(["?"] * len(all_matched_files))
                             h_cursor.execute(f"SELECT filename, description, is_public FROM Sys_DocumentCatalog WHERE filename IN ({placeholders})", all_matched_files)
                             for r in h_cursor.fetchall():
@@ -1304,8 +1379,9 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                                 public_status[r[0]] = r[2]
                         except Exception as h_err:
                             print(f"문서 정보 조회 오류: {h_err}")
-                        finally:
-                            hint_conn.close()
+
+                time_db_end = time.time()
+                print(f"⏱️ DB 검색 및 전처리 소요 시간: {time_db_end - time_router_end:.2f}초")
 
                 # [보안 필터링] 학생 권한인 경우 비공개 문서 강제 제거
                 if request.user_role == "student":
@@ -1313,9 +1389,10 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     sorted_refs = [d for d in sorted_refs if public_status.get(d["meta"].get("filename", ""), "N") == "Y"]
                     print("[보안 통제] 학생 권한 필터링 - 비공개 문서를 RAG 컨텍스트에서 제외합니다.")
 
-                # [개선] 엑셀/파일 전체 비교 등 광범위한 컨텍스트 요구를 수용하기 위해 반환 청크 수를 50개(약 전체 문서 분량)로 대폭 상향
-                final_rules = sorted_rules[:50]
-                final_refs = sorted_refs[:50]
+                # [최적화] 학생용 챗봇은 빠른 응답 속도를 위해 최상위 5개 청크만 반환하고, 관리자용은 광범위한 비교를 위해 50개를 유지합니다.
+                chunk_limit = 5 if request.user_role == "student" else 50
+                final_rules = sorted_rules[:chunk_limit]
+                final_refs = sorted_refs[:chunk_limit]
 
                 # [터미널 검색 현황 출력 - cp949 인코딩 에러 방지를 위해 이모지 제거]
                 matched_rule_files = [d["meta"].get("filename", "이름없음") for d in final_rules]
@@ -1350,6 +1427,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         # =======================================================
         # [Step 4] 최종 하이브리드 답변 생성
         # =======================================================
+        
+        print(f"[MAIN-CHAT] 🧠 최종 하이브리드 답변 생성 중... (사용 모델: {request.model_name})")
         final_model = genai.GenerativeModel(model_name=request.model_name, system_instruction=get_system_prompt(request.user_role))
         
         # [디버그] 프론트엔드에서 스크랩 컨텍스트가 분리되어 제대로 넘어왔는지 확인
@@ -1382,12 +1461,18 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         else:
             print("[BACKEND] === [스크랩 컨텍스트 없음] ===")
 
-        # [NEW] 이전 대화 기록 가공
+        # [NEW] 이전 대화 기록 가공 (긴 메시지 잘라내기 방어 로직 추가)
         history_context = ""
         if request.history:
-            for msg in request.history:
+            # 최근 10개의 대화만 유지 (너무 오래된 대화는 버림)
+            recent_history = request.history[-10:] if len(request.history) > 10 else request.history
+            for msg in recent_history:
                 role = "사용자" if msg.get("isUser", False) else "AI"
-                history_context += f"{role}: {msg.get('text', '')}\n"
+                msg_text = msg.get('text', '')
+                # 이전 엑셀 매핑 JSON 등 비정상적으로 긴 메시지는 1000자로 자름
+                if len(msg_text) > 1000:
+                    msg_text = msg_text[:1000] + "\n...[내용이 너무 길어 시스템에 의해 생략됨]..."
+                history_context += f"{role}: {msg_text}\n"
         else:
             history_context = "이전 대화 내역 없음"
 
@@ -1417,6 +1502,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 5. **[개인정보 보호 안내 의무]**: 만약 사용자의 질문에 마스킹 처리된 개인정보(예: `010-****-7001`, `900101-1******` 등)가 포함되어 있다면, 답변의 최상단에 **'⚠️ 개인정보 보호를 위해 입력하신 정보는 시스템에 의해 안전하게 마스킹 처리되었습니다. 추가적인 개인정보 입력은 자제해 주시기 바랍니다.'** 라는 안내 문구를 반드시 포함하여 답변해.
 6. 유니코드 화살표 기호(예: →)를 사용하고, LaTeX 기호는 쓰지 마.
 7. **[정보 임의 생성 엄격 금지]**: <시스템 DB 및 규정 문서 팩트>에 명시적으로 기재되어 있지 않은 대동대학교 입학처 전화번호, 홈페이지 링크, 부서명 등을 절대로 임의로 지어내서 안내하지 마. 모르는 연락처는 아예 적지 마.
+8. 💡 **[비정형 문서 기호/단어 의미 규칙]**: 문서 표에서 하이픈(`-`) 기호는 '데이터 값이 존재하지 않음(해당 전형으로 모집하지 않음)'을 의미하여 숫자 0과 같고, `제한없음`은 모집 인원이 무제한임을 의미해.
 """
         else:
             prompt = f"""
@@ -1458,10 +1544,10 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 3. <판단 기준 1: SYSTEM DB 최신 팩트>에 사용자가 묻는 데이터(예: 사람, 숫자, 출신학교 등)가 포함되어 있다면 주저하지 말고 그 팩트를 기반으로 확신을 가지고 답변해.
 4. <판단 기준 1>의 데이터는 시스템이 사용자의 질문 조건을 완벽히 필터링해서 가져온 맞춤형 정답입니다. 결과값에 연도나 수험번호가 보이지 않는다고 해서 "일치하는지 확인할 수 없다"는 식의 변명을 절대 하지 마세요.
 5. **[데이터 크로스체크 및 결합 금지]:** <판단 기준 1: 시스템 DB>에서 추출된 데이터의 학년도(연도)와 <판단 기준 2: 사내 규정>에서 추출된 문서의 적용년도(학년도)를 반드시 대조하세요. 만약 두 데이터의 기준 연도(학년도)가 다를 경우, 절대 데이터를 결합하여 경쟁률 등을 산출하지 마세요.
-6. 💡 **[양방향 대조 필수 및 표 데이터 정밀 검증]**: <검토 대상 문서>가 긴 표(Markdown)로 제공된 경우, 절대 중간에 읽기를 멈추지 말고 끝까지 확인하십시오. 엑셀 데이터가 모집요강에 있는지만 확인하지 말고, **반대로 모집요강에 명시된 모든 전형이 엑셀 표에 누락되지 않았는지 양방향으로 샅샅이 대조**하십시오.
-7. 💡 **[표 병합 패턴 기반 누락 탐지 및 면죄부 금지]**: 엑셀 문서 내 인접한 모집단위(학과)들 간의 전형 패턴(특히 정원외 전형)을 비교하여, 특정 모집단위에만 행(Row) 자체가 통째로 누락된 '이빨 빠진 패턴'이 식별된다면 모집요강 PDF 표의 병합 특성으로 인한 명백한 누락입니다. 엑셀에 행이 없다고 해서 '모집하지 않는 0명 전형이라 정상 제외되었다'라고 임의로 면죄부를 주지 말고 반드시 누락으로 지적하십시오.
+6. 💡 **[양방향 대조 필수 및 표 데이터 정밀 검증]**: <검토 대상 문서>가 긴 표(Markdown)로 제공된 경우, 절대 중간에 읽기를 멈추지 말고 끝까지 확인하십시오. 엑셀 데이터가 원본 문서에 있는지만 확인하지 말고, **반대로 원본 문서에 명시된 모든 전형이 엑셀 표에 누락되지 않았는지 양방향으로 샅샅이 대조**하십시오.
+7. 💡 **[표 병합 패턴 기반 누락 탐지 및 면죄부 금지]**: 엑셀 문서 내 인접한 모집단위(학과)들 간의 전형 패턴(특히 정원외 전형)을 비교하여, 특정 모집단위에만 행(Row) 자체가 통째로 누락된 '이빨 빠진 패턴'이 식별된다면 비정형 원본 문서 표의 병합 특성으로 인한 명백한 누락입니다. 엑셀에 행이 없다고 해서 '모집하지 않는 0명 전형이라 정상 제외되었다'라고 임의로 면죄부를 주지 말고 반드시 누락으로 지적하십시오.
 8. 💡 **[빈칸/누락 정밀 지적]**: 대조 결과 누락이 발견되면, 무조건 '100% 일치'한다고 넘기지 말고 반드시 어느 학과의 어떤 전형 데이터가 누락되었는지 리스트업하여 지적하십시오.
-9. **[근거 규정 출처 표기 필수]:** <판단 기준 2>에서 제공된 정보 및 규정을 인용하거나 검토 의견을 제시할 때, 반드시 근거 문서의 명칭을 명시하세요. (예: "(근거 문서: 2027학년도 모집요강)")
+9. **[근거 규정 출처 표기 필수]:** <판단 기준 2>에서 제공된 정보 및 규정을 인용하거나 검토 의견을 제시할 때, 반드시 근거 문서의 명칭을 명시하세요. (예: "(근거 문서: 2027학년도 수시 전형문서)")
 10. **[정원내/외 비교 및 정합성 검토 원칙]:**
     - 시스템 DB 최종등록자 수와 입학정원을 대조할 때, **정원내 전형 최종등록자만 입학정원과 비교**해야 합니다. 정원외 전형은 초과등록이 가능하므로 "입학정원 초과 학칙 위반"이라고 오판하지 마십시오.
     - 대조 시 **[정원내 최종등록자 수]**와 **[정원외 최종등록자 수]**를 명확하게 구분하여 기재하십시오.
@@ -1479,7 +1565,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 16. **[실시간 지식 업데이트 성공 시 피드백 알림 강제]**: <지식 업데이트 반영 내역>에 저장/삭제 완료 알림 메시지가 있다면 답변 최상단에 마크다운 인용구 형태로 100% 원문 그대로 노출하십시오.
 17. 💡 **[RAG 검색 한계 인지 및 오판 방지]**: RAG로 인출된 텍스트 조각이 문서의 전체 표나 세부 조항을 완벽히 포함하지 않을 수 있습니다. 텍스트 조각에 특정 수치나 세부 조항이 명시적으로 보이지 않더라도, 섣불리 오답이나 누락이라고 단정짓지 말고 '관련 규정의 전체 원문을 재확인해야 합니다'와 같이 유보적으로 답변하십시오.
 18. **[학생 전용 빠른 답변(Fail-Fast) 의무 (엄격 적용)]**: 질문과 관련된 데이터가 단 한 줄도 존재하지 않을 경우, 억지로 추론하지 말고 "죄송합니다. 해당 질문에 관련된 정보를 찾을 수 없습니다."라고 한 문장으로 답변을 끝내십시오.
-
+19. 💡 **[비정형 문서 기호/단어 의미 규칙]**: 비정형 문서 표에서 하이픈(`-`) 기호는 '데이터 값이 존재하지 않음(해당 전형으로 모집하지 않음)'을 의미하므로 특별한 지시가 없다면 숫자 `0`과 동일하게 취급하십시오. 또한 `제한없음`이라는 단어는 모집 인원이 무제한이어서 값이 숫자로 고정되어 있지 않음을 의미합니다.
+20. 💡 **[데이터 충돌 시 우선순위 규칙]**: 만약 <판단 기준 1: 시스템 DB 최신 팩트>와 <판단 기준 2: 사내 규정 및 과거 문서>의 내용이 서로 상이하거나 충돌할 경우, 최신 통계 데이터인 **<판단 기준 1: 시스템 DB>의 값을 최우선으로 참고**하여 답변하십시오.
 
 <지식 업데이트 반영 내역>
 {k_feedback_msg if k_feedback_msg else "수행된 업데이트 내역 없음"}
@@ -1489,60 +1576,159 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         
         # 학생 권한은 60초, 교직원은 복잡한 표 분석을 위해 기존대로 600초(10분) 유지
         timeout_sec = 60 if request.user_role == "student" else 600
-        response = final_model.generate_content(prompt, request_options={"timeout": timeout_sec})
         
-        # [NEW] Audit Log 기록
-        latency_ms = int((time.time() - start_time) * 1000)
-        try:
-            audit_conn = get_mssql_connection()
-            if audit_conn:
-                cursor = audit_conn.cursor()
-                
-                # cp949 인코딩 에러 방지를 위해 호환되지 않는 특수문자/이모지 제거
-                def safe_str(txt):
-                    if not txt: return ""
-                    return str(txt).encode('cp949', errors='ignore').decode('cp949')
+        no_retry = retry.Retry(initial=0, maximum=0, multiplier=0, deadline=0)
+        
+        if request.user_role == "student":
+            from fastapi.responses import StreamingResponse
+            import json
+            
+            # [NEW] 학생용 분기 - 실시간 스트리밍 모드
+            response = final_model.generate_content(
+                prompt, 
+                request_options={"timeout": timeout_sec, "retry": no_retry},
+                stream=True
+            )
+            
+            # finally 블록에서 conn 닫히는 것을 방지하기 위해 얕은 복사본을 유지하고 원본 초기화
+            conn_for_stream = conn
+            conn = None
+            
+            def generate_stream():
+                full_text = ""
+                try:
+                    for chunk in response:
+                        if chunk.text:
+                            full_text += chunk.text
+                            # 프론트엔드로 조각 즉시 방출
+                            yield f"data: {json.dumps({'chunk': chunk.text}, ensure_ascii=False)}\n\n"
+                    
+                    time_final_end = time.time()
+                    print(f"⏱️ 최종 AI 답변 소요 시간 (스트리밍 완료): {time_final_end - time_db_end:.2f}초")
+                    
+                    latency_ms = int((time.time() - start_time) * 1000)
+                    log_id = None
+                    try:
+                        if conn_for_stream:
+                            cursor = conn_for_stream.cursor()
+                            def safe_str(txt):
+                                if not txt: return ""
+                                return str(txt).encode('cp949', errors='ignore').decode('cp949')
 
-                cursor.execute("""
-                    INSERT INTO Sys_AIAuditLog (
-                        user_role, model_name, question, scraped_context, 
-                        sql_query, rag_query, answer, latency_ms
-                    ) 
-                    OUTPUT INSERTED.id
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    safe_str(request.user_role), safe_str(request.model_name), safe_str(request.question), safe_str(request.scraped_context),
-                    safe_str(sql_query), safe_str(rag_query), safe_str(response.text), latency_ms
-                ))
-                inserted_row = cursor.fetchone()
-                log_id = inserted_row[0] if inserted_row else None
-                audit_conn.commit()
-                cursor.close()
-                audit_conn.close()
-        except Exception as audit_err:
-            print(f"Audit Log 기록 오류: {audit_err}")
-
-        # [NEW] 응답 소요 시간 분/초 계산 및 출력
-        total_seconds = latency_ms / 1000.0
-        if total_seconds >= 60:
-            mins = int(total_seconds // 60)
-            secs = total_seconds % 60
-            time_str = f"{mins}분 {secs:.1f}초"
+                            cursor.execute("""
+                                INSERT INTO Sys_AIAuditLog (
+                                    user_role, model_name, question, scraped_context, 
+                                    sql_query, rag_query, answer, latency_ms
+                                ) 
+                                OUTPUT INSERTED.id
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (
+                                safe_str(request.user_role), safe_str(request.model_name), safe_str(request.question), safe_str(request.scraped_context),
+                                safe_str(sql_query), safe_str(rag_query), safe_str(full_text), latency_ms
+                            ))
+                            inserted_row = cursor.fetchone()
+                            log_id = inserted_row[0] if inserted_row else None
+                            conn_for_stream.commit()
+                            cursor.close()
+                    except Exception as audit_err:
+                        print(f"Audit Log 기록 오류: {audit_err}")
+                        
+                    # 최종 완료 신호 전송
+                    yield f"data: {json.dumps({'status': 'done', 'log_id': log_id, 'references': results_metadatas, 'latency_ms': latency_ms}, ensure_ascii=False)}\n\n"
+                    
+                    # [NEW] 응답 소요 시간 분/초 계산 및 출력
+                    total_seconds = latency_ms / 1000.0
+                    time_str = f"{int(total_seconds // 60)}분 {total_seconds % 60:.1f}초" if total_seconds >= 60 else f"{total_seconds:.1f}초"
+                    print(f"[BACKEND] ⏱️ AI 최종 응답 완료 (소요 시간: {time_str})")
+                    
+                except Exception as e:
+                    yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+                finally:
+                    # 발전된 스트리밍 완료 후 커넥션 닫기
+                    if conn_for_stream:
+                        try:
+                            conn_for_stream.close()
+                        except Exception:
+                            pass
+                            
+            return StreamingResponse(generate_stream(), media_type="text/event-stream")
+            
         else:
-            time_str = f"{total_seconds:.1f}초"
-        print(f"[BACKEND] ⏱️ AI 최종 응답 완료 (소요 시간: {time_str})")
+            # [기존 교직원용 분기] - 전체 문장이 한 번에 나올 때까지 기다렸다가 JSON 리턴
+            response = final_model.generate_content(prompt, request_options={"timeout": timeout_sec, "retry": no_retry})
+            
+            # [NEW] Audit Log 기록
+            time_final_end = time.time()
+            print(f"⏱️ 최종 AI 답변 소요 시간: {time_final_end - time_db_end:.2f}초")
+            
+            latency_ms = int((time.time() - start_time) * 1000)
+            log_id = None
+            try:
+                if conn:
+                    cursor = conn.cursor()
+                    
+                    # cp949 인코딩 에러 방지를 위해 호환되지 않는 특수문자/이모지 제거
+                    def safe_str(txt):
+                        if not txt: return ""
+                        return str(txt).encode('cp949', errors='ignore').decode('cp949')
 
-        return {
-            "status": "success",
-            "log_id": log_id,
-            "answer": response.text,
-            "references": results_metadatas,
-            "latency_ms": latency_ms
-        }
+                    cursor.execute("""
+                        INSERT INTO Sys_AIAuditLog (
+                            user_role, model_name, question, scraped_context, 
+                            sql_query, rag_query, answer, latency_ms
+                        ) 
+                        OUTPUT INSERTED.id
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        safe_str(request.user_role), safe_str(request.model_name), safe_str(request.question), safe_str(request.scraped_context),
+                        safe_str(sql_query), safe_str(rag_query), safe_str(response.text), latency_ms
+                    ))
+                    inserted_row = cursor.fetchone()
+                    log_id = inserted_row[0] if inserted_row else None
+                    conn.commit()
+                    cursor.close()
+            except Exception as audit_err:
+                print(f"Audit Log 기록 오류: {audit_err}")
+
+            # [NEW] 응답 소요 시간 분/초 계산 및 출력
+            total_seconds = latency_ms / 1000.0
+            if total_seconds >= 60:
+                mins = int(total_seconds // 60)
+                secs = total_seconds % 60
+                time_str = f"{mins}분 {secs:.1f}초"
+            else:
+                time_str = f"{total_seconds:.1f}초"
+            print(f"[BACKEND] ⏱️ AI 최종 응답 완료 (소요 시간: {time_str})")
+
+            return {
+                "status": "success",
+                "log_id": log_id,
+                "answer": response.text,
+                "references": results_metadatas,
+                "latency_ms": latency_ms
+            }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI 답변 생성 중 오류 발생: {str(e)}")
-
+        import traceback
+        print("\n================ [에러 상세 로그] ================")
+        traceback.print_exc()
+        print("==================================================\n")
+        
+        error_msg = str(e)
+        if "429" in error_msg or "Quota exceeded" in error_msg or "503" in error_msg or "ResourceExhausted" in error_msg:
+            raise HTTPException(
+                status_code=429, 
+                detail="현재 AI 서버 사용량이 많아 무료 API 요청 한도를 초과했습니다. 약 1분 뒤에 다시 시도해 주세요! ⏳"
+            )
+        else:
+            raise HTTPException(status_code=500, detail=f"AI 답변 생성 중 오류 발생: {error_msg}")
+            
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 class AnalyticsRequest(BaseModel):
     questions: List[str]

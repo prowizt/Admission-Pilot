@@ -2,15 +2,6 @@ import subprocess
 import sys
 import os
 
-# Windows 환경에서 한글 및 이모지 입출력 cp949 에러 방지
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding='utf-8')
-        sys.stderr.reconfigure(encoding='utf-8')
-        sys.stdin.reconfigure(encoding='utf-8')
-    except Exception:
-        pass
-
 def run_command(command):
     try:
         # 한글 깨짐 방지를 위해 인코딩 처리
@@ -80,17 +71,4 @@ def main():
     input("\n💡 엔터키를 누르면 백업 창이 닫힙니다...")
 
 if __name__ == "__main__":
-    # Windows 환경에서 새 콘솔 팝업으로 분기 재구동 처리
-    if sys.platform == "win32" and "--child" not in sys.argv:
-        script_path = os.path.abspath(__file__)
-        # 'python' 대신 현재 실행에 사용 중인 python.exe 경로(sys.executable)를 사용하여 경로 누락 에러를 차단합니다.
-        # 이중 실행 시에도 작업 디렉토리(cwd)를 스크립트 경로로 명시합니다.
-        script_dir = os.path.dirname(script_path)
-        subprocess.Popen(
-            [sys.executable, script_path, "--child"], 
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
-            cwd=script_dir
-        )
-        sys.exit(0) # 기존 안티그래비티 터미널의 부모 프로세스는 즉시 종료
-        
     main()
