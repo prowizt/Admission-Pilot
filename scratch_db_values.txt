@@ -1,0 +1,2 @@
+ADMISSIONQUOTA: ["정원내", "정원외"]
+UI_IPSI_M_V: ["정원외", "정원내"]

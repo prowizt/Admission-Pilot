@@ -684,13 +684,16 @@ async def upload_dynamic_statistics(
             print(f"[OK] 테이블 [{table_name}] 생성 완료")
             
         # [NEW] 테이블 카탈로그 등록 (한글명 및 설명 포함)
-        kr_name = table_name_kr if table_name_kr else table_name
-        desc_val = description if description else ""
-        cursor.execute(f"IF NOT EXISTS (SELECT 1 FROM Sys_TableCatalog WHERE table_name = '{table_name}') INSERT INTO Sys_TableCatalog (table_name, table_name_kr, db_source, description) VALUES ('{table_name}', '{kr_name}', 'INTERNAL', '{desc_val}')")
+        kr_name = (table_name_kr if table_name_kr else table_name).replace("'", "''")
+        desc_val = (description if description else "").replace("'", "''")
+        t_name_esc = table_name.replace("'", "''")
+        
+        cursor.execute(f"IF NOT EXISTS (SELECT 1 FROM Sys_TableCatalog WHERE table_name = '{t_name_esc}') INSERT INTO Sys_TableCatalog (table_name, table_name_kr, db_source, description) VALUES ('{t_name_esc}', '{kr_name}', 'INTERNAL', '{desc_val}')")
         
         # [NEW] 컬럼 카탈로그 등록
         for h in headers:
-            cursor.execute(f"IF NOT EXISTS (SELECT 1 FROM Sys_ColumnCatalog WHERE table_name = '{table_name}' AND column_name = '{h}') INSERT INTO Sys_ColumnCatalog (table_name, column_name, is_public) VALUES ('{table_name}', '{h}', 'Y')")
+            h_esc = h.replace("'", "''")
+            cursor.execute(f"IF NOT EXISTS (SELECT 1 FROM Sys_ColumnCatalog WHERE table_name = '{t_name_esc}' AND column_name = '{h_esc}') INSERT INTO Sys_ColumnCatalog (table_name, column_name, is_public) VALUES ('{t_name_esc}', '{h_esc}', 'Y')")
 
         # 2. 데이터 INSERT
         columns_str = ", ".join([f"[{h}]" for h in headers])
@@ -820,9 +823,17 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
     if request.question:
         request.question = mask_pii(request.question)
         
-    # [NEW] 학생용 웹 챗봇은 API 키를 직접 입력하지 않으므로, 서버 환경변수(ROUTER_API_KEY)를 공통으로 사용합니다.
-    if not x_gemini_key and request.user_role == "student":
-        x_gemini_key = os.getenv("ROUTER_API_KEY", "")
+    # [NEW] 학생용 웹 챗봇은 서버 환경변수(STUDENT_API_KEY)를 전용으로 사용하며 누락 시 오류를 발생시킵니다.
+    if request.user_role == "student":
+        if not x_gemini_key:
+            x_gemini_key = os.getenv("STUDENT_API_KEY", "")
+            if not x_gemini_key:
+                raise HTTPException(status_code=401, detail="학생 전용 API 키(STUDENT_API_KEY)가 서버에 설정되어 있지 않습니다.")
+        
+        student_model = os.getenv("STUDENT_MODEL", "")
+        if not student_model:
+            raise HTTPException(status_code=500, detail="학생 전용 모델(STUDENT_MODEL)이 서버에 설정되어 있지 않습니다.")
+        request.model_name = student_model
 
     if not x_gemini_key:
         raise HTTPException(status_code=401, detail="Gemini API Key가 필요합니다.")

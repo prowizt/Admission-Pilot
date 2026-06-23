@@ -32,6 +32,9 @@ def extract_excel_structure(ws):
     for r in range(1, max_row + 1):
         for c in range(1, max_col + 1):
             cell = ws.cell(row=r, column=c)
+            # MergedCell(병합된 껍데기 셀)은 빈 데이터 칸이 아니므로 건너뜀
+            if type(cell).__name__ == 'MergedCell':
+                continue
             if cell.value is None or str(cell.value).strip() == "":
                 left_headers = [headers[(r, i)] for i in range(1, c) if (r, i) in headers]
                 top_headers = [headers[(i, c)] for i in range(1, r) if (i, c) in headers]
@@ -355,7 +358,7 @@ async def chat_excel_autofill(
 
         [주의 사항 (환각 방지 및 병합된 셀 처리)]
         - 사용자가 데이터 추출을 요청한 대상 연도는 '{target_year}'학년도입니다. 
-        - 만약 [비정형 PDF 추출 규정 문서]에 '{target_year}'학년도에 해당하는 데이터가 부족하거나 없다면, 절대로 다른 연도(예: 2027년도)의 데이터를 상상해서 지어내거나 억지로 채워 넣지 마십시오. (데이터가 없으면 0으로 처리하십시오).
+        - 💡 **[데이터 매핑 최우선 및 결측치 규칙]**: 빈 셀을 채울 때는 무조건 [1. 정형 DB 추출 통계 데이터]의 값을 최우선적으로 매핑하십시오. [2. 비정형 PDF 추출 규정 문서]가 비어있더라도 DB에 값이 존재하면 해당 DB 값을 써야 하며 임의로 0으로 덮어쓰지 마십시오. 오직 **DB와 PDF 양쪽 모두에 데이터가 존재하지 않을 때만** 다른 연도 데이터를 지어내지 말고 0으로 처리하십시오.
         - 💡 **[PDF 표 병합(Merge) 데이터 추론 규칙]**: 비정형 PDF 문서의 표(Table) 특성상, 인접한 두 학과의 데이터가 동일할 경우 셀이 병합되어 텍스트 추출 시 **첫 번째 학과에만 값이 적히고 그 아래 학과는 값이 누락된 것(빈칸)처럼 보일 수 있습니다.** 만약 특정 학과 전형의 값이 비어있다면, **반드시 바로 위(또는 근처) 학과의 동일 전형 값을 확인하고, 병합된 셀이라고 판단되면 그 값을 똑같이 상속(복사)하여 채워 넣으십시오.**
 
         [데이터베이스 스키마 및 힌트]

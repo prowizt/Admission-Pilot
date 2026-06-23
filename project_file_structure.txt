@@ -1,16 +1,35 @@
 =========================================
  Admission-Pilot Structure Tree
- Generated at: 2026-06-12 17:31:22
+ Generated at: 2026-06-23 15:31:09
 =========================================
 .
 ├── .gitignore
+├── 2026학년도 모집요강.pdf
+├── 2026학년도 신입생 최종 모집결과(대동대학교)-입력요청정원외.xlsx
 ├── 2026학년도 입학전형 운영 결과 보고.pdf
 ├── 2027학년도 모집요강.pdf
 ├── AI_GUIDELINES.md
+├── alter_schema.py
+├── alter_schema2.py
 ├── backend/
 │   ├── .env
+│   ├── excel_autofill.py
 │   ├── main.py  # 메인 서버 및 API 엔드포인트
-│   └── requirements.txt
+│   ├── requirements.txt
+│   └── temp/
+│       ├── DEBUG_Autofill_2026학년도 신입생 최종 모집결과(대동대학교)-입력요청.xlsx
+│       ├── DEBUG_Autofill_2026학년도 신입생 최종 모집결과(대동대학교)-입력요청정원외.xlsx
+│       ├── DEBUG_Autofill_AutoFilled_AutoFilled_모집인원 (8).xlsx
+│       ├── DEBUG_Autofill_AutoFilled_모집인원 (8).xlsx
+│       └── DEBUG_Autofill_모집인원.xlsx
+├── catalog_cols.txt
+├── catalog_quota_cols.txt
+├── check_db4.py
+├── check_schema.py
+├── check_sql.py
+├── chroma_db/
+│   └── chroma.sqlite3
+├── cols_output.txt
 ├── create_audit_table.py
 ├── db_schema_full.txt
 ├── extension/
@@ -78,12 +97,47 @@
 │   ├── vite.config.ts
 │   ├── vite.config.ts.timestamp-1780290332670-a1b2f6905d0498.mjs
 │   └── vite.config.ts.timestamp-1780290566077-3cfc405e237a38.mjs
-├── git_push.py  # Windows 환경에서 한글 및 이모지 입출력 cp949 에러 방지
+├── git_push.py  # 한글 깨짐 방지를 위해 인코딩 처리
 ├── latency_results.txt
 ├── project_file_structure.txt
 ├── recovered_chat.txt
 ├── run_servers.py  # 스레드 안전한 통합 로그 출력을 위한 락 및 마지막 로그 출력 타임스탬프 변수
 ├── scan_project.py  # Admission-Pilot 디렉터리 구조 생성
 ├── scratch_analyze_latency.py
+├── scratch_check_cols.py
+├── scratch_check_cols2.py
+├── scratch_check_public.py
+├── scratch_indent.py
+├── scratch_test_chroma.py
+├── student-web/
+│   ├── .gitignore
+│   ├── README.md
+│   ├── eslint.config.js
+│   ├── index.html
+│   ├── package-lock.json
+│   ├── package.json
+│   ├── postcss.config.js
+│   ├── project_file_structure.txt
+│   ├── public/
+│   │   ├── favicon.png
+│   │   ├── favicon.svg
+│   │   ├── icons.svg
+│   │   └── logo.png
+│   ├── src/
+│   │   ├── App.css
+│   │   ├── App.tsx  # 유틸리티 함수: Tailwind 클래스 병합
+│   │   ├── assets/
+│   │   │   ├── hero.png
+│   │   │   ├── react.svg
+│   │   │   └── vite.svg
+│   │   ├── index.css
+│   │   └── main.tsx
+│   ├── tailwind.config.js
+│   ├── tsconfig.app.json
+│   ├── tsconfig.json
+│   ├── tsconfig.node.json
+│   └── vite.config.ts
 ├── test.xlsx
+├── test_out.txt
+├── 모집인원.xlsx
 └── 붙임1._2026학년도(수시)입학정보_모집자료(대동대학교).pdf

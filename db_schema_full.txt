@@ -4,8 +4,21 @@ Table: ADMISSIONCAPACITY
 Columns:
  - [PK] id (int(4)) NOT NULL
  - 학년도 (nvarchar(510)) NULL
- - 학과 (nvarchar(510)) NULL
+ - 학과명 (nvarchar(510)) NULL
  - 입학정원 (nvarchar(510)) NULL
+ - created_at (datetime(8)) NULL
+
+=========================================
+Table: ADMISSIONQUOTA
+=========================================
+Columns:
+ - [PK] id (int(4)) NOT NULL
+ - 입시년도 (nvarchar(510)) NULL
+ - 모집구분 (nvarchar(510)) NULL
+ - 모집학과명 (nvarchar(510)) NULL
+ - 정원내외구분 (nvarchar(510)) NULL
+ - 전형명 (nvarchar(510)) NULL
+ - 모집인원 (nvarchar(510)) NULL
  - created_at (datetime(8)) NULL
 
 =========================================
@@ -22,6 +35,7 @@ Columns:
  - answer (nvarchar) NULL -- AI가 응답한 최종 답변
  - latency_ms (int(4)) NULL -- 응답 소요 시간(ms)
  - created_at (datetime(8)) NULL -- 로그 생성 일시
+ - user_feedback (varchar(10)) NULL -- AI 답변 피드백 (UP: 좋아요, DOWN: 싫어요)
 
 =========================================
 Table: Sys_ColumnCatalog (컬럼 레벨 보안(CLS) 및 AI 힌트 카탈로그)
@@ -30,7 +44,7 @@ Columns:
  - [PK] id (int(4)) NOT NULL -- 고유 ID
  - table_name (nvarchar(200)) NOT NULL -- 테이블명
  - column_name (nvarchar(200)) NOT NULL -- 컬럼명
- - ai_description (nvarchar(510)) NULL -- AI 설명 힌트 (예: 이 컬럼은 학번)
+ - ai_description (nvarchar) NULL -- AI 설명 힌트 (예: 이 컬럼은 학번)
  - is_public (char(1)) NULL -- 공개 여부 (Y: 전체 공개, N: 직원 전용)
  - created_at (datetime(8)) NULL -- 등록일시
 
@@ -45,7 +59,7 @@ Columns:
  - title (nvarchar(510)) NULL -- 문서 제목
  - is_public (char(1)) NULL -- 문서 공개 여부 (Y: 공개, N: 직원 전용)
  - uploaded_at (datetime(8)) NULL -- 업로드 일시
- - description (nvarchar(510)) NULL -- 문서 설명 및 AI/관리자 힌트
+ - description (nvarchar) NULL -- 문서 설명 및 AI/관리자 힌트
 
 =========================================
 Table: Sys_SupplementalKnowledge (실시간 보완 지식 및 인사/결재 예외 장부 테이블)
@@ -64,7 +78,7 @@ Table: Sys_TableCatalog (테이블 관리 카탈로그 (외부/내부 DB 출처 
 Columns:
  - [PK] table_name (nvarchar(200)) NOT NULL -- 테이블명
  - db_source (nvarchar(100)) NULL -- DB 출처 구분 (INTERNAL: 엑셀, EXTERNAL: 타 시스템)
- - description (nvarchar(510)) NULL -- 테이블 용도 설명
+ - description (nvarchar) NULL -- 테이블 용도 설명
  - created_at (datetime(8)) NULL -- 등록일시
  - table_name_kr (nvarchar(200)) NULL -- 한글 테이블명
 
