@@ -257,6 +257,11 @@ export default function Logs() {
                               <div className="text-xs text-slate-500 truncate" title={log.answer}>
                                 <span className="text-slate-400 font-bold mr-1">A.</span> {log.answer}
                               </div>
+                              {log.total_tokens != null && (
+                                <div className="text-[10px] text-slate-400 font-bold mt-0.5">
+                                  🪙 총 {log.total_tokens.toLocaleString()} 토큰 (약 {Number(log.estimated_cost).toFixed(2)}원)
+                                </div>
+                              )}
                             </div>
                           </td>
                           <td className="px-4 py-3 align-middle text-center">
@@ -328,6 +333,11 @@ export default function Logs() {
                       <div className="font-semibold text-slate-800 text-sm line-clamp-2 mt-1 leading-snug" title={log.question}>
                         <span className="text-indigo-400 font-bold mr-1">Q.</span> {log.question}
                       </div>
+                      {log.total_tokens != null && (
+                        <div className="text-[10px] text-slate-500 font-bold">
+                          🪙 총 {log.total_tokens.toLocaleString()} 토큰 (약 {Number(log.estimated_cost).toFixed(2)}원)
+                        </div>
+                      )}
                       
                       <div className="flex justify-between items-center mt-2 pt-2 border-t border-slate-100/80 border-dashed">
                          <span className="text-[9px] text-slate-400 truncate font-mono bg-slate-50 px-1.5 py-0.5 rounded border border-slate-100 max-w-[150px]" title={log.model_name}>
@@ -495,6 +505,38 @@ export default function Logs() {
                   </div>
                 </div>
               </div>
+              
+              {selectedLog.total_tokens != null && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-center">
+                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">총 소모 토큰 및 비용</div>
+                    <div className="font-bold text-indigo-600 text-xl">{selectedLog.total_tokens.toLocaleString()} <span className="text-sm text-slate-500 font-medium">Tokens</span></div>
+                    <div className="text-xs text-slate-500 font-bold mt-1">약 {Number(selectedLog.estimated_cost).toFixed(2)}원 과금됨</div>
+                  </div>
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 truncate" title={selectedLog.model_name}>최종 챗봇 AI ({selectedLog.model_name})</div>
+                    <div className="flex justify-between items-center text-sm mb-1">
+                      <span className="text-slate-500">입력 토큰:</span>
+                      <span className="font-bold text-slate-700">{selectedLog.chat_in_tokens?.toLocaleString() || 0}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-slate-500">출력 토큰:</span>
+                      <span className="font-bold text-slate-700">{selectedLog.chat_out_tokens?.toLocaleString() || 0}</span>
+                    </div>
+                  </div>
+                  <div className={`bg-white p-4 rounded-xl border border-slate-200 shadow-sm ${!selectedLog.router_model_name || selectedLog.router_model_name === 'NONE' ? 'opacity-50' : ''}`}>
+                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 truncate" title={selectedLog.router_model_name || 'NONE'}>라우터 AI ({selectedLog.router_model_name || '사용 안함'})</div>
+                    <div className="flex justify-between items-center text-sm mb-1">
+                      <span className="text-slate-500">입력 토큰:</span>
+                      <span className="font-bold text-slate-700">{selectedLog.router_in_tokens?.toLocaleString() || 0}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-slate-500">출력 토큰:</span>
+                      <span className="font-bold text-slate-700">{selectedLog.router_out_tokens?.toLocaleString() || 0}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="bg-white p-5 rounded-xl border border-indigo-100 shadow-sm relative overflow-hidden">
                 <h4 className="font-bold text-indigo-900 mb-3 flex items-center gap-2">

@@ -9,7 +9,7 @@ Columns:
  - created_at (datetime(8)) NULL
 
 =========================================
-Table: ADMISSIONQUOTA
+Table: EXCEL_ADMISSIONQUOTA
 =========================================
 Columns:
  - [PK] id (int(4)) NOT NULL
@@ -27,7 +27,7 @@ Table: Sys_AIAuditLog (AI 챗봇 대화 및 모니터링 로그)
 Columns:
  - [PK] id (int(4)) NOT NULL
  - user_role (varchar(50)) NULL -- 사용자 직군(부서)
- - model_name (varchar(100)) NULL -- 사용된 AI 모델명
+ - model_name (varchar(100)) NULL -- 사용된 AI 모델명(최종챗봇AI 모델명)
  - question (nvarchar) NULL -- 사용자 실제 질문 원문
  - scraped_context (nvarchar) NULL -- 참고한 웹/스크랩 텍스트
  - sql_query (nvarchar) NULL -- 생성된 T-SQL 쿼리 (없으면 NONE)
@@ -36,6 +36,13 @@ Columns:
  - latency_ms (int(4)) NULL -- 응답 소요 시간(ms)
  - created_at (datetime(8)) NULL -- 로그 생성 일시
  - user_feedback (varchar(10)) NULL -- AI 답변 피드백 (UP: 좋아요, DOWN: 싫어요)
+ - router_model_name (varchar(100)) NULL -- 라우터 AI 사용 모델명
+ - router_in_tokens (int(4)) NULL -- 라우터 AI 입력 토큰 수
+ - router_out_tokens (int(4)) NULL -- 라우터 AI 출력 토큰 수
+ - chat_in_tokens (int(4)) NULL -- 최종 챗봇 AI 입력 토큰 수
+ - chat_out_tokens (int(4)) NULL -- 최종 챗봇 AI 출력 토큰 수
+ - total_tokens (int(4)) NULL -- 두 AI의 총 토큰 합계
+ - estimated_cost (decimal(9)) NULL -- 한화(KRW) 기준 총 예상 과금액
 
 =========================================
 Table: Sys_ColumnCatalog (컬럼 레벨 보안(CLS) 및 AI 힌트 카탈로그)

@@ -1,6 +1,6 @@
 =========================================
  Admission-Pilot Structure Tree
- Generated at: 2026-06-23 15:31:09
+ Generated at: 2026-06-24 10:17:34
 =========================================
 .
 ├── .gitignore
@@ -103,12 +103,27 @@
 ├── recovered_chat.txt
 ├── run_servers.py  # 스레드 안전한 통합 로그 출력을 위한 락 및 마지막 로그 출력 타임스탬프 변수
 ├── scan_project.py  # Admission-Pilot 디렉터리 구조 생성
+├── scratch/
+│   ├── test_query_dist_all.py
+│   ├── test_query_page30.py
+│   ├── test_query_page30_matches.py
+│   ├── test_query_page30_meta.py
+│   ├── test_query_rank.py
+│   ├── test_query_rank2.py
+│   ├── test_query_rank_find30.py
+│   └── test_query_rerank.py
 ├── scratch_analyze_latency.py
 ├── scratch_check_cols.py
 ├── scratch_check_cols2.py
+├── scratch_check_db_values.py
 ├── scratch_check_public.py
+├── scratch_db_depts.txt
+├── scratch_db_values.txt
 ├── scratch_indent.py
+├── scratch_query_result.txt
+├── scratch_run_query.py
 ├── scratch_test_chroma.py
+├── scratch_test_mapping.py
 ├── student-web/
 │   ├── .gitignore
 │   ├── README.md
