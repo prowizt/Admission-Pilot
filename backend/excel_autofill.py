@@ -99,7 +99,7 @@ async def chat_excel_autofill(
         print(f"[EXCEL-AUTOFILL] 📊 1단계: 엑셀 파악 완료 (빈 셀 {len(empty_cells_info)}개, 기존 데이터 {len(existing_data_context.split(chr(10))) if existing_data_context else 0}개 감지)")
         
         # 2. Text-to-SQL (라우터) 구동
-        router_model_name = os.getenv("ROUTER_MODEL", "gemini-2.5-flash")
+        router_model_name = model_name
         print(f"[EXCEL-AUTOFILL] 🧠 2단계: AI 통계 SQL 쿼리 설계 중... (사용 모델: {router_model_name})")
         sql_router_prompt = f"""
         너는 대동대학교 입시처의 [엑셀 매핑 전문 데이터 아키텍트]야.
@@ -166,6 +166,12 @@ async def chat_excel_autofill(
         no_retry = AsyncRetry(initial=0, maximum=0, multiplier=0, deadline=0)
         sql_response = await sql_model.generate_content_async(sql_router_prompt, request_options={"retry": no_retry})
         
+        router_in_tokens = 0
+        router_out_tokens = 0
+        if hasattr(sql_response, 'usage_metadata') and sql_response.usage_metadata:
+            router_in_tokens = sql_response.usage_metadata.prompt_token_count
+            router_out_tokens = sql_response.usage_metadata.candidates_token_count
+
         if router_api_key and router_api_key != "여기에_새로운_API키를_입력하세요":
             genai.configure(api_key=x_gemini_key)
             
@@ -473,6 +479,64 @@ async def chat_excel_autofill(
             except Exception as e:
                 print(f"[EXCEL-AUTOFILL] 셀 {coord} 쓰기 실패: {e}")
                 
+        def calc_cost(model, in_tok, out_tok):
+            if "3.5" in model:
+                return (in_tok / 1000000 * 1.25 + out_tok / 1000000 * 5.0) * 1400
+            else:
+                return (in_tok / 1000000 * 0.075 + out_tok / 1000000 * 0.3) * 1400
+        
+        router_cost = calc_cost(router_model_name, router_in_tokens, router_out_tokens)
+        final_cost = calc_cost(model_name, final_in_tokens, final_out_tokens)
+        total_cost = router_cost + final_cost
+        total_tokens = router_in_tokens + router_out_tokens + final_in_tokens + final_out_tokens
+
+        end_time = time.time()
+        latency_ms = int((end_time - start_time) * 1000)
+        print(f"[EXCEL-AUTOFILL] ⏱️ 엑셀 채우기 총 소요 시간: {end_time - start_time:.2f}초")
+        print(f"[EXCEL-AUTOFILL] 🎉 하이브리드 엑셀 채우기 성공! ({latency_ms}ms)")
+        
+        print("\n==================================================")
+        print("🧾 [💸 엑셀 AI 요금 결제 내역 (영수증)]")
+        print(f"[라우터 AI] 사용 모델: {router_model_name}")
+        print(f"  - 입력: {router_in_tokens:,} / 출력: {router_out_tokens:,} (예상 비용: 약 {router_cost:.3f} 원)")
+        print("--------------------------------------------------")
+        print(f"[최종 매핑 AI] 사용 모델: {model_name}")
+        print(f"  - 입력: {final_in_tokens:,} Tokens")
+        print(f"  - 출력: {final_out_tokens:,} Tokens")
+        print(f"  - 예상 비용: 약 {final_cost:.3f} 원")
+        print("--------------------------------------------------")
+        print(f"🔹 총 소모 토큰 합계: {total_tokens:,} Tokens")
+        print(f"💰 총 예상 청구 비용: 약 {total_cost:.3f} 원 (KRW)")
+        print("==================================================\n")
+
+        if conn:
+            try:
+                def safe_str(s):
+                    return s.encode('cp949', errors='replace').decode('cp949') if s else ""
+                
+                log_cursor = conn.cursor()
+                log_cursor.execute('''
+                    INSERT INTO Sys_AIAuditLog (
+                        timestamp, user_role, question, answer, rag_context, sql_query,
+                        latency_ms, model_name,
+                        prompt_token_count, candidates_token_count,
+                        estimated_cost_krw
+                    ) VALUES (
+                        GETDATE(), ?, ?, ?, ?, ?,
+                        ?, ?,
+                        ?, ?,
+                        ?
+                    )
+                ''', (
+                    safe_str(user_role), safe_str(question), safe_str(answer_text[:2000]), safe_str(f"Mode: {search_mode}"), safe_str(original_sql_query),
+                    latency_ms, safe_str(model_name),
+                    total_tokens, 0,
+                    total_cost
+                ))
+                conn.commit()
+            except Exception as e:
+                print(f"[EXCEL-AUTOFILL] Audit Log 저장 실패: {e}")
+
         if filled_count > 0:
             print(f"[EXCEL-AUTOFILL] ✅ 5단계: AI 매핑 완료 (총 {filled_count}개 셀 주입 성공)")
         else:
