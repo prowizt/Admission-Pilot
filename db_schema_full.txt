@@ -27,7 +27,7 @@ Table: Sys_AIAuditLog (AI 챗봇 대화 및 모니터링 로그)
 Columns:
  - [PK] id (int(4)) NOT NULL
  - user_role (varchar(50)) NULL -- 사용자 직군(부서)
- - model_name (varchar(100)) NULL -- 사용된 AI 모델명(최종챗봇AI 모델명)
+ - model_name (varchar(100)) NULL -- 사용된 AI 모델명
  - question (nvarchar) NULL -- 사용자 실제 질문 원문
  - scraped_context (nvarchar) NULL -- 참고한 웹/스크랩 텍스트
  - sql_query (nvarchar) NULL -- 생성된 T-SQL 쿼리 (없으면 NONE)

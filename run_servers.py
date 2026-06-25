@@ -82,6 +82,18 @@ def read_output(pipe, prefix):
         except Exception:
             pass
 
+def listen_for_commands():
+    try:
+        while True:
+            cmd = sys.stdin.readline().strip().lower()
+            if cmd in ['b', 'ㅠ']:
+                print("\n[시스템] 백업 명령어 감지! 깃허브 백업(git_push.py)을 새 창에서 시작합니다...")
+                root_dir = os.path.dirname(os.path.abspath(__file__))
+                # Windows 환경에서 새 터미널 창을 띄워 백업 스크립트를 실행 (입력 충돌 방지)
+                subprocess.Popen(["start", "cmd", "/c", sys.executable, "git_push.py"], cwd=root_dir, shell=True)
+    except Exception as e:
+        print(f"[시스템] 키보드 입력 감지 오류: {e}")
+
 def start_servers():
     print("==================================================")
     print("🚀 [Admission-Pilot] 통합 서버 기동 스크립트 (통합 로그 모드)")
@@ -147,6 +159,10 @@ def start_servers():
     t_backend.start()
     t_frontend.start()
     t_student.start()
+    
+    # 키보드 입력(백업 등) 대기 스레드 시작
+    t_cmd = threading.Thread(target=listen_for_commands, daemon=True)
+    t_cmd.start()
     
     try:
         # 두 서브프로세스가 동작하는지 주기적으로 핑 점검
