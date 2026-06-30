@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import axios from 'axios';
-import { Plus, Database, FileText, Lock, Globe, Search, Filter, Eye, X, ShieldHalf, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Plus, Database, FileText, Lock, Globe, Search, Eye, X, ShieldHalf, ChevronLeft, ChevronRight } from 'lucide-react';
 import KnowledgeModal from '@/components/modals/KnowledgeModal';
 import CustomSwal from '@/utils/CustomSwal';
 
@@ -20,7 +20,7 @@ export default function Dashboard() {
   const [documents, setDocuments] = useState<any[]>([]);
   const [tables, setTables] = useState<any[]>([]);
   const [supplementalList, setSupplementalList] = useState<any[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  // const [isLoading, setIsLoading] = useState(false);
 
   // [NEW] 페이지네이션 상태
   const [docPage, setDocPage] = useState(1);
