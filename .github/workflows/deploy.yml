@@ -22,9 +22,15 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: ⚛️ Build React Frontend
+      - name: ⚛️ Build React Frontend (Student)
         run: |
           cd student-web
+          npm install
+          npm run build
+
+      - name: 🛠️ Build Admin Frontend
+        run: |
+          cd frontend
           npm install
           npm run build
 
