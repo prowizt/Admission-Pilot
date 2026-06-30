@@ -54,6 +54,6 @@ jobs:
               Write-Host "Starting new PM2 process..."
               # 파이썬 가상환경 호환성을 위해 배치 파일로 PM2 구동
               cd $env:GITHUB_WORKSPACE\backend
-              pm2 start run_backend.bat --name "admission-backend"
+              pm2 start run_backend.bat --interpreter cmd --name "admission-backend"
               pm2 save
           }
