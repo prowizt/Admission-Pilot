@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
-import { Send, User, Bot, Loader2, Sparkles, HelpCircle, Square, Copy, Check, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { Send, User, Bot, Loader2, HelpCircle, Square, Copy, Check, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -23,7 +23,7 @@ const QUICK_REPLIES = [
   "정원외 특별전형 자격 요건이 뭐야?"
 ];
 
-function ActionButtons({ text, isUser }: { text: string, isUser?: boolean }) {
+function ActionButtons({ text, isUser, msgId }: { text: string, isUser?: boolean, msgId?: string }) {
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
   
@@ -142,15 +142,15 @@ function App() {
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
+    const botMsgId = (Date.now() + 1).toString();
+    let botMsgAdded = false;
+
     try {
       // 최근 6개 메시지(대화 3쌍) 추출하여 백엔드 전송
       const recentHistory = messages.slice(-6).map(m => ({
         text: m.content,
         isUser: m.role === 'user'
       }));
-
-      const botMsgId = (Date.now() + 1).toString();
-      let botMsgAdded = false;
 
       // 2. Fetch API로 스트리밍 요청
       const response = await fetch('http://127.0.0.1:8000/chat', {
