@@ -52,7 +52,8 @@ jobs:
               pm2 restart admission-backend
           } else {
               Write-Host "Starting new PM2 process..."
-              # 파이썬 가상환경의 실행 파일을 사용하여 PM2 데몬 등록
-              pm2 start $pythonExe --name "admission-backend" -- $mainPy
+              # 파이썬 가상환경 호환성을 위해 배치 파일로 PM2 구동
+              cd $env:GITHUB_WORKSPACE\backend
+              pm2 start run_backend.bat --name "admission-backend"
               pm2 save
           }
