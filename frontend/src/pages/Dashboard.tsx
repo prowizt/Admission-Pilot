@@ -20,7 +20,7 @@ export default function Dashboard() {
   const [documents, setDocuments] = useState<any[]>([]);
   const [tables, setTables] = useState<any[]>([]);
   const [supplementalList, setSupplementalList] = useState<any[]>([]);
-  // const [isLoading, setIsLoading] = useState(false);
+  const [, setIsLoading] = useState(false);
 
   // [NEW] 페이지네이션 상태
   const [docPage, setDocPage] = useState(1);
