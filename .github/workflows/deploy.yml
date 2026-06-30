@@ -52,8 +52,9 @@ jobs:
               pm2 restart admission-backend
           } else {
               Write-Host "Starting new PM2 process..."
-              # 파이썬 가상환경 호환성을 위해 배치 파일로 PM2 구동
+              # PM2가 파이썬 환경을 제대로 인식하도록 파이썬 실행 파일을 직접 인터프리터로 지정
               cd $env:GITHUB_WORKSPACE\backend
-              pm2 start run_backend.bat --interpreter cmd --name "admission-backend"
+              $venvPython = "$env:GITHUB_WORKSPACE\backend\venv\Scripts\python.exe"
+              pm2 start main.py --interpreter $venvPython --name "admission-backend"
               pm2 save
           }
