@@ -23,7 +23,7 @@ const QUICK_REPLIES = [
   "정원외 특별전형 자격 요건이 뭐야?"
 ];
 
-function ActionButtons({ text, isUser, msgId }: { text: string, isUser?: boolean, msgId?: string }) {
+function ActionButtons({ text, isUser }: { text: string, isUser?: boolean }) {
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
   
@@ -318,7 +318,7 @@ function App() {
               <div className="clear-both"></div>
 
               {/* Action Buttons Area */}
-              <ActionButtons text={msg.content} isUser={msg.role === 'user'} msgId={msg.id} />
+              <ActionButtons text={msg.content} isUser={msg.role === 'user'} />
             </div>
           </div>
         ))}
