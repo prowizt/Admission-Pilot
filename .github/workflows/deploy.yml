@@ -44,9 +44,8 @@ jobs:
           $pythonExe = "$env:GITHUB_WORKSPACE\backend\venv\Scripts\python.exe"
           $mainPy = "$env:GITHUB_WORKSPACE\backend\main.py"
           
-          # PM2에 등록되어 있는지 확인
-          $pm2List = pm2 jlist | ConvertFrom-Json
-          $exists = $pm2List | Where-Object { $_.name -eq "admission-backend" }
+          # PM2에 등록되어 있는지 문자열 검색으로 확인 (JSON 파싱 버그 방지)
+          $exists = pm2 list | Select-String "admission-backend"
           
           if ($exists) {
               Write-Host "Restarting existing PM2 process..."
