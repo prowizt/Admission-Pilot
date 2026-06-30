@@ -63,6 +63,7 @@ const editModelId = document.getElementById('edit-model-id');
 const formTitle = document.getElementById('form-title');
 
 const newModelAlias = document.getElementById('new-model-alias');
+const newRouterModelId = document.getElementById('new-router-model-id');
 const newModelId = document.getElementById('new-model-id');
 const newModelApiKey = document.getElementById('new-model-apikey');
 const btnAddModel = document.getElementById('btn-add-model');
@@ -199,6 +200,7 @@ btnEditModel.addEventListener('click', () => {
   if (!currentActiveModel || !currentActiveModel.id.startsWith("custom_")) return;
 
   newModelAlias.value = currentActiveModel.alias;
+  newRouterModelId.value = currentActiveModel.routerModelName || "";
   newModelId.value = currentActiveModel.modelName;
   newModelApiKey.value = currentActiveModel.apiKey;
   editModelId.value = currentActiveModel.id;
@@ -220,6 +222,7 @@ btnCancelEdit.addEventListener('click', () => {
 // 입력 폼 초기화 함수
 function resetForm() {
   newModelAlias.value = "";
+  newRouterModelId.value = "";
   newModelId.value = "";
   newModelApiKey.value = "";
   editModelId.value = "";
@@ -231,6 +234,7 @@ function resetForm() {
 // 신규 추가 및 수정 저장 로직
 btnAddModel.addEventListener('click', () => {
   const alias = newModelAlias.value.trim();
+  const routerModelIdStr = newRouterModelId.value.trim();
   const modelId = newModelId.value.trim();
   const apiKey = newModelApiKey.value.trim();
   const editingId = editModelId.value;
@@ -247,6 +251,7 @@ btnAddModel.addEventListener('click', () => {
     const idx = customModels.findIndex(m => m.id === editingId);
     if (idx !== -1) {
       customModels[idx].alias = alias;
+      customModels[idx].routerModelName = routerModelIdStr;
       customModels[idx].modelName = modelId;
       customModels[idx].apiKey = apiKey;
     }
@@ -505,6 +510,9 @@ async function sendMessage() {
     formData.append('question', text);
     formData.append('user_role', 'staff');
     formData.append('model_name', currentActiveModel.modelName);
+    if (currentActiveModel.routerModelName) {
+      formData.append('router_model_name', currentActiveModel.routerModelName);
+    }
     formData.append('history', JSON.stringify(chatHistory.slice(-6)));
     
     if (scrapedContext) formData.append('scraped_context', scrapedContext);
@@ -519,6 +527,9 @@ async function sendMessage() {
       model_name: currentActiveModel.modelName,
       history: chatHistory.slice(-6)
     };
+    if (currentActiveModel.routerModelName) {
+      payload.router_model_name = currentActiveModel.routerModelName;
+    }
 
     if (scrapedContext) {
       payload.scraped_context = scrapedContext;

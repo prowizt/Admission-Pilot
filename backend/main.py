@@ -87,6 +87,7 @@ class ChatRequest(BaseModel):
     scraped_context: Optional[str] = "" # [NEW] 스크랩된 현재 화면 텍스트
     scraped_file_name: Optional[str] = "" # [NEW] 첨부 파일명
     model_name: str = "gemini-2.5-flash"
+    router_model_name: Optional[str] = None
     user_role: str = "staff" # 권한: "staff"(교직원) 또는 "student"(일반학생)
     history: Optional[List[dict]] = []
 
@@ -554,12 +555,70 @@ async def get_document_content(doc_type: str, doc_id: str):
         raise HTTPException(status_code=400, detail="Invalid doc_type")
     
     target_db = rule_db if doc_type == "rule" else reference_db
+    # 1. 1차 검색: 최근 원복된 '단일(통짜) 문서' 조회
     result = target_db.get(ids=[doc_id])
     
-    if not result or not result.get("documents") or len(result["documents"]) == 0:
-        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+    if result and result.get("documents") and len(result["documents"]) > 0:
+        return {"status": "success", "content": result["documents"][0]}
         
-    return {"status": "success", "content": result["documents"][0]}
+    # 2. 2차 검색: 과거 청킹된 문서 조각(Chunk)들 하위 호환 조회
+    try:
+        # MS-SQL에서 doc_id로 filename 조회
+        conn = get_mssql_connection()
+        if not conn:
+            raise HTTPException(status_code=500, detail="DB 연결 실패")
+            
+        cursor = conn.cursor()
+        cursor.execute("SELECT filename, title FROM Sys_DocumentCatalog WHERE doc_id=?", (doc_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row or not row[0]:
+            raise HTTPException(status_code=404, detail="오류 본문을 불러오지 못했습니다. (DB 정보 없음)")
+            
+        db_filename = row[0]
+        db_title = row[1] if row[1] else ""
+        
+        # ChromaDB에서 모든 청크 메타데이터 조회 후 파이썬에서 파일명/제목 매칭
+        # 이전 청킹 로직에서 DB 구분을 잘못 넣었을 가능성을 대비하여 양쪽 DB 모두 검색
+        rule_data = rule_db.get(include=["metadatas", "documents"])
+        ref_data = reference_db.get(include=["metadatas", "documents"])
+        
+        chunk_texts = []
+        
+        for db_data in [rule_data, ref_data]:
+            if db_data and db_data.get("ids"):
+                for i in range(len(db_data["ids"])):
+                    meta = db_data["metadatas"][i] if db_data.get("metadatas") else None
+                    if not meta: continue
+                    
+                    meta_filename = meta.get("filename", "")
+                    meta_title = meta.get("title", "")
+                    
+                    # 파일명이 포함되거나 제목이 포함되면 같은 문서 조각으로 간주
+                    if (db_filename and (db_filename in meta_filename or meta_filename in db_filename)) or \
+                       (db_title and (db_title in meta_title or meta_title in db_title)):
+                        # documents 배열이 존재하는지 안전하게 확인
+                        if db_data.get("documents") and i < len(db_data["documents"]):
+                            chunk_texts.append(db_data["documents"][i])
+                    
+        if not chunk_texts:
+            raise HTTPException(status_code=404, detail="오류 본문을 불러오지 못했습니다. (ChromaDB 조각 없음)")
+            
+        # 청크가 여러 개일 경우 병합 (기본적으로 저장된 순서 반환)
+        combined_text = "\n\n".join(chunk_texts)
+        
+        # ⚠️ 사용자 지시: 구형 청킹 문서 경고 안내문 추가
+        warning_msg = "[⚠️ 주의: 이 문서는 과거 청킹(분할) 방식으로 저장된 구형 데이터입니다. 최상의 AI 품질을 위해 삭제 후 통짜 파일로 재업로드(갱신)를 권장합니다.]\n\n======================================================\n\n"
+        final_content = warning_msg + combined_text
+        
+        return {"status": "success", "content": final_content}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"청킹 문서 미리보기 복원 에러: {e}")
+        raise HTTPException(status_code=500, detail="오류 본문을 불러오지 못했습니다. (서버 에러)")
 
 
 @app.put("/documents/{doc_id}")
@@ -603,6 +662,18 @@ async def update_document(
 
     return {"status": "success", "message": "문서 정보가 성공적으로 수정되었습니다."}
 
+
+@app.get("/debug_chroma")
+def debug_chroma():
+    try:
+        r_data = rule_db.get()
+        ref_data = reference_db.get()
+        return {
+            "rule_meta": r_data.get("metadatas", [])[:10],
+            "ref_meta": ref_data.get("metadatas", [])[:10]
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.delete("/documents/{doc_type}/{doc_id}")
 async def delete_document(doc_type: str, doc_id: str):
@@ -939,6 +1010,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 print(f"[연도 보정] 질문/스크랩 내에서 {rag_year_filter}학년도를 감지하여 필터를 적용합니다.")
                 
             time_router_end = time.time()
+            time_db_end = time_router_end
             print(f"[MAIN-CHAT] ⚡ Fast-Track 발동: 공개 DB 테이블이 없으므로 라우터 AI를 생략하고 즉시 문서 검색으로 직행합니다.")
             print(f"[BACKEND] ⏱️ 라우터 AI 소요 시간: {time_router_end - start_time:.2f}초 (건너뜀)")
         else:
@@ -1005,6 +1077,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             "need_rag": true 혹은 false (비정형 문서 목록에서 찾아봐야 할 정보가 있다면 true),
             "rag_search_query": "need_rag가 true일 경우, 문서를 검색할 핵심 키워드. 만약 검토해야 할 연관된 여러 개의 규정/문서가 있을 경우, 각 키워드나 문서명을 쉼표(,)로 연결하여 모두 나열하십시오. (예: '구매 규정, 법인카드 사용 규정, 예산 회계 규정, 위임전결 규정')",
             "rag_year_filter": "특정 학년도의 문서만 찾아야 할 경우 해당 4자리 숫자 입력. 단, 학칙 등 상시 적용되는 문서를 찾아야 하거나 연도를 모르면 'ALL' 입력",
+            "target_documents": "질문자가 특정 문서를 명시적으로 지정하여 검토를 요구한 경우(예: '2027학년도 모집요강만 보고 말해줘'), [현재 데이터베이스 및 문서 카탈로그 현황]을 참고하여 일치하는 공식 파일명들을 리스트 형태로 추출하십시오. (예: ['2027학년도 모집요강.pdf', '예산ㆍ회계 규정.pdf']). 지정이 없으면 빈 배열 []을 반환하십시오.",
             "knowledge_action": {{
                 "action": "INSERT" 또는 "DELETE" 또는 "NONE",
                 "category": "인사/조직" 또는 "결재라인" 또는 "예외규정" 또는 "기타",
@@ -1012,31 +1085,18 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             }}
         }}
         """
-            # [라우터 전용 API 키 분리] 
-            # 3.5 모델의 과도한 사용을 막기 위해, 라우터(SQL 판별)는 2.5-flash와 별도의 API 키를 사용합니다.
-            router_api_key = os.getenv("ROUTER_API_KEY", "")
-            router_model_name = os.getenv("ROUTER_MODEL", "gemini-2.5-flash")
-            
-            if router_api_key and router_api_key != "여기에_새로운_API키를_입력하세요":
-                genai.configure(api_key=router_api_key)
-                sql_model = genai.GenerativeModel(router_model_name)
-            else:
-                # 새 키를 안 넣었을 경우 원래 사용자 키 & 모델을 그대로 씀 (에러 방지용)
-                sql_model = genai.GenerativeModel(request.model_name)
+            router_model_to_use = request.router_model_name or request.model_name
+            sql_model = genai.GenerativeModel(router_model_to_use)
                 
             no_retry = retry.Retry(initial=0, maximum=0, multiplier=0, deadline=0)
-            print(f"[MAIN-CHAT] 🧠 SQL 라우터 분석 중... (사용 모델: {router_model_name if router_api_key else request.model_name})")
+            print(f"[MAIN-CHAT] 🧠 SQL 라우터 분석 중... (사용 모델: {router_model_to_use})")
             sql_response = sql_model.generate_content(sql_router_prompt, request_options={"retry": no_retry})
-            
-            # 라우터 작업이 끝난 후, 반드시 사용자가 프론트에서 넘겨준 원래 API 키로 다시 되돌려 놓아야 합니다.
-            if router_api_key and router_api_key != "여기에_새로운_API키를_입력하세요":
-                genai.configure(api_key=x_gemini_key)
             
             # JSON 파싱
             try:
                 # [NEW] 라우터 토큰 측정
                 try:
-                    used_router_model = router_model_name if router_api_key and router_api_key != "여기에_새로운_API키를_입력하세요" else request.model_name
+                    used_router_model = router_model_to_use
                     router_in_tokens = sql_model.count_tokens(sql_router_prompt).total_tokens
                     router_out_tokens = sql_model.count_tokens(sql_response.text).total_tokens
                 except Exception as rt_err:
@@ -1053,6 +1113,10 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 need_rag = parsed_json.get("need_rag", False)
                 rag_query = parsed_json.get("rag_search_query", request.question)
                 rag_year_filter = parsed_json.get("rag_year_filter", "ALL")
+                target_documents = parsed_json.get("target_documents", [])
+                
+                if target_documents:
+                    print(f"[타겟 문서 지정] 사용자가 다음 문서만 검토하도록 지시했습니다: {target_documents}")
                 
                 # [실시간 지식 보완 액션 추출]
                 k_action_data = parsed_json.get("knowledge_action", {})
@@ -1060,28 +1124,42 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 k_category = k_action_data.get("category", "기타")
                 k_content = k_action_data.get("content", "")
                 
-                # [연도 자동 보정] 사용자 질문이나 스크랩된 문서에서 4자리 연도를 감지하여 RAG 필터에 자동 적용합니다.
-                if rag_year_filter == "ALL" or not rag_year_filter:
-                    all_text = (request.question or "") + " " + (request.scraped_context or "")
-                    years = re.findall(r"\b(202\d)\b", all_text)
-                    if years:
-                        rag_year_filter = years[0]
-                    print(f"[연도 보정] 질문/스크랩 내에서 {rag_year_filter}학년도를 감지하여 필터를 적용합니다.")
+                # [연도 자동 보정] 사용자 질문이나 스크랩된 문서에서 4자리 연도를 모두 감지하여 RAG 필터에 자동 적용합니다.
+                all_text = (request.question or "") + " " + (request.scraped_context or "")
+                detected_years = re.findall(r"\b(202\d)\b", all_text)
+                
+                final_years = set()
+                if isinstance(rag_year_filter, str) and rag_year_filter != "ALL":
+                    final_years.add(rag_year_filter)
+                elif isinstance(rag_year_filter, list):
+                    final_years.update(rag_year_filter)
+                
+                if detected_years:
+                    final_years.update(detected_years)
+                
+                if final_years:
+                    rag_year_filter = sorted(list(final_years))
+                    print(f"[연도 보정] 질문/스크랩 내에서 {rag_year_filter} 학년도를 감지하여 필터를 적용합니다.")
+                else:
+                    rag_year_filter = "ALL"
             except Exception as json_err:
                 print(f"JSON 파싱 오류: {json_err} / 원본: {sql_response.text}")
                 sql_query = "NONE"
                 need_rag = True
                 rag_query = request.question
                 rag_year_filter = "ALL"
+                target_documents = []
                 k_action = "NONE"
                 k_category = "기타"
                 k_content = ""
                 
                 # [연도 자동 보정]
                 all_text = (request.question or "") + " " + (request.scraped_context or "")
-                years = re.findall(r"\b(202\d)\b", all_text)
-                if years:
-                    rag_year_filter = years[0]
+                detected_years = re.findall(r"\b(202\d)\b", all_text)
+                if detected_years:
+                    rag_year_filter = sorted(list(set(detected_years)))
+                else:
+                    rag_year_filter = "ALL"
             
         # =======================================================
         # [Step 1-2] 실시간 보완 지식 (Supplemental Knowledge) DB 반영 및 수집
@@ -1160,13 +1238,21 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         print(f"===========================")
         
         time_router_end = time.time()
+        time_db_end = time_router_end
         print(f"⏱️ 라우터 AI 소요 시간: {time_router_end - start_time:.2f}초")
 
         # =======================================================
         # [Step 2] 생성된 쿼리 실행
         # =======================================================
+        # SSMS 검증용 쿼리 자동 저장 (가독성을 위해 포맷팅 적용)
+        try:
+            with open('latest_query.sql', 'w', encoding='utf-8') as f:
+                f.write(formatted_sql)
+        except Exception as f_err:
+            print(f"[MAIN-CHAT] latest_query.sql 저장 실패: {f_err}")
+            
         sql_context = ""
-        if sql_query.upper().startswith("SELECT") and conn:
+        if (sql_query.upper().startswith("SELECT") or sql_query.upper().startswith("WITH")) and conn:
             try:
                 # [최적화] AI가 추출된 데이터의 출처와 필터링 조건을 확신할 수 있도록 사용된 쿼리 원문을 증거로 덧붙입니다.
                 sql_context += f"[시스템이 데이터를 추출할 때 사용한 조건(쿼리)]:\n{formatted_sql}\n"
@@ -1312,7 +1398,10 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 # where 조건 동적 구성
                 where_conditions = []
                 if rag_year_filter and rag_year_filter != "ALL":
-                    where_conditions.append({"year": {"$in": [rag_year_filter, "ALL"]}})
+                    if isinstance(rag_year_filter, list):
+                        where_conditions.append({"year": {"$in": rag_year_filter + ["ALL"]}})
+                    else:
+                        where_conditions.append({"year": {"$in": [rag_year_filter, "ALL"]}})
                 
                 if request.user_role == "student":
                     if public_filenames:
@@ -1328,12 +1417,28 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 else:
                     where_clause = None
                 
+                # [수정] 규정(Rule DB)은 연도 필터를 적용하지 않고 항상 전체 검색 (단, 학생 권한인 경우 공개 문서 필터는 유지)
+                rule_where_conditions = []
+                if request.user_role == "student":
+                    if public_filenames:
+                        rule_where_conditions.append({"filename": {"$in": public_filenames}})
+                    else:
+                        rule_where_conditions.append({"filename": "NONE_PUBLIC_DOCUMENTS_AVAILABLE"})
+                
+                if len(rule_where_conditions) == 1:
+                    rule_where_clause = rule_where_conditions[0]
+                elif len(rule_where_conditions) > 1:
+                    rule_where_clause = {"$and": rule_where_conditions}
+                else:
+                    rule_where_clause = None
+                
                 # [개선] 영어 임베딩 모델의 한글 매칭 한계를 메우기 위해, 후보군을 넓게(60개) 가져온 후 파일명 매칭 보정을 적용합니다.
                 n_results_per_query = 60
 
                 # [최적화] 여러 개의 키워드를 for문으로 각각 검색하지 않고, query_texts=queries 로 한 번에 Batch 검색하여 속도를 단축합니다.
+                time_db_end = time.time()
                 try:
-                    rule_res = rule_db.query(query_texts=queries, n_results=n_results_per_query, where=where_clause)
+                    rule_res = rule_db.query(query_texts=queries, n_results=n_results_per_query, where=rule_where_clause)
                     if rule_res and rule_res.get("documents"):
                         for q_idx in range(len(queries)):
                             if not rule_res["documents"][q_idx]: continue
@@ -1343,6 +1448,23 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                                 dist = rule_res["distances"][q_idx][i] if rule_res.get("distances") else 1.0
                                 fname = meta.get("filename", "이름없음")
                                 
+                                # [NEW] 타겟 문서 지정 (Target Document Enforcement)
+                                if target_documents:
+                                    fname_lower = fname.lower()
+                                    target_clean = [re.sub(r'[^a-zA-Z0-9가-힣]', '', t).lower() for t in target_documents]
+                                    fname_only_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', fname.replace(".pdf", "")).lower()
+                                    if not any((tc in fname_only_clean or tc in fname_lower) for tc in target_clean):
+                                        continue
+                                
+                                # [NEW] 연도 2중 파이썬 필터링 (Post-filtering) 다중 연도 지원
+                                # 벡터DB의 문법 한계를 극복하기 위해 파이썬 단에서 연도가 명시적으로 불일치하면 제거합니다.
+                                doc_year = meta.get("year", "ALL")
+                                if doc_year != "ALL" and rag_year_filter != "ALL":
+                                    if isinstance(rag_year_filter, list) and doc_year not in rag_year_filter:
+                                        continue
+                                    elif isinstance(rag_year_filter, str) and doc_year != rag_year_filter:
+                                        continue
+                                
                                 # [보정 알고리즘] 쿼리 텍스트와 파일명 키워드 매칭 보너스 부여
                                 fname_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', fname.replace(".pdf", "")).lower()
                                 q_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', q_str).lower()
@@ -1350,6 +1472,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                                     if q_clean in fname_clean or fname_clean in q_clean:
                                         dist = min(dist, 0.1)
                                 
+
                                 # 중복 제거 시 최소 distance 유지
                                 if fname not in rule_docs_map or dist < rule_docs_map[fname]["distance"]:
                                     rule_docs_map[fname] = {"doc_text": doc_text, "meta": meta, "distance": dist}
@@ -1366,6 +1489,14 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                                 meta = ref_res["metadatas"][q_idx][i] if ref_res.get("metadatas") else {}
                                 dist = ref_res["distances"][q_idx][i] if ref_res.get("distances") else 1.0
                                 fname = meta.get("filename", "이름없음")
+                                
+                                # [NEW] 타겟 문서 지정 (Target Document Enforcement)
+                                if target_documents:
+                                    fname_lower = fname.lower()
+                                    target_clean = [re.sub(r'[^a-zA-Z0-9가-힣]', '', t).lower() for t in target_documents]
+                                    fname_only_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', fname.replace(".pdf", "")).lower()
+                                    if not any((tc in fname_only_clean or tc in fname_lower) for tc in target_clean):
+                                        continue
                                 
                                 # [보정 알고리즘] 쿼리 텍스트와 파일명 키워드 매칭 보너스 부여
                                 fname_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', fname.replace(".pdf", "")).lower()
@@ -1412,10 +1543,16 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     sorted_refs = [d for d in sorted_refs if public_status.get(d["meta"].get("filename", ""), "N") == "Y"]
                     print("[보안 통제] 학생 권한 필터링 - 비공개 문서를 RAG 컨텍스트에서 제외합니다.")
 
-                # [최적화] 학생용 챗봇은 빠른 응답 속도를 위해 최상위 5개 청크만 반환하고, 관리자용은 광범위한 비교를 위해 50개를 유지합니다.
-                chunk_limit = 5 if request.user_role == "student" else 50
-                final_rules = sorted_rules[:chunk_limit]
-                final_refs = sorted_refs[:chunk_limit]
+                # [최적화] 통짜 문서 환경에 맞춰, 학생용 챗봇은 최상위 5개, 교직원용(관리자)은 7개까지만 참조하도록 토큰 소모를 방지합니다.
+                chunk_limit = 5 if request.user_role == "student" else 7
+                
+                # Rule DB와 Reference DB의 검색 결과를 통합하여 전체에서 가장 유사도가 높은 상위 N개만 추출합니다.
+                all_matched = sorted_rules + sorted_refs
+                all_matched = sorted(all_matched, key=lambda x: x["distance"])[:chunk_limit]
+                
+                # 다시 Rule과 Reference로 분리 (아래쪽 출력 및 포맷팅 로직 유지)
+                final_rules = [d for d in all_matched if d in sorted_rules]
+                final_refs = [d for d in all_matched if d in sorted_refs]
 
                 # [터미널 검색 현황 출력 - cp949 인코딩 에러 방지를 위해 이모지 제거]
                 matched_rule_files = [d["meta"].get("filename", "이름없음") for d in final_rules]

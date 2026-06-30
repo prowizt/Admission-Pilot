@@ -79,7 +79,9 @@
         <input type="hidden" id="edit-model-id" value="" />
         <input type="text" id="new-model-alias" placeholder="구분용 이름 (예: 종량제 3.0 테스트용)"
           class="w-full text-xs px-2 py-1.5 bg-white border border-gray-300 rounded outline-none focus:border-indigo-400" />
-        <input type="text" id="new-model-id" placeholder="실제 모델명 (예: gemini-3-flash-preview)"
+        <input type="text" id="new-router-model-id" placeholder="라우터 모델명 (예: gemini-3.5-flash) - 미입력 시 아래 공통 적용"
+          class="w-full text-[11px] font-mono px-2 py-1.5 bg-white border border-gray-300 rounded outline-none focus:border-indigo-400" />
+        <input type="text" id="new-model-id" placeholder="최종 매핑 모델명 (예: gemini-2.5-flash)"
           class="w-full text-[11px] font-mono px-2 py-1.5 bg-white border border-gray-300 rounded outline-none focus:border-indigo-400" />
         <div class="flex gap-1.5">
           <input type="password" id="new-model-apikey" placeholder="해당 모델용 API Key"

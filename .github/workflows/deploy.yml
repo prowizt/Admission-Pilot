@@ -1,0 +1,48 @@
+name: Deploy Admission Pilot
+
+on:
+  push:
+    branches:
+      - main
+      - master # 보통 깃허브 기본 브랜치가 main 또는 master입니다.
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 📦 Setup Python Environment
+        run: |
+          cd backend
+          python -m venv venv
+          .\venv\Scripts\Activate.ps1
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: ⚛️ Build React Frontend
+        run: |
+          cd student-web
+          npm install
+          npm run build
+
+      - name: 🚀 Start or Restart Backend (PM2)
+        run: |
+          $pythonExe = "$env:GITHUB_WORKSPACE\backend\venv\Scripts\python.exe"
+          $mainPy = "$env:GITHUB_WORKSPACE\backend\main.py"
+          
+          # PM2에 등록되어 있는지 확인
+          $pm2List = pm2 jlist | ConvertFrom-Json
+          $exists = $pm2List | Where-Object { $_.name -eq "admission-backend" }
+          
+          if ($exists) {
+              Write-Host "Restarting existing PM2 process..."
+              pm2 restart admission-backend
+          } else {
+              Write-Host "Starting new PM2 process..."
+              # 파이썬 가상환경의 실행 파일을 사용하여 PM2 데몬 등록
+              pm2 start $pythonExe --name "admission-backend" -- $mainPy
+              pm2 save
+          }

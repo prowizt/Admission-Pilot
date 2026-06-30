@@ -19,25 +19,56 @@ def extract_excel_structure(ws):
     빈 셀의 좌표와 해당 셀이 위치한 행/열의 문맥(헤더) 정보를 추출합니다.
     """
     empty_cells = []
-    max_row = min(ws.max_row, 50)
-    max_col = min(ws.max_column, 50)
-    
+    max_row = min(ws.max_row, 200)
+    max_col = min(ws.max_column, 200)
+    # 1. 병합된 셀(Merged Cells) 완벽 평탄화 (Flatten)
+    merged_values = {}
+    for merged_range in ws.merged_cells.ranges:
+        min_col, min_row, max_col_idx, max_row_idx = merged_range.bounds
+        top_left_val = ws.cell(row=min_row, column=min_col).value
+        if top_left_val is not None and str(top_left_val).strip() != "":
+            # 병합 영역 내의 모든 셀에 좌상단 값 할당 (평탄화)
+            for r in range(min_row, max_row_idx + 1):
+                for c in range(min_col, max_col_idx + 1):
+                    merged_values[(r, c)] = str(top_left_val).strip()
+
     headers = {}
     for r in range(1, max_row + 1):
         for c in range(1, max_col + 1):
-            val = ws.cell(row=r, column=c).value
-            if val is not None and str(val).strip() != "":
-                headers[(r, c)] = str(val).strip()
+            if (r, c) in merged_values:
+                headers[(r, c)] = merged_values[(r, c)]
+            else:
+                val = ws.cell(row=r, column=c).value
+                if val is not None and str(val).strip() != "":
+                    headers[(r, c)] = str(val).strip()
 
     for r in range(1, max_row + 1):
         for c in range(1, max_col + 1):
             cell = ws.cell(row=r, column=c)
-            # MergedCell(병합된 껍데기 셀)은 빈 데이터 칸이 아니므로 건너뜀
+            
+            # 헤더로 판별된 셀은 빈 셀 목록에서 제외
+            if (r, c) in headers:
+                continue
+
+            # 빈칸(입력칸)이 병합된 경우, 좌상단 1개만 수집하고 나머지 껍데기는 무시
             if type(cell).__name__ == 'MergedCell':
                 continue
+                
             if cell.value is None or str(cell.value).strip() == "":
-                left_headers = [headers[(r, i)] for i in range(1, c) if (r, i) in headers]
-                top_headers = [headers[(i, c)] for i in range(1, r) if (i, c) in headers]
+                left_headers = []
+                for i in range(1, c):
+                    if (r, i) in headers:
+                        h = headers[(r, i)]
+                        # 연속된 동일 헤더 제거 (평탄화로 인한 중복 방지)
+                        if not left_headers or left_headers[-1] != h:
+                            left_headers.append(h)
+
+                top_headers = []
+                for i in range(1, r):
+                    if (i, c) in headers:
+                        h = headers[(i, c)]
+                        if not top_headers or top_headers[-1] != h:
+                            top_headers.append(h)
                 
                 # 좌측 헤더나 상단 헤더 중 하나라도 있으면 유효한 빈 셀로 간주 (유연성 확보)
                 if left_headers or top_headers:
@@ -62,6 +93,7 @@ async def chat_excel_autofill(
     history: str = Form("[]"),
     scraped_context: str = Form(None),
     scraped_file_name: str = Form(None),
+    router_model_name: str = Form(None),
     x_gemini_key: str = Header(None)
 ):
     # 순환 참조 방지를 위해 함수 내부에서 import
@@ -96,10 +128,12 @@ async def chat_excel_autofill(
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
         ws = wb.active
         empty_cells_info, existing_data_context = extract_excel_structure(ws)
+
+
         print(f"[EXCEL-AUTOFILL] 📊 1단계: 엑셀 파악 완료 (빈 셀 {len(empty_cells_info)}개, 기존 데이터 {len(existing_data_context.split(chr(10))) if existing_data_context else 0}개 감지)")
         
         # 2. Text-to-SQL (라우터) 구동
-        router_model_name = model_name
+        router_model_name = router_model_name or model_name
         print(f"[EXCEL-AUTOFILL] 🧠 2단계: AI 통계 SQL 쿼리 설계 중... (사용 모델: {router_model_name})")
         sql_router_prompt = f"""
         너는 대동대학교 입시처의 [엑셀 매핑 전문 데이터 아키텍트]야.
@@ -109,23 +143,22 @@ async def chat_excel_autofill(
         {pre_supplemental_text if pre_supplemental_text else "등록된 사전지식 없음"}
         - 위 [관리자 등록 최상위 사전지식]에 명시된 규칙은 질문의 의도 파악과 SQL 쿼리 설계 시 절대적으로 준수해야 하는 1순위 예외 규칙입니다.
         
-        [기본 사전 지식 주입]
-        1. [입시 학년도 정의]: 대학교 입시에서 'N학년도 전형문서'는 'N-1년도'에 모집을 실시하는 전형을 뜻합니다. (예: 2027학년도 전형문서 = 2026년 가을/겨울에 모집 실시). 사용자가 질문한 연도가 '실시 연도'인지 '입학 학년도'인지 문맥을 파악하여 SQL을 정확히 일치시키세요.
-        2. [일반 학년도 정의]: 학년도(예: 2026학년도)는 3월 1일부터 다음 해 2월 말일까지를 의미합니다. (예: 2026학년도 = 2026.03 ~ 2027.02).
-        3. [신입/편입 구분]: 대학 입학 결과에는 신입생 뿐만 아니라 '편입생'도 존재합니다. 사용자가 특정 전형만 지정하지 않고 종합 검토를 요청하는 경우, '신입'과 '편입' 데이터를 구분하여 각각 조회하거나 한꺼번에 수집하도록 T-SQL을 구성하세요.
-        4. [정원내 및 정원외 전형 구분 규칙]: 대학 학칙상 명시된 '입학정원'은 오직 정원내 전형에만 적용됩니다. 정원외 전형은 정원 제한을 받지 않으므로, DB 데이터와 입학정원을 대조/통계 낼 때는 반드시 정원내와 정원외 전형을 명확하게 분리(GROUP BY 또는 CASE WHEN)하여 집계하십시오.
-        5. [지역명 약어 자동 변환 규칙]: 사용자가 질문에 '부울경'이라고 입력하면 반드시 `[출신고교시도] LIKE '%부산%' OR [출신고교시도] LIKE '%울산%' OR [출신고교시도] LIKE '%경상남도%'` 형태로 검색하십시오. '경남' 등은 '경상남도'로 정식 명칭 변환하십시오.
-
         [가장 중요한 SQL 작성 규칙]
-        1. 컬럼명이 한글일 수 있으므로 대괄호 []를 반드시 사용해.
-        2. 🚨 **[띄어쓰기 절대 금지]** 대괄호 `[]` 내부에는 **어떤 이유로도 단 한 칸의 공백도 넣지 마세요!** (예: `[ 수험번호]`, `[전형 명]`, `[지원인 원]`처럼 공백이 하나라도 들어가면 치명적 에러가 발생합니다. 무조건 `[수험번호]` 처럼 공백을 완전히 붙이세요.)
-        3. **[별칭(Alias) 공백 금지 및 대괄호 필수]** `AS [일 반전형_모집인원]` 처럼 별칭 대괄호 안에도 띄어쓰기를 절대 금지합니다.
-        4. **[문자열 비교 공백 엄수]** 조건절에서 문자열을 비교할 때 카탈로그에 정의된 문자열 구조를 임의로 띄어쓰지 마세요. 무조건 원본(`'최종등록자(최종합격자)'`)과 똑같이 붙여 쓰세요.
-        5. **[신입/편입 구분 및 정원내/외 조건]** 통계를 낼 때 신입생과 편입생, 정원내/외를 명확하게 분리하세요.
-        6. **[LIKE 검색어 공백 절대 금지]** `LIKE` 검색 시 `LIKE '%수능 전형%'` 처럼 단어 사이에 공백을 임의로 넣지 마세요.
+        1. 🚨 **[전처리(Pre-mapping) 장려 및 줄바꿈 절대 금지]** 제공된 [엑셀 빈 셀 구조]의 헤더 명칭(예: '대학졸업자_2년제졸업자')을 참고하여, DB의 원본 데이터를 `CASE WHEN` 등을 사용해 엑셀 키워드와 최대한 똑같이 맞춰서(가공해서) 출력해 주는 것을 적극 권장합니다. **단, 쿼리가 길어지더라도 따옴표('') 내부 문자열에 절대 줄바꿈(Enter/Newline)을 넣지 마십시오!** (문법 에러 발생 원인). 컬럼의 Alias(AS `[전형명]`)는 반드시 `Sys_ColumnCatalog` 스키마에 존재하는 원본 컬럼명만 사용해야 하며, 엑셀 구조를 흉내 내려고 가로로 PIVOT 하지 말고 세로(Row) 방향으로 추출하세요.
+        2. 컬럼명이 한글일 수 있으므로 대괄호 []를 반드시 사용해.
+        3. 🚨 **[띄어쓰기 절대 금지]** 대괄호 `[]` 내부에는 **어떤 이유로도 단 한 칸의 공백도 넣지 마세요!** (예: `[ 수험번호]`, `[전형 명]`, `[지원인 원]`처럼 공백이 하나라도 들어가면 치명적 에러가 발생합니다. 무조건 `[수험번호]` 처럼 공백을 완전히 붙이세요.)
+        4. **[별칭(Alias) 공백 금지 및 대괄호 필수]** `AS [지원_인원]` 처럼 별칭 대괄호 안에도 띄어쓰기를 절대 금지합니다.
+        5. **[문자열 비교 공백 엄수]** 조건절에서 문자열을 비교할 때 카탈로그에 정의된 문자열 구조를 임의로 띄어쓰지 마세요. 무조건 원본과 똑같이 붙여 쓰세요.
+        6. **[신입/편입 구분 및 정원내/외 조건]** 통계를 낼 때 신입생과 편입생, 정원내/외를 명확하게 분리하세요.
+        7. **[LIKE 검색어 공백 절대 금지]** `LIKE` 검색 시 `LIKE '%수능 전형%'` 처럼 단어 사이에 공백을 임의로 넣지 마세요.
         8. **[학년도 자동 추출 강제]** 사용자가 명시적으로 학년도를 말하지 않더라도, 파일명이나 질문의 연도를 찾아 `WHERE [입시학년도] = '추출된연도'` 과 같이 조건을 넣으세요.
         9. 🚨 **[UNION ALL 더미 행 생성 절대 금지]** 엑셀의 빈 셀 구조를 똑같이 따라 하겠다고 0으로 채워진 야간 학과나 더미 행을 `UNION ALL`로 억지로 생성하지 마십시오! DB에 실재하는 학과의 데이터만 단순 `GROUP BY`로 뽑아주면 빈 셀(0값) 매핑은 파이썬이 알아서 완벽히 처리합니다. 
         10. **[ORDER BY 절대 사용 금지]** MS-SQL 오류 방지를 위해 쿼리 마지막에 `ORDER BY` 절을 절대로 작성하지 마십시오!
+        11. 🚨 **[일대다 조인 뻥튀기 방지 및 원본 컬럼명 보존]** 기준 정보 테이블과 상세 내역 테이블을 JOIN할 때 1:N 관계로 인해 숫자가 중복(뻥튀기)되지 않도록 주의하십시오. 이를 방지하기 위해 그룹핑 과정에서 가상의 세부 명칭(예: `[세부분류]`)을 생성하여 쪼갰다면, 최종 SELECT 절에서 임의로 `[출력명칭]` 같은 가짜 별칭을 만들지 마십시오. 반드시 매핑 시스템이 인식할 수 있도록 **원래 스키마에 존재하던 원본 컬럼명(Alias)**을 그대로 사용하여 덮어씌워야 합니다. 가짜 컬럼명을 반환하면 매핑 시스템이 데이터를 찾지 못해 모두 0으로 처리됩니다. (올바른 예: `COALESCE([A].[세부분류], [Q].[기준컬럼]) AS [기준컬럼]`)
+        12. 🚨 **[절대 PIVOT 금지 및 스키마 원본 컬럼 강제]** 제공된 [키워드]들을 토대로 쿼리의 SELECT 컬럼(Alias)으로 억지로 PIVOT을 만들면 파이썬 서버에서 즉각 500 에러가 터집니다! 가로로 펼치는(PIVOT) 쿼리나 스키마에 없는 이상한 파생 컬럼을 억지로 생성하는 것을 엄격히 금지합니다. 반드시 **Sys_ColumnCatalog에 정의된 원본 컬럼명**만을 사용하여 세로 방향(Row 단위)의 정규화된(Normalized) 기본 1차원 테이블 구조로만 결과를 출력해야 합니다.
+        13. 🚨 **[GROUP BY 8120 오류 완벽 방지 (반복 금지)]** MS-SQL에서 `SELECT` 절에 긴 `CASE WHEN` 구문을 사용하고 `GROUP BY` 절에 그대로 복사해서 넣을 경우, 줄바꿈/띄어쓰기 불일치로 8120 에러가 폭발적으로 발생합니다. 이 치명적 오류를 원천 차단하기 위해, **`GROUP BY` 절 내부에 `CASE WHEN` 구문을 사용하는 것을 엄격히 금지**합니다! 반드시 CTE나 인라인 뷰(서브쿼리)를 사용하여 `CASE WHEN`으로 가공된 컬럼(예: `[가공된_컬럼명]`)을 먼저 정의한 뒤, 메인 쿼리에서는 단순히 `GROUP BY [기준컬럼1], [가공된_컬럼명]` 형태로 깔끔하게 묶으십시오.
+        14. 🚨 **[문자열 숫자형 변환 필수 (SUM 에러 방지)]** 스키마에서 수치 데이터를 나타내는 컬럼이 `nvarchar` 타입일 경우, `SUM()` 집계 함수를 사용할 때 원본 그대로 쓰지 마십시오! 반드시 `SUM(CASE WHEN ISNUMERIC([문자형수치컬럼])=1 THEN CAST([문자형수치컬럼] AS INT) ELSE 0 END)` 형태로 안전하게 형변환(Casting)하여 8117 에러를 완벽히 차단하십시오.
+        15. 🚨 **[합계(Total) 자동 산출 (ROLLUP 필수)]** [엑셀 빈 셀 구조]를 살펴봤을 때 '합계', '계', '소계', '전체' 등의 집계(Total) 칸이 존재한다면, 파이썬 단의 매핑 AI가 직접 계산하지 않도록 **쿼리의 `GROUP BY` 절에 반드시 `WITH ROLLUP` (또는 CUBE) 구문을 추가**하여 DB 단에서 완벽하게 계산된 합계 행(Row)을 함께 추출해 주십시오.
 
         [데이터베이스 스키마 및 힌트]
         (아래 스키마의 ai_description에 적힌 값(힌트)들을 꼼꼼히 확인하고 쿼리를 작성하세요)
@@ -135,6 +168,7 @@ async def chat_excel_autofill(
         {file.filename}
 
         [엑셀 빈 셀 구조 (이 셀들을 채우기 위한 데이터가 필요함)]
+        (아래 엑셀 구조를 참고하여 어떤 테이블과 컬럼이 필요한지 맥락을 파악하십시오. 단, 절대 1번 규칙[스키마 전용 쿼리]을 어기고 엑셀 모양대로 PIVOT하거나 데이터를 변형하지 마십시오.)
         {json.dumps(empty_cells_info, ensure_ascii=False)}
 
         [사용자 질문/지시]
@@ -151,20 +185,37 @@ async def chat_excel_autofill(
         오직 순수 JSON 형식으로만 응답해. 마크다운 기호 금지.
         {{
             "search_mode": "DB_ONLY | DOC_ONLY | HYBRID",
-            "sql_query": "엑셀의 빈칸을 모두 채울 수 있는 포괄적인 T-SQL SELECT 문 (DOC_ONLY인 경우 'NONE')"
+            "sql_query": "엑셀의 빈칸을 모두 채울 수 있는 포괄적인 T-SQL SELECT 문 (DOC_ONLY인 경우 'NONE')",
+            "target_documents": ["사용자가 특정 문서를 지정한 경우 해당 파일명들"]
         }}
         """
         
-        router_api_key = os.getenv("ROUTER_API_KEY", "")
-        
-        if router_api_key and router_api_key != "여기에_새로운_API키를_입력하세요":
-            genai.configure(api_key=router_api_key)
-            sql_model = genai.GenerativeModel(router_model_name)
-        else:
-            sql_model = genai.GenerativeModel(model_name)
+        # JSON 응답 강제화를 위한 설정
+        generation_config = genai.types.GenerationConfig(
+            response_mime_type="application/json",
+            response_schema={
+                "type": "OBJECT",
+                "properties": {
+                    "search_mode": {"type": "STRING", "description": "DB_ONLY | DOC_ONLY | HYBRID"},
+                    "sql_query": {"type": "STRING", "description": "엑셀의 빈칸을 모두 채울 수 있는 포괄적인 T-SQL SELECT 문 (DOC_ONLY인 경우 'NONE')"},
+                    "target_documents": {
+                        "type": "ARRAY",
+                        "items": {"type": "STRING"},
+                        "description": "질문자가 특정 문서를 명시적으로 지정하여 검토를 요구한 경우 일치하는 공식 파일명 리스트. 지정 없으면 빈 배열"
+                    }
+                },
+                "required": ["search_mode", "sql_query", "target_documents"]
+            }
+        )
+
+        sql_model = genai.GenerativeModel(router_model_name)
             
         no_retry = AsyncRetry(initial=0, maximum=0, multiplier=0, deadline=0)
-        sql_response = await sql_model.generate_content_async(sql_router_prompt, request_options={"retry": no_retry})
+        sql_response = await sql_model.generate_content_async(
+            sql_router_prompt, 
+            request_options={"retry": no_retry},
+            generation_config=generation_config
+        )
         
         router_in_tokens = 0
         router_out_tokens = 0
@@ -172,9 +223,11 @@ async def chat_excel_autofill(
             router_in_tokens = sql_response.usage_metadata.prompt_token_count
             router_out_tokens = sql_response.usage_metadata.candidates_token_count
 
-        if router_api_key and router_api_key != "여기에_새로운_API키를_입력하세요":
-            genai.configure(api_key=x_gemini_key)
-            
+        # 에러 방어: 변수 사전 초기화 (파싱 실패 시 서버 뻗음 방지)
+        search_mode = "HYBRID"
+        sql_query = "NONE"
+        time_router_end = time.time()
+
         # JSON 파싱
         try:
             response_text = sql_response.text.strip()
@@ -186,6 +239,10 @@ async def chat_excel_autofill(
             parsed_json = json.loads(response_text)
             search_mode = parsed_json.get("search_mode", "HYBRID")
             sql_query = parsed_json.get("sql_query", "NONE")
+            target_documents = parsed_json.get("target_documents", [])
+            
+            if target_documents:
+                print(f"[EXCEL-AUTOFILL] 🎯 타겟 문서 지정됨: {target_documents}")
             
             if search_mode == "DOC_ONLY":
                 sql_query = "NONE"
@@ -197,6 +254,9 @@ async def chat_excel_autofill(
             # [2차 절대 방어선] 정규식을 이용해 대괄호 [ ] 내부의 모든 종류의 공백(띄어쓰기, 줄바꿈, 탭, 눈에 보이지 않는 유니코드 공백 등) 강제 삭제
             # 예: [수험 번호] 또는 [ 수험번호] -> [수험번호]
             if sql_query and sql_query != "NONE":
+                # [1.5차 절대 방어선] 따옴표('') 내부의 줄바꿈(\n) 강제 제거 (문자열 중간 엔터 에러 방지)
+                sql_query = re.sub(r"'[^']*'", lambda m: m.group(0).replace('\n', '').replace('\r', ''), sql_query)
+
                 # \s+ 로 일반 공백 처리 후, 모든 형태의 공백을 리스트로 명시하여 완벽 제거
                 sql_query = re.sub(r'\[([^\]]+)\]', lambda m: '[' + re.sub(r'[\s\u200B\u200C\u200D\uFEFF\u3000]+', '', m.group(1)) + ']', sql_query)
                 sql_query = sql_query.replace("[ ", "[").replace(" ]", "]")
@@ -212,14 +272,18 @@ async def chat_excel_autofill(
                         valid_columns = [row[0] for row in col_cursor.fetchall()]
                     
                     if valid_columns:
+                        # CTE 등에서 자주 쓰이는 가상 컬럼명/별칭 강제 추가 (오타 교정 대상에서 제외)
+                        valid_columns.extend(["상세전형명", "지원인원", "등록인원", "학과명", "모집인원", "전형명", "지원율", "등록율", "합계", "Q", "A", "QUOTA", "APPLICANT", "APPLICANT_BASE", "EXCEL_ADMISSIONQUOTA"])
+                        
                         # 2. AS 별칭 부분 보호 (AS [별칭] 부분을 임시 문자열로 치환하여 교정에서 제외)
+                        # 공백이 없거나(AS[별칭]) 테이블명.컬럼명([A].[컬럼명]) 등 보호
                         alias_placeholders = {}
                         def alias_replacer(match):
                             placeholder = f"__ALIAS_{len(alias_placeholders)}__"
                             alias_placeholders[placeholder] = match.group(0)
                             return placeholder
                             
-                        temp_query = re.sub(r'(?i)\bAS\s+\[([^\]]+)\]', alias_replacer, sql_query)
+                        temp_query = re.sub(r'(?i)\bAS\s*\[([^\]]+)\]', alias_replacer, sql_query)
                         
                         # 3. 남은 쿼리 내의 모든 [컬럼명] 추출 및 유사도 대조
                         def column_healer(match):
@@ -247,31 +311,39 @@ async def chat_excel_autofill(
             print(f"[EXCEL-AUTOFILL] SQL JSON 파싱 오류: {e}")
             sql_query = "NONE"
             
-        sql_query = format_sql_query(sql_query)
         original_sql_query = sql_query
+            
+        # 8127 구문 에러 원천 차단을 위해 ORDER BY 절 강제 제거
+        raw_sql_query = re.sub(r'(?i)\s*ORDER\s+BY\s+.*', '', sql_query).strip()
+        if not raw_sql_query.endswith(';'):
+            raw_sql_query += ';'
+            
+        print_sql = format_sql_query(raw_sql_query)
         
-        # 8127 구문 에러 원천 차단을 위해 ORDER BY 절 강제 제거 (매핑 AI는 정렬 불필요)
-        sql_query = re.sub(r'(?i)\s*ORDER\s+BY\s+.*', '', sql_query).strip()
-        if not sql_query.endswith(';'):
-            sql_query += ';'
+        # SSMS 검증을 위한 쿼리 자동 저장 (가독성을 위해 포맷팅 적용)
+        try:
+            with open('latest_query.sql', 'w', encoding='utf-8') as f:
+                f.write(print_sql)
+        except Exception as f_err:
+            print(f"[EXCEL-AUTOFILL] latest_query.sql 저장 실패: {f_err}")
 
         print(f"[EXCEL-AUTOFILL] [QUERY] AI 원본 쿼리문:")
         print("--- T-SQL START ---")
-        print(original_sql_query)
+        print(format_sql_query(sql_query))
         print("--- T-SQL END ---")
         
         print(f"[EXCEL-AUTOFILL] [QUERY] 파이썬 보정 후 실제 실행 쿼리문:")
         print("--- T-SQL START ---")
-        print(sql_query)
+        print(print_sql)
         print("--- T-SQL END ---")
         
         # 3. 쿼리 실행
         sql_context = "추출된 DB 데이터 없음"
-        if sql_query.upper().startswith("SELECT") and conn:
+        if (raw_sql_query.upper().startswith("SELECT") or raw_sql_query.upper().startswith("WITH")) and conn:
             try:
                 print("[EXCEL-AUTOFILL] 🔍 3단계: 통계 DB 데이터 획득 중...")
                 cursor = conn.cursor()
-                cursor.execute(sql_query)
+                cursor.execute(raw_sql_query)
                 cols = [column[0] for column in cursor.description]
                 rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
                 
@@ -293,8 +365,6 @@ async def chat_excel_autofill(
                 error_msg = f"DB 쿼리 실행 중 오류가 발생했습니다: {str(e)}\n\n[AI 원본 쿼리]\n{original_sql_query}\n\n[실제 실행 쿼리]\n{sql_query}"
                 print(f"[EXCEL-AUTOFILL] DB 에러 (즉시 중단): {e}")
                 raise HTTPException(status_code=500, detail=error_msg)
-            finally:
-                conn.close()
 
         # [NEW] 3.5단계: 비정형 DB(ChromaDB)에서 문서 검색
         print("[EXCEL-AUTOFILL] 📚 3.5단계: 비정형 DB 문서 검색 중...")
@@ -332,6 +402,15 @@ async def chat_excel_autofill(
                         for i, doc_text in enumerate(res["documents"][0]):
                             meta = res["metadatas"][0][i] if res.get("metadatas") else {}
                             fname = meta.get("filename", "이름없음")
+                            
+                            # [NEW] 타겟 문서 지정 (Target Document Enforcement)
+                            if target_documents:
+                                fname_lower = fname.lower()
+                                target_clean = [re.sub(r'[^a-zA-Z0-9가-힣]', '', t).lower() for t in target_documents]
+                                fname_only_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', fname.replace(".pdf", "")).lower()
+                                if not any((tc in fname_only_clean or tc in fname_lower) for tc in target_clean):
+                                    continue
+                                    
                             doc_texts.append(f"[{fname}]\n{doc_text}")
                     
                 if doc_texts:
@@ -361,10 +440,11 @@ async def chat_excel_autofill(
 
         [🚨 사용자 특별 지시사항 (최우선 적용 규칙) 🚨]
         - 사용자의 [사용자 질문] 내에 엑셀 값 입력과 관련된 명시적인 조건이나 제약(예: "제한없음은 제한없음으로 써라", "하이픈(-)은 제외하라" 등)이 있다면, **아래의 모든 기본 출력 지침보다 사용자의 이 지시를 최우선으로, 그리고 완벽하게 따르십시오!**
+        - 단, 사용자의 질문이 엑셀 값에 대한 명시적 조건이 아니라 단순한 대화형 질문(예: "왜 이렇게 많아?", "이거 줄바꿈이니?" 등)일 경우, 사용자의 질문 내용 때문에 엑셀 매핑을 포기하거나 숫자를 임의로 0으로 만들어서는 안 됩니다. 무조건 DB 데이터를 있는 그대로 매핑하십시오.
 
         [주의 사항 (환각 방지 및 병합된 셀 처리)]
         - 사용자가 데이터 추출을 요청한 대상 연도는 '{target_year}'학년도입니다. 
-        - 💡 **[데이터 매핑 최우선 및 결측치 규칙]**: 빈 셀을 채울 때는 무조건 [1. 정형 DB 추출 통계 데이터]의 값을 최우선적으로 매핑하십시오. [2. 비정형 PDF 추출 규정 문서]가 비어있더라도 DB에 값이 존재하면 해당 DB 값을 써야 하며 임의로 0으로 덮어쓰지 마십시오. 오직 **DB와 PDF 양쪽 모두에 데이터가 존재하지 않을 때만** 다른 연도 데이터를 지어내지 말고 0으로 처리하십시오.
+        - 💡 **[데이터 매핑 최우선 및 결측치 규칙]**: 빈 셀을 채울 때는 무조건 [1. 정형 DB 추출 통계 데이터]의 값을 최우선적으로 매핑하십시오. DB 데이터에 값(예: 123)이 명확히 존재하는데도 사용자 질문 내용에 휘둘리거나 엑셀의 헤더명과 완벽하게 일치하지 않는다는 이유로 임의로 0으로 무시하고 덮어쓰는 행위는 절대 금지됩니다! (유연하게 의미를 파악하여 매핑하세요.) 오직 **DB와 PDF 양쪽 모두에 데이터가 존재하지 않을 때만** 다른 연도 데이터를 지어내지 말고 0으로 처리하십시오.
         - 💡 **[PDF 표 병합(Merge) 데이터 추론 규칙]**: 비정형 PDF 문서의 표(Table) 특성상, 인접한 두 학과의 데이터가 동일할 경우 셀이 병합되어 텍스트 추출 시 **첫 번째 학과에만 값이 적히고 그 아래 학과는 값이 누락된 것(빈칸)처럼 보일 수 있습니다.** 만약 특정 학과 전형의 값이 비어있다면, **반드시 바로 위(또는 근처) 학과의 동일 전형 값을 확인하고, 병합된 셀이라고 판단되면 그 값을 똑같이 상속(복사)하여 채워 넣으십시오.**
 
         [데이터베이스 스키마 및 힌트]
@@ -395,7 +475,10 @@ async def chat_excel_autofill(
         그 다음, 엑셀에 주입할 실제 데이터는 **반드시 마지막에 순수한 JSON 배열 형식으로만** 작성해.
         - **[중요: 의미 보존형 Key 네이밍 규칙 (Self-Correction)]** 출력 길이를 압축하면서도, 100줄 이상 장문 출력 시 AI 스스로 열(Column)이 밀리는 환각(Shift)을 원천 방지하기 위해 **각 행의 열 Key는 반드시 `[알파벳]_[컬럼명]` 형태로 결합**하여 작성하십시오. 절대 의미 없는 알파벳 단독(`"A"`)으로 쓰지 마십시오! 스스로 의미를 각인해야 합니다.
         - **[표기 일관성 범용 강제]** 데이터 표기 방식(예: 연도, 부서명 포맷 등)은 최초 1행에서 결정한 형식을 마지막 행까지 100% 동일하게 유지(Consistency)하십시오. 중간에 표기법을 임의로 변경하지 마십시오.
-        - **[🚨 데이터 완전성 보장 (Truncation 금지) 🚨]** 빈 엑셀 템플릿에 행을 창조해 낼 때, 문서에 존재하는 모든 학과와 전형 조합을 **단 하나도 누락시키지 말고 끝까지(100%) 추출하십시오.** 출력이 150줄을 넘어가더라도 중간에 힘들다고 임의로 생략하거나 멈추는 행위(Lazy Generation)는 절대 금지됩니다! 무조건 100% 전부 배열에 담으십시오.
+        - **[🔥 강력한 의미 유추 매핑 규칙 🔥]** DB 통계 결과의 전형명(예: `만학도`, `장애인대상자`)과 엑셀 헤더명(예: `만학도(7호)`, `장애인대상자(4호)`)이 글자 토씨 하나까지 완벽히 일치하지 않더라도, 괄호 안의 부가설명이나 기호 차이일 뿐 **핵심 의미가 같다면 반드시 동일한 항목으로 간주하여 데이터를 매핑하십시오.** 절대로 "이름이 다르다"며 0으로 누락시켜서는 안 됩니다! 데이터를 최대한 유연하고 똑똑하게 추론하여 실제 추출된 숫자 데이터를 적극적으로 채우십시오.
+        - **[🚨 데이터 행(Row) 완전성 보장 (세로 생략 금지) 🚨]** 빈 엑셀 템플릿에 행을 창조해 낼 때, 문서에 존재하는 모든 학과와 전형 조합을 **단 하나도 누락시키지 말고 끝까지(100%) 추출하십시오.** 출력이 150줄을 넘어가더라도 중간에 힘들다고 임의로 생략하거나 멈추는 행위(Lazy Generation)는 절대 금지됩니다! 무조건 100% 전부 배열에 담으십시오.
+        - **[🚨 데이터 열(Column) 완전성 보장 (가로 생략 금지) 🚨]** 각 행(row)을 출력할 때, [엑셀 빈 셀 구조]에 제시된 **마지막 열(예: `BI_`)까지 모든 컬럼(열) Key를 단 하나도 빠짐없이 100% 전부 적어 넣으십시오.** 뒤쪽에 위치한 '서해5도', '다자녀가정', '합계', '지원율' 등의 컬럼들도 값이 0이거나 비어있더라도 절대 임의로 생략(Truncation)하지 마십시오. 컬럼이 누락되면 시스템이 파괴됩니다.
+        - **[🔥 치명적 규칙: "row" 키 절대 필수 🔥]** 답변 배열의 각 JSON 객체 안에는 무조건 `"row": [해당 행 번호]` 키를 **제일 첫 번째 항목**으로 반드시 포함하십시오. (예: `{{"row": 5, ...}}`) 만약 `"row"` 번호가 단 하나라도 누락되면 엑셀에 데이터를 매핑할 수 없어서 파멸적인 오류가 발생합니다! 빈 좌표를 참고하거나, 새 행을 창조할 때는 이전 행에서 `+1`씩 증가시켜서라도 **무조건 모든 객체에 "row" 키를 집어넣으십시오.**
         - 기본 규칙 (단, 위 '사용자 특별 지시사항'과 충돌 시 사용자 지시를 100% 우선함): 데이터 값이 숫자일 경우 가급적 정수형(`int`)으로 입력.
         - 💡 **[비정형 문서 기호/단어 의미 규칙]**: 비정형 문서 표에서 하이픈(`-`) 기호는 '데이터 값이 존재하지 않음(해당 전형으로 모집하지 않음)'을 의미하므로, 특별한 사용자 지시가 없다면 숫자 `0`과 동일하게 치환하여 취급할 수 있습니다. 또한 `제한없음`이라는 단어는 모집 인원이 무제한이어서 값이 숫자로 고정되어 있지 않음을 의미합니다.
         - 💡 **[데이터 충돌 시 우선순위 규칙]**: 만약 [정형 DB 추출 통계 데이터]와 [비정형 PDF 추출 규정 문서]의 내용이 서로 상이하거나 충돌할 경우, 최신 통계 데이터인 **[정형 DB 추출 통계 데이터]의 값을 최우선으로 참고**하십시오.
@@ -421,16 +504,26 @@ async def chat_excel_autofill(
         )
         final_text = final_response.text
         
+        final_in_tokens = 0
+        final_out_tokens = 0
+        if hasattr(final_response, 'usage_metadata') and final_response.usage_metadata:
+            final_in_tokens = final_response.usage_metadata.prompt_token_count
+            final_out_tokens = final_response.usage_metadata.candidates_token_count
+        
         # 5. 매핑 추출 및 엑셀 주입
         mapping_result = {}
         answer_text = final_text
         
         # 새로운 JSON 포맷 파싱 시도 (행 단위 2D 압축 포맷)
-        json_match = re.search(r'```json\s*(\[.*?\])\s*```', final_text, re.DOTALL)
+        json_match = re.search(r'```(?:json)?\s*(\[.*?\])\s*```', final_text, re.DOTALL)
+        if not json_match:
+            # 백틱이 없거나 닫히지 않았을 수 있음
+            json_match = re.search(r'(\[\s*\{\s*"row".*)', final_text, re.DOTALL)
+
         if json_match:
+            answer_text = final_text.replace(json_match.group(0), "").strip()
             try:
                 data_list = json.loads(json_match.group(1))
-                answer_text = final_text.replace(json_match.group(0), "").strip()
                 for item in data_list:
                     row_idx = item.get("row")
                     if row_idx is None:
@@ -444,21 +537,23 @@ async def chat_excel_autofill(
                                 mapping_result[coord] = val
             except Exception as e:
                 print(f"[EXCEL-AUTOFILL] 신규 JSON 2D 파싱 실패(정규식 폴백 시도): {e}")
-                answer_text = final_text
-                # 정규식을 이용해 깨진 JSON에서 행 단위 데이터 추출 (Fallback)
-                row_pattern = r'\{\s*"row"\s*:\s*(\d+)(.*?)\}'
-                for row_match in re.finditer(row_pattern, json_match.group(1)):
-                    row_idx = row_match.group(1)
-                    col_data = row_match.group(2)
-                    col_pattern = r'"([a-zA-Z]+)"\s*:\s*([0-9\.]+|"[^"]+")'
-                    for col_letter, val_str in re.findall(col_pattern, col_data):
-                        if val_str.startswith('"') and val_str.endswith('"'):
-                            val = val_str[1:-1]
-                        elif '.' in val_str:
-                            val = float(val_str)
-                        else:
-                            val = int(val_str)
-                        mapping_result[f"{col_letter.upper()}{row_idx}"] = val
+
+        # JSON 파싱 실패했거나(Truncated), 파싱했지만 비어있는 경우 정규식으로 직접 추출 (Truncated 방어)
+        if not mapping_result:
+            print("[EXCEL-AUTOFILL] ⚠️ 강력한 정규식 추출 모드 가동 (Truncated JSON 방어)")
+            row_blocks = re.findall(r'\{\s*"row"\s*:\s*(\d+)(.*?)\}', final_text, re.DOTALL)
+            for row_idx_str, col_data in row_blocks:
+                kv_pattern = r'"([a-zA-Z]+)[^"]*"\s*:\s*(?:"([^"]+)"|([0-9\.-]+))'
+                for match in re.finditer(kv_pattern, col_data):
+                    col_letter = match.group(1).upper()
+                    str_val = match.group(2)
+                    num_val = match.group(3)
+                    
+                    val = str_val if str_val is not None else num_val
+                    if val is not None:
+                        if isinstance(val, str) and re.match(r'^-?\d+(\.\d+)?$', val):
+                            val = float(val) if '.' in val else int(val)
+                        mapping_result[f"{col_letter}{row_idx_str}"] = val
 
         # 기존 방식 fallback
         if not mapping_result:
@@ -466,7 +561,7 @@ async def chat_excel_autofill(
             if map_match:
                 json_str = map_match.group(1).strip()
                 answer_text = final_text.replace(map_match.group(0), "").strip()
-                pattern = r'"([a-zA-Z]+[0-9]+)"\s*:\s*([0-9\.]+)'
+                pattern = r'"([a-zA-Z]+[0-9]+)"\s*:\s*([0-9\.-]+)'
                 matches = re.findall(pattern, json_str)
                 for k, v in matches:
                     mapping_result[k.upper()] = float(v) if '.' in v else int(v)
@@ -517,20 +612,23 @@ async def chat_excel_autofill(
                 log_cursor = conn.cursor()
                 log_cursor.execute('''
                     INSERT INTO Sys_AIAuditLog (
-                        timestamp, user_role, question, answer, rag_context, sql_query,
-                        latency_ms, model_name,
-                        prompt_token_count, candidates_token_count,
-                        estimated_cost_krw
+                        created_at, user_role, question, answer, scraped_context, sql_query,
+                        latency_ms, model_name, router_model_name,
+                        router_in_tokens, router_out_tokens,
+                        chat_in_tokens, chat_out_tokens, total_tokens,
+                        estimated_cost
                     ) VALUES (
                         GETDATE(), ?, ?, ?, ?, ?,
+                        ?, ?, ?,
                         ?, ?,
-                        ?, ?,
+                        ?, ?, ?,
                         ?
                     )
                 ''', (
                     safe_str(user_role), safe_str(question), safe_str(answer_text[:2000]), safe_str(f"Mode: {search_mode}"), safe_str(original_sql_query),
-                    latency_ms, safe_str(model_name),
-                    total_tokens, 0,
+                    latency_ms, safe_str(model_name), safe_str(router_model_name),
+                    router_in_tokens, router_out_tokens,
+                    final_in_tokens, final_out_tokens, total_tokens,
                     total_cost
                 ))
                 conn.commit()
@@ -580,3 +678,9 @@ async def chat_excel_autofill(
     except Exception as e:
         print(f"[EXCEL-AUTOFILL] ❌ 에러 발생: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if 'conn' in locals() and conn:
+            try:
+                conn.close()
+            except:
+                pass
