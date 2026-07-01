@@ -20,6 +20,18 @@ jobs:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
 
+      - name: 🔧 Patch Extension for Production
+        run: |
+          Write-Host "Patching Chrome Extension for Production..."
+          $jsPath = "extension/sidepanel.js"
+          $manifestPath = "extension/manifest.json"
+          if (Test-Path $jsPath) {
+            (Get-Content $jsPath -Encoding UTF8) -replace 'http://127.0.0.1:8000/', 'http://210.93.0.229:8080/api/' | Set-Content $jsPath -Encoding UTF8
+          }
+          if (Test-Path $manifestPath) {
+            (Get-Content $manifestPath -Encoding UTF8) -replace 'http://127.0.0.1:8000/\*', 'http://210.93.0.229:8080/*' | Set-Content $manifestPath -Encoding UTF8
+          }
+
       - name: 📦 Setup Python Environment
         run: |
           cd backend
@@ -27,6 +39,17 @@ jobs:
           .\venv\Scripts\Activate.ps1
           pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: 🔐 Load Server Environment Variables
+        run: |
+          $safeEnvPath = "C:\actions-runner\.env"
+          $targetEnvPath = "$env:GITHUB_WORKSPACE\backend\.env"
+          if (Test-Path $safeEnvPath) {
+              Write-Host "Found .env file at $safeEnvPath. Copying to backend..."
+              Copy-Item -Path $safeEnvPath -Destination $targetEnvPath -Force
+          } else {
+              Write-Host "Warning: No .env file found at $safeEnvPath. Server might lack API keys."
+          }
 
       - name: ⚛️ Build React Frontend (Student)
         run: |

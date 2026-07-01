@@ -13,9 +13,11 @@ from google.api_core import retry
 
 import sys
 
-# 윈도우(cp949) 환경에서 이모지 출력 시 발생하는 UnicodeEncodeError 방지
+# 윈도우(cp949) 환경에서 이모지 출력 시 발생하는 UnicodeEncodeError 방지 및 실시간 로그 출력(버퍼링 해제)
 if sys.stdout.encoding.lower() != 'utf-8':
-    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
+else:
+    sys.stdout.reconfigure(line_buffering=True)
 
 # [로그 필터 설정] /health 엔드포인트의 접근 로그(200 OK)를 필터링하여 콘솔 도배를 방지합니다.
 class HealthCheckFilter(logging.Filter):
@@ -892,9 +894,11 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
     
     # [NEW] 터미널에 사용자 권한(학생/직원) 로깅
     role_str = "학생용(student)" if request.user_role == "student" else "교직원용(staff)"
+    import datetime
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n[BACKEND] ===============================================")
-    print(f"[BACKEND] 🚀 신규 채팅 요청 수신 - 접속 권한: {role_str}")
-    print(f"[BACKEND] ===============================================\n")
+    print(f"[BACKEND] 🚀 [{current_time}] 신규 채팅 요청 수신 - 접속 권한: {role_str}")
+    print(f"[BACKEND] ===============================================\n", flush=True)
     
     # [보안 통제] 사용자의 질문(question) 내에 포함된 민감한 개인정보(주민번호, 휴대전화번호)를 백엔드 초입에서 원천 마스킹
     if request.question:

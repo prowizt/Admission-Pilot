@@ -11,7 +11,7 @@
     "storage"
   ],
   "host_permissions": [
-    "http://210.93.0.229:8080/*",
+    "http://127.0.0.1:8000/*",
     "<all_urls>"
   ],
   "background": {
