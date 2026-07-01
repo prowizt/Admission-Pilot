@@ -11,6 +11,12 @@ import traceback
 import base64
 from google.api_core import retry
 
+import sys
+
+# 윈도우(cp949) 환경에서 이모지 출력 시 발생하는 UnicodeEncodeError 방지
+if sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+
 # [로그 필터 설정] /health 엔드포인트의 접근 로그(200 OK)를 필터링하여 콘솔 도배를 방지합니다.
 class HealthCheckFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:

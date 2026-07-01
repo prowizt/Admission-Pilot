@@ -33,6 +33,7 @@ backend/db/
 *.doc
 *.docx
 *.hwp
+*.zip
 
 # Logs and Text files
 *.log
