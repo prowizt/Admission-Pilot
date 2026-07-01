@@ -96,6 +96,28 @@ function App() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  const [isServerOnline, setIsServerOnline] = useState(true);
+
+  // [NEW] 서버 헬스체크 (온라인 상태 표시용)
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const res = await fetch('/api/health');
+        if (res.ok) {
+          setIsServerOnline(true);
+        } else {
+          setIsServerOnline(false);
+        }
+      } catch {
+        setIsServerOnline(false);
+      }
+    };
+    checkHealth();
+    // 30초마다 헬스체크 갱신
+    const interval = setInterval(checkHealth, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
   // [NEW] 타자 효과를 위한 프론트엔드 큐
   const typingQueueRef = useRef<{ text: string, msgId: string } | null>(null);
 
@@ -271,8 +293,15 @@ function App() {
 
         {/* Right: Online Indicator */}
         <div className="flex items-center gap-1.5 z-10">
-          <span className="text-[10px] sm:text-xs text-indigo-300 font-medium">Online</span>
-          <div className="w-2 h-2 bg-emerald-400 rounded-full shadow-[0_0_8px_rgba(52,211,153,0.8)] animate-pulse"></div>
+          <span className={cn("text-[10px] sm:text-xs font-medium", isServerOnline ? "text-indigo-300" : "text-red-300")}>
+            {isServerOnline ? "Online" : "Offline"}
+          </span>
+          <div className={cn(
+            "w-2 h-2 rounded-full",
+            isServerOnline 
+              ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)] animate-pulse" 
+              : "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]"
+          )}></div>
         </div>
       </header>
 
