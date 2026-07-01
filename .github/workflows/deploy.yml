@@ -26,10 +26,10 @@ jobs:
           $jsPath = "extension/sidepanel.js"
           $manifestPath = "extension/manifest.json"
           if (Test-Path $jsPath) {
-            (Get-Content $jsPath -Encoding UTF8) -replace 'http://127.0.0.1:8000/', 'http://210.93.0.229:8080/api/' | Set-Content $jsPath -Encoding UTF8
+            (Get-Content $jsPath -Encoding UTF8) -replace 'http://127.0.0.1:8000/', 'http://ipw.daedong.ac.kr:8080/api/' | Set-Content $jsPath -Encoding UTF8
           }
           if (Test-Path $manifestPath) {
-            (Get-Content $manifestPath -Encoding UTF8) -replace 'http://127.0.0.1:8000/\*', 'http://210.93.0.229:8080/*' | Set-Content $manifestPath -Encoding UTF8
+            (Get-Content $manifestPath -Encoding UTF8) -replace 'http://127.0.0.1:8000/\*', 'http://ipw.daedong.ac.kr:8080/*' | Set-Content $manifestPath -Encoding UTF8
           }
 
       - name: 📦 Setup Python Environment
