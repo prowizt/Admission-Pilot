@@ -14,6 +14,8 @@
 
 ## 2. 프로젝트 배경 및 아키텍처 (매우 중요)
 이 프로젝트는 단순한 CRUD가 아닌 RAG(검색 증강 생성) 기반의 **AI 부사수** 시스템이다.
+> **📌 아키텍처 및 배포 환경 필수 참고자료:** 
+> 상세한 시스템 구조(포트, 프록시, 도메인 `ipw.daedong.ac.kr` 설정 등) 및 전체 서버 구축/배포 과정에 대해서는 반드시 프로젝트 루트에 있는 **[`SYSTEM_ARCHITECTURE.md`](file:///d:/Admission-Pilot/SYSTEM_ARCHITECTURE.md)** 와 **[`SERVER_SETUP_GUIDE.md`](file:///d:/Admission-Pilot/SERVER_SETUP_GUIDE.md)** 를 가장 먼저 읽고 숙지하라.
 
 * **DB 분리 운영 (Hybrid DB - 절대 섞이지 않도록 라우팅할 것)**
   * `Rule DB` (ChromaDB): 입시요강, 학칙, 규정집, 교육부 지침 등 **[팩트 체크 및 챗봇 답변용]**
