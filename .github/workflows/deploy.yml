@@ -13,8 +13,8 @@ jobs:
     steps:
       - name: 🛑 Stop existing PM2 process
         run: |
-          pm2 delete admission-backend || exit 0
-          taskkill /f /im python.exe || exit 0
+          try { pm2 delete admission-backend } catch {}
+          try { taskkill /f /im python.exe } catch {}
         continue-on-error: true
 
       - name: 📥 Checkout Repository
