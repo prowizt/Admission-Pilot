@@ -408,7 +408,7 @@ async def chat_excel_autofill(
                                 fname_lower = fname.lower()
                                 target_clean = [re.sub(r'[^a-zA-Z0-9가-힣]', '', t).lower() for t in target_documents]
                                 fname_only_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', fname.replace(".pdf", "")).lower()
-                                if not any((tc in fname_only_clean or tc in fname_lower) for tc in target_clean):
+                                if not any((tc in fname_only_clean or fname_only_clean in tc or tc in fname_lower) for tc in target_clean):
                                     continue
                                     
                             doc_texts.append(f"[{fname}]\n{doc_text}")

@@ -310,7 +310,7 @@ def get_dynamic_db_schema(conn, user_role="staff"):
             schema_str += "\n[현재 AI가 접근 가능한 비정형 문서 목록 (ChromaDB에 저장됨)]\n"
             for doc in docs:
                 d_type, d_year, d_title, d_desc = doc
-                year_str = f"{d_year}학년도 " if d_year else ""
+                year_str = f"{d_year}학년도 " if d_year and str(d_year) not in d_title else ""
                 desc_str = f" (문서 설명: {d_desc})" if d_desc else ""
                 schema_str += f"- [{d_type}] {year_str}{d_title}{desc_str}\n"
                 
@@ -1463,7 +1463,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                                     fname_lower = fname.lower()
                                     target_clean = [re.sub(r'[^a-zA-Z0-9가-힣]', '', t).lower() for t in target_documents]
                                     fname_only_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', fname.replace(".pdf", "")).lower()
-                                    if not any((tc in fname_only_clean or tc in fname_lower) for tc in target_clean):
+                                    if not any((tc in fname_only_clean or fname_only_clean in tc or tc in fname_lower) for tc in target_clean):
                                         continue
                                 
                                 # [NEW] 연도 2중 파이썬 필터링 (Post-filtering) 다중 연도 지원
@@ -1505,7 +1505,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                                     fname_lower = fname.lower()
                                     target_clean = [re.sub(r'[^a-zA-Z0-9가-힣]', '', t).lower() for t in target_documents]
                                     fname_only_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', fname.replace(".pdf", "")).lower()
-                                    if not any((tc in fname_only_clean or tc in fname_lower) for tc in target_clean):
+                                    if not any((tc in fname_only_clean or fname_only_clean in tc or tc in fname_lower) for tc in target_clean):
                                         continue
                                 
                                 # [보정 알고리즘] 쿼리 텍스트와 파일명 키워드 매칭 보너스 부여
