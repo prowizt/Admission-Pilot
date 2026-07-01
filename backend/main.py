@@ -1008,6 +1008,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             need_rag = True
             rag_query = request.question
             rag_year_filter = "ALL"
+            target_documents = []
             k_action = "NONE"
             k_category = "기타"
             k_content = ""
