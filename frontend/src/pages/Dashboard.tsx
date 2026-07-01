@@ -40,7 +40,7 @@ export default function Dashboard() {
 
   const handlePreview = async (doc_type: string, doc_id: string, title: string) => {
     try {
-      const res = await axios.get(`http://127.0.0.1:8000/documents/${doc_type}/${doc_id}`);
+      const res = await axios.get(`/api/documents/${doc_type}/${doc_id}`);
       if (res.data.status === 'success') {
         setPreviewContent(res.data.content);
         setPreviewTitle(title);
@@ -56,13 +56,13 @@ export default function Dashboard() {
     try {
       setIsLoading(true);
       if (activeTab === 'documents') {
-        const res = await axios.get('http://127.0.0.1:8000/catalog/documents');
+        const res = await axios.get('/api/catalog/documents');
         if (res.data.status === 'success') setDocuments(res.data.data);
       } else if (activeTab === 'knowledge') {
-        const res = await axios.get('http://127.0.0.1:8000/catalog/supplemental-knowledge');
+        const res = await axios.get('/api/catalog/supplemental-knowledge');
         if (res.data.status === 'success') setSupplementalList(res.data.data);
       } else {
-        const res = await axios.get('http://127.0.0.1:8000/catalog/tables');
+        const res = await axios.get('/api/catalog/tables');
         if (res.data.status === 'success') setTables(res.data.data);
       }
     } catch (error) {

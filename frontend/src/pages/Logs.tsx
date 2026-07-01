@@ -33,7 +33,7 @@ export default function Logs() {
   const fetchLogs = async () => {
     try {
       setIsLoading(true);
-      const res = await axios.get('http://127.0.0.1:8000/logs/audit');
+      const res = await axios.get('/api/logs/audit');
       if (res.data.status === 'success') {
         setLogs(res.data.data);
         setCurrentPage(1); // Reset page on refresh
@@ -57,7 +57,7 @@ export default function Logs() {
       const questions = logs.filter(l => l.user_feedback !== 'UP').slice(0, 50).map(l => l.question).filter(q => q && q.trim() !== '');
       if (questions.length === 0) return alert('유효한 질문 데이터가 없습니다.');
       
-      const res = await axios.post('http://127.0.0.1:8000/logs/analytics', 
+      const res = await axios.post('/api/logs/analytics', 
         { questions },
         { headers: { 'x-gemini-key': geminiKey } }
       );
@@ -78,7 +78,7 @@ export default function Logs() {
   const toggleFeedback = async (logId: number, currentFeedback: string | null, targetFeedback: 'UP' | 'DOWN') => {
     try {
       const newFeedback = currentFeedback === targetFeedback ? null : targetFeedback;
-      const res = await axios.put(`http://127.0.0.1:8000/logs/audit/${logId}/feedback`, { feedback: newFeedback });
+      const res = await axios.put(`/api/logs/audit/${logId}/feedback`, { feedback: newFeedback });
       if (res.data.status === 'success') {
         setLogs(prev => prev.map(l => l.id === logId ? { ...l, user_feedback: newFeedback } : l));
         if (selectedLog && selectedLog.id === logId) {

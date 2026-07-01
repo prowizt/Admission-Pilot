@@ -22,14 +22,14 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
 
   const fetchViews = async () => {
     try {
-      const res = await axios.get('http://127.0.0.1:8000/available-views');
+      const res = await axios.get('/api/available-views');
       if (res.data.status === 'success') setAvailableViews(res.data.data);
     } catch (error) { console.error("뷰 목록 로딩 실패:", error); }
   };
 
   const fetchColumns = async (tableName: string) => {
     try {
-      const res = await axios.get(`http://127.0.0.1:8000/columns/${tableName}`);
+      const res = await axios.get(`/api/columns/${tableName}`);
       if (res.data.status === 'success') setColumns(res.data.data);
     } catch (error) { console.error("컬럼 목록 로딩 실패:", error); }
   };
@@ -113,9 +113,9 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
     
     try {
       setIsLoading(true);
-      if (isDoc) await axios.delete(`http://127.0.0.1:8000/documents/${editData.doc_type}/${editData.doc_id}`);
-      else if (isKnowledge) await axios.delete(`http://127.0.0.1:8000/catalog/supplemental-knowledge/${editData.id}`);
-      else await axios.delete(`http://127.0.0.1:8000/tables/${editData.table_name}`);
+      if (isDoc) await axios.delete(`/api/documents/${editData.doc_type}/${editData.doc_id}`);
+      else if (isKnowledge) await axios.delete(`/api/catalog/supplemental-knowledge/${editData.id}`);
+      else await axios.delete(`/api/tables/${editData.table_name}`);
       
       CustomSwal.fire({ icon: 'success', title: '성공', text: '안전하게 삭제되었습니다.', timer: 1500, showConfirmButton: false });
       if (onSuccess) onSuccess();
@@ -135,7 +135,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
 
     try {
       setIsLoading(true);
-      const res = await axios.post('http://127.0.0.1:8000/sync-external-table', payload, { headers: { 'Content-Type': 'multipart/form-data' } });
+      const res = await axios.post('/api/sync-external-table', payload, { headers: { 'Content-Type': 'multipart/form-data' } });
       if (res.data.status === 'success') {
         CustomSwal.fire({ icon: 'success', title: '동기화 완료', text: res.data.message, timer: 3000, showConfirmButton: false });
         fetchColumns(formData.table_name); // 동기화 후 컬럼 즉시 새로고침
@@ -177,7 +177,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
       try {
         setIsLoading(true);
         if (isEditMode) {
-          const res = await axios.put(`http://127.0.0.1:8000/documents/${editData.doc_id}`, payload);
+          const res = await axios.put(`/api/documents/${editData.doc_id}`, payload);
           if (res.data.status === 'success') {
             CustomSwal.fire({ icon: 'success', title: '성공', text: '문서 정보가 수정되었습니다.', timer: 1500, showConfirmButton: false });
             if (onSuccess) onSuccess();
@@ -185,7 +185,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
           }
         } else {
           payload.append('file', selectedFile as Blob);
-          const res = await axios.post('http://127.0.0.1:8000/upload-knowledge', payload, { headers: { 'Content-Type': 'multipart/form-data' } });
+          const res = await axios.post('/api/upload-knowledge', payload, { headers: { 'Content-Type': 'multipart/form-data' } });
           if (res.data.status === 'success') {
             CustomSwal.fire({ icon: 'success', title: '성공', text: '문서가 임베딩되었습니다.', timer: 1500, showConfirmButton: false });
             if (onSuccess) onSuccess();
@@ -206,14 +206,14 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
         };
 
         if (isEditMode) {
-          const res = await axios.put(`http://127.0.0.1:8000/catalog/supplemental-knowledge/${editData.id}`, payload);
+          const res = await axios.put(`/api/catalog/supplemental-knowledge/${editData.id}`, payload);
           if (res.data.status === 'success') {
             CustomSwal.fire({ icon: 'success', title: '성공', text: '사전지식이 성공적으로 수정되었습니다.', timer: 1500, showConfirmButton: false });
             if (onSuccess) onSuccess();
             onClose();
           }
         } else {
-          const res = await axios.post('http://127.0.0.1:8000/catalog/supplemental-knowledge', payload);
+          const res = await axios.post('/api/catalog/supplemental-knowledge', payload);
           if (res.data.status === 'success') {
             CustomSwal.fire({ icon: 'success', title: '성공', text: '사전지식이 성공적으로 등록되었습니다.', timer: 1500, showConfirmButton: false });
             if (onSuccess) onSuccess();
@@ -234,7 +234,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
         setIsLoading(true);
         if (isEditMode) {
           // 1. 테이블 메타데이터 수정 (Form Data)
-          const res = await axios.put(`http://127.0.0.1:8000/tables/${editData.table_name}`, payload);
+          const res = await axios.put(`/api/tables/${editData.table_name}`, payload);
           
           // 2. 컬럼 메타데이터 일괄 수정 (JSON Data) - null 값 방지 전처리
           const cleanColumns = columns.map(c => ({
@@ -243,7 +243,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
             is_public: c.is_public
           }));
           
-          await axios.put(`http://127.0.0.1:8000/columns/${editData.table_name}`, { columns: cleanColumns }, {
+          await axios.put(`/api/columns/${editData.table_name}`, { columns: cleanColumns }, {
             headers: { 'Content-Type': 'application/json' }
           });
           
@@ -255,14 +255,14 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
         } else {
           if (formData.db_source === 'INTERNAL') {
             payload.append('file', selectedFile as Blob);
-            const res = await axios.post('http://127.0.0.1:8000/upload-dynamic-statistics', payload, { headers: { 'Content-Type': 'multipart/form-data' } });
+            const res = await axios.post('/api/upload-dynamic-statistics', payload, { headers: { 'Content-Type': 'multipart/form-data' } });
             if (res.data.status === 'success') {
               CustomSwal.fire({ icon: 'success', title: '성공', text: '엑셀 데이터가 DB에 연동되었습니다.', timer: 1500, showConfirmButton: false });
               if (onSuccess) onSuccess();
               onClose();
             }
           } else {
-            const res = await axios.post('http://127.0.0.1:8000/sync-external-table', payload, { headers: { 'Content-Type': 'multipart/form-data' } });
+            const res = await axios.post('/api/sync-external-table', payload, { headers: { 'Content-Type': 'multipart/form-data' } });
             if (res.data.status === 'success') {
               CustomSwal.fire({ icon: 'success', title: '성공', text: res.data.message, timer: 2000, showConfirmButton: false });
               if (onSuccess) onSuccess();
