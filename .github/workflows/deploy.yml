@@ -5,6 +5,8 @@ on:
     branches:
       - main
       - master # 보통 깃허브 기본 브랜치가 main 또는 master입니다.
+    paths-ignore:
+      - '**.md'
 
 jobs:
   deploy:
@@ -62,6 +64,19 @@ jobs:
           cd frontend
           npm install
           npm run build
+
+      - name: 🌐 Update Nginx Configuration
+        run: |
+          $repoNginx = "$env:GITHUB_WORKSPACE\nginx\nginx.conf"
+          $serverNginx = "C:\nginx\conf\nginx.conf"
+          if (Test-Path $repoNginx) {
+              Write-Host "Found nginx.conf in repo. Updating Nginx configuration..."
+              Copy-Item -Path $repoNginx -Destination $serverNginx -Force
+              
+              Write-Host "Reloading Nginx..."
+              cd C:\nginx
+              .\nginx.exe -s reload
+          }
 
       - name: 🚀 Start or Restart Backend (PM2)
         run: |

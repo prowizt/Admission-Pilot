@@ -102,10 +102,10 @@
 2. **📥 소스코드 다운로드**: 깃허브에서 최신 코드를 내려받음.
 3. **🔧 확장프로그램 URL 패치**: `extension/` 폴더 내의 로컬호스트 주소를 운영 도메인(`ipw.daedong.ac.kr`)으로 자동 변환.
 4. **📦 파이썬 환경 설정**: 가상환경(`venv`) 생성 및 `requirements.txt` 설치.
-5. **🔐 `.env` 복사**: `C:\actions-runner\.env` 를 백엔드 폴더로 안전하게 복사.
-6. **⚛️ 프론트엔드 빌드**: `student-web` 과 `frontend` (관리자용) 모두 `npm install` 및 `npm run build` 수행 (빌드 결과물이 `dist` 폴더에 생성되어 Nginx가 바라봄).
-7. **🚀 백엔드 PM2 시작**: 
-   - `pm2 start main.py --interpreter <가상환경python.exe> --name "admission-backend"` 로 실행하여 서버 무중단 서비스 재가동.
+5. **🔐 `.env` 주입**: 앞서 만든 `C:\actions-runner\.env` 파일을 백엔드로 복사.
+6. **⚛️ 프론트엔드 빌드**: 학생용(`student-web`) 및 교직원용(`frontend`) 앱 빌드.
+7. **🌐 Nginx 설정 자동 업데이트**: 저장소의 `nginx/nginx.conf`를 서버 `C:\nginx\conf\nginx.conf`로 복사하고 Nginx 재시작(`nginx -s reload`).
+8. **🚀 백엔드 PM2 시작**: `pm2 start main.py` 로 서비스 재가동.
 
 ---
 
