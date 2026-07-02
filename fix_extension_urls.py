@@ -8,8 +8,8 @@ def replace_extension_urls():
     with open(js_path, 'r', encoding='utf-8') as f:
         js_content = f.read()
     
-    # Chrome 확장프로그램은 절대경로가 필요하므로 공인 IP 주소 할당
-    js_content = js_content.replace('http://127.0.0.1:8000/', 'http://210.93.0.229:8080/api/')
+    # Chrome 확장프로그램은 절대경로가 필요하므로 공인 도메인 할당
+    js_content = js_content.replace('http://127.0.0.1:8000/', 'https://ipw.daedong.ac.kr:8443/api/')
     
     with open(js_path, 'w', encoding='utf-8') as f:
         f.write(js_content)
@@ -20,7 +20,7 @@ def replace_extension_urls():
         manifest_content = f.read()
         
     # 권한 허용 주소 업데이트
-    manifest_content = manifest_content.replace('http://127.0.0.1:8000/*', 'http://210.93.0.229:8080/*')
+    manifest_content = manifest_content.replace('http://127.0.0.1:8000/*', 'https://ipw.daedong.ac.kr:8443/*')
     
     with open(manifest_path, 'w', encoding='utf-8') as f:
         f.write(manifest_content)

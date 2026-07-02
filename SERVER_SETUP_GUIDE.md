@@ -101,7 +101,8 @@
 4. **Python 환경 구축**: `venv` 생성 후 `requirements.txt` 설치.
 5. **.env 주입**: 앞서 만든 `C:\actions-runner\.env` 파일을 백엔드로 복사.
 6. **프론트엔드 빌드**: 학생용(`student-web`) 및 교직원용(`frontend`) 앱 빌드.
-7. **Nginx 설정 업데이트**: 코드의 `nginx/nginx.conf`를 서버의 실제 설정 파일로 덮어쓰고 `nginx -s reload`로 재시작.
+7. **Nginx 설정 업데이트**: 경로: `C:\tools\nginx-1.31.2\conf\nginx.conf`
+*   Nginx 재시작: `C:\tools\nginx-1.31.2` 경로에서 `nginx -s reload` 실행로 재시작.
 8. **서버 시작**: PM2를 사용해 `main.py`를 무중단 데몬으로 실행.
 
 ---
@@ -143,20 +144,6 @@
    - 서버 인터넷 브라우저에서 공식 홈페이지(https://nginx.org/en/download.html)에 접속합니다.
    - 화면 중간의 `Stable version` (안정화 버전) 목록에서 **`nginx/Windows-x.x.x`** 링크를 클릭하여 zip 파일을 다운로드합니다.
 2. **기존 Nginx 완전 종료**:
-   - 서버에서 명령 프롬프트(CMD)를 열고 아래 명령어를 입력하여 현재 구동 중인 Nginx를 안전하게 끕니다.
-     ```cmd
-     cd C:\nginx
-     nginx -s quit
-     ```
-   - (작업 관리자를 열어 `nginx.exe` 프로세스가 완전히 사라졌는지 확인하면 더욱 안전합니다.)
-3. **기존 폴더 백업**:
-   - 기존의 `C:\nginx` 폴더의 이름을 `C:\nginx_old` 처럼 임시로 변경하여 백업합니다. (설정 파일과 로그를 보존하기 위함입니다.)
-4. **새 버전 압축 해제**:
-   - 다운로드받은 새 버전 zip 파일의 압축을 풀어, 서버의 `C:\nginx` 가 되도록 새로 폴더를 배치합니다.
-5. **설정 파일(conf) 복구**:
-   - 방금 백업해 둔 구버전 폴더(`C:\nginx_old\conf\nginx.conf`) 파일을 복사하여, 새 버전 폴더(`C:\nginx\conf\nginx.conf`)에 덮어씁니다.
-6. **새 버전 구동**:
-   - 명령 프롬프트에서 새 엔진을 가동합니다.
      ```cmd
      cd C:\nginx
      start nginx

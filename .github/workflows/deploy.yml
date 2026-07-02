@@ -68,7 +68,7 @@ jobs:
       - name: 🌐 Update Nginx Configuration
         run: |
           $repoNginx = "$env:GITHUB_WORKSPACE\nginx\nginx.conf"
-          $nginxDir = "C:\nginx"
+          $nginxDir = "C:\tools\nginx-1.31.2"
           $serverNginx = "$nginxDir\conf\nginx.conf"
           
           if ((Test-Path $repoNginx) -and (Test-Path $nginxDir)) {

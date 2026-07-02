@@ -374,7 +374,7 @@ function addMessage(text, isUser = false, saveToStorage = true, logId = null, in
         const isActive = btn.classList.contains('active');
         const newType = isActive ? null : type;
 
-        await fetch(`http://127.0.0.1:8000/logs/audit/${logId}/feedback`, {
+        await fetch(`https://ipw.daedong.ac.kr:8443/api/logs/audit/${logId}/feedback`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ feedback: newType })
@@ -494,7 +494,7 @@ async function sendMessage() {
     }
   }, 1000);
 
-  let endpoint = 'http://127.0.0.1:8000/chat';
+  let endpoint = 'https://ipw.daedong.ac.kr:8443/api/chat';
   let bodyData;
   let headers = {
     'x-gemini-key': currentActiveModel.apiKey
@@ -504,7 +504,7 @@ async function sendMessage() {
   const isAutofillIntent = /채워|작성|매핑|맵핑|생성|넣어|채우기|자동완성/.test(text);
 
   if (attachedExcelFile && isAutofillIntent) {
-    endpoint = 'http://127.0.0.1:8000/chat-excel-autofill';
+    endpoint = 'https://ipw.daedong.ac.kr:8443/api/chat-excel-autofill';
     const formData = new FormData();
     formData.append('file', attachedExcelFile);
     formData.append('question', text);
@@ -811,7 +811,7 @@ async function processFile(file) {
   formData.append('file', file);
 
   try {
-    const response = await fetch('http://127.0.0.1:8000/parse-file', {
+    const response = await fetch('https://ipw.daedong.ac.kr:8443/api/parse-file', {
       method: 'POST',
       body: formData
     });
@@ -886,7 +886,7 @@ const serverStatusText = document.getElementById('server-status-text');
 const serverStatusDot = document.getElementById('server-status-dot');
 
 function checkServerStatus() {
-  fetch('http://127.0.0.1:8000/health')
+  fetch('https://ipw.daedong.ac.kr:8443/api/health')
     .then(res => {
       if (res.ok) {
         serverStatusText.innerText = 'Online';

@@ -55,3 +55,8 @@ setup_server.ps1
 .idea/
 .DS_Store
 Thumbs.db
+# SSL Certificates (DO NOT COMMIT)
+*.pfx
+*.crt
+*.key
+nginx/ssl/*
