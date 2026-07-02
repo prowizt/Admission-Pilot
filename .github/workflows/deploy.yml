@@ -68,14 +68,18 @@ jobs:
       - name: 🌐 Update Nginx Configuration
         run: |
           $repoNginx = "$env:GITHUB_WORKSPACE\nginx\nginx.conf"
-          $serverNginx = "C:\nginx\conf\nginx.conf"
-          if (Test-Path $repoNginx) {
-              Write-Host "Found nginx.conf in repo. Updating Nginx configuration..."
+          $nginxDir = "C:\nginx"
+          $serverNginx = "$nginxDir\conf\nginx.conf"
+          
+          if ((Test-Path $repoNginx) -and (Test-Path $nginxDir)) {
+              Write-Host "Found nginx.conf in repo and Nginx is installed. Updating configuration..."
               Copy-Item -Path $repoNginx -Destination $serverNginx -Force
               
               Write-Host "Reloading Nginx..."
-              cd C:\nginx
+              cd $nginxDir
               .\nginx.exe -s reload
+          } else {
+              Write-Host "Nginx is not installed at $nginxDir or repo config is missing. Skipping Nginx update."
           }
 
       - name: 🚀 Start or Restart Backend (PM2)
