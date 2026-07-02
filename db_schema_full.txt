@@ -1,10 +1,10 @@
 =========================================
-Table: ADMISSIONCAPACITY
+Table: EXCEL_ADMISSIONCAPACITY
 =========================================
 Columns:
  - [PK] id (int(4)) NOT NULL
  - 학년도 (nvarchar(510)) NULL
- - 학과명 (nvarchar(510)) NULL
+ - 학과 (nvarchar(510)) NULL
  - 입학정원 (nvarchar(510)) NULL
  - created_at (datetime(8)) NULL
 
@@ -13,7 +13,7 @@ Table: EXCEL_ADMISSIONQUOTA
 =========================================
 Columns:
  - [PK] id (int(4)) NOT NULL
- - 입시년도 (nvarchar(510)) NULL
+ - 학년도 (nvarchar(510)) NULL
  - 모집구분 (nvarchar(510)) NULL
  - 모집학과명 (nvarchar(510)) NULL
  - 정원내외구분 (nvarchar(510)) NULL
@@ -43,6 +43,7 @@ Columns:
  - chat_out_tokens (int(4)) NULL -- 최종 챗봇 AI 출력 토큰 수
  - total_tokens (int(4)) NULL -- 두 AI의 총 토큰 합계
  - estimated_cost (decimal(9)) NULL -- 한화(KRW) 기준 총 예상 과금액
+ - rag_documents (nvarchar(4000)) NULL -- RAG 검색으로 참고된 원본 PDF 문서명 목록
 
 =========================================
 Table: Sys_ColumnCatalog (컬럼 레벨 보안(CLS) 및 AI 힌트 카탈로그)

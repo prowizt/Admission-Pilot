@@ -1353,6 +1353,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         # =======================================================
         chroma_context = ""
         results_metadatas = []
+        rag_documents_str = None
 
         # [AI 기반 스마트 라우팅 적용]
         # 스크랩 문서가 없고, AI가 카탈로그를 분석한 결과 문서 검색(RAG)이 불필요하다고 판단했다면 생략합니다.
@@ -1778,12 +1779,20 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     print("-" * 50)
                 print(f"[최종 챗봇 AI] 사용 모델: {chat_model_name}")
                 print("  - 참조한 PDF 목록 및 챗봇 입력 토큰 점유율 추정:")
+                
+                formatted_docs_list = []
                 for idx, (fname, chars) in enumerate(doc_texts_len.items()):
                     ratio = chars / total_doc_chars
                     est_tokens = int(c_in * ratio)
-                    print(f"    {idx+1}) {fname} (약 {est_tokens:,} 토큰 / {ratio*100:.1f}%)")
+                    line_str = f"{idx+1}) {fname} (약 {est_tokens:,} 토큰 / {ratio*100:.1f}%)"
+                    print(f"    {line_str}")
+                    formatted_docs_list.append(line_str)
+                    
                 if not doc_texts_len:
                     print("    (참조한 문서 없음)")
+                    
+                rag_docs_formatted = "\n".join(formatted_docs_list) if formatted_docs_list else None
+                    
                 print(f"  - 챗봇 입력 토큰: {c_in:,} Tokens")
                 print(f"  - 챗봇 출력 토큰: {c_out:,} Tokens")
                 print(f"  - 챗봇 예상 비용: 약 {chat_cost:.3f} 원")
@@ -1792,10 +1801,10 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 print(f"💰 총 예상 청구 비용: 약 {total_cost:.3f} 원 (KRW)")
                 print("=" * 50 + "\n")
                 
-                return (r_model, r_in, r_out, c_in, c_out, total_tok, total_cost)
+                return (r_model, r_in, r_out, c_in, c_out, total_tok, total_cost, rag_docs_formatted)
             except Exception as token_err:
                 print(f"[토큰 계산 오류] {token_err}")
-                return (r_model, r_in, r_out, 0, 0, 0, 0.0)
+                return (r_model, r_in, r_out, 0, 0, 0, 0.0, None)
 
         # 학생 권한은 60초, 교직원은 복잡한 표 분석을 위해 기존대로 600초(10분) 유지
         timeout_sec = 60 if request.user_role == "student" else 600
@@ -1846,14 +1855,16 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                                     user_role, model_name, question, scraped_context, 
                                     sql_query, rag_query, answer, latency_ms,
                                     router_model_name, router_in_tokens, router_out_tokens,
-                                    chat_in_tokens, chat_out_tokens, total_tokens, estimated_cost
+                                    chat_in_tokens, chat_out_tokens, total_tokens, estimated_cost,
+                                    rag_documents
                                 ) 
                                 OUTPUT INSERTED.id
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """, (
                                 safe_str(request.user_role), safe_str(request.model_name), safe_str(request.question), safe_str(request.scraped_context),
                                 safe_str(sql_query), safe_str(rag_query), safe_str(full_text), latency_ms,
-                                t_data[0], t_data[1], t_data[2], t_data[3], t_data[4], t_data[5], t_data[6]
+                                t_data[0], t_data[1], t_data[2], t_data[3], t_data[4], t_data[5], t_data[6],
+                                safe_str(t_data[7])
                             ))
                             inserted_row = cursor.fetchone()
                             log_id = inserted_row[0] if inserted_row else None
@@ -1909,14 +1920,16 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                             user_role, model_name, question, scraped_context, 
                             sql_query, rag_query, answer, latency_ms,
                             router_model_name, router_in_tokens, router_out_tokens,
-                            chat_in_tokens, chat_out_tokens, total_tokens, estimated_cost
+                            chat_in_tokens, chat_out_tokens, total_tokens, estimated_cost,
+                            rag_documents
                         ) 
                         OUTPUT INSERTED.id
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         safe_str(request.user_role), safe_str(request.model_name), safe_str(request.question), safe_str(request.scraped_context),
                         safe_str(sql_query), safe_str(rag_query), safe_str(response.text), latency_ms,
-                        t_data[0], t_data[1], t_data[2], t_data[3], t_data[4], t_data[5], t_data[6]
+                        t_data[0], t_data[1], t_data[2], t_data[3], t_data[4], t_data[5], t_data[6],
+                        safe_str(t_data[7])
                     ))
                     inserted_row = cursor.fetchone()
                     log_id = inserted_row[0] if inserted_row else None
@@ -1981,6 +1994,7 @@ async def get_audit_logs():
                    sql_query, rag_query, answer, latency_ms, user_feedback,
                    router_model_name, router_in_tokens, router_out_tokens,
                    chat_in_tokens, chat_out_tokens, total_tokens, estimated_cost,
+                   rag_documents,
                    CONVERT(VARCHAR(19), created_at, 120) AS created_at
             FROM Sys_AIAuditLog
             ORDER BY id DESC

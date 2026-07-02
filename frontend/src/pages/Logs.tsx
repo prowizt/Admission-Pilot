@@ -566,13 +566,26 @@ export default function Logs() {
                     </div>
                   )}
                   {selectedLog.rag_query && selectedLog.rag_query !== 'NONE' && (
-                    <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col">
-                      <h4 className="font-bold text-emerald-600 mb-3 flex items-center gap-2 text-sm">
-                        <BookOpen size={16} /> RAG (문서 검색) 키워드
-                      </h4>
-                      <div className="p-3 bg-emerald-50 text-emerald-800 rounded-lg font-medium text-sm border border-emerald-100">
-                        {selectedLog.rag_query}
+                    <div className="flex flex-col gap-4">
+                      <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col">
+                        <h4 className="font-bold text-emerald-600 mb-3 flex items-center gap-2 text-sm">
+                          <BookOpen size={16} /> RAG (문서 검색) 키워드
+                        </h4>
+                        <div className="p-3 bg-emerald-50 text-emerald-800 rounded-lg font-medium text-sm border border-emerald-100">
+                          {selectedLog.rag_query}
+                        </div>
                       </div>
+                      
+                      {selectedLog.rag_documents && (
+                        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col">
+                          <h4 className="font-bold text-emerald-600 mb-3 flex items-center gap-2 text-sm">
+                            <BookOpen size={16} /> 참고된 PDF 문서명
+                          </h4>
+                          <div className="p-3 bg-slate-50 text-slate-700 rounded-lg font-medium text-sm border border-slate-100 whitespace-pre-wrap">
+                            {selectedLog.rag_documents}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
