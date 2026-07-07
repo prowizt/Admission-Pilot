@@ -22,17 +22,6 @@ jobs:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: 🔧 Patch Extension for Production
-        run: |
-          Write-Host "Patching Chrome Extension for Production..."
-          $jsPath = "extension/sidepanel.js"
-          $manifestPath = "extension/manifest.json"
-          if (Test-Path $jsPath) {
-            (Get-Content $jsPath -Encoding UTF8) -replace 'http://127.0.0.1:8000/', 'http://ipw.daedong.ac.kr:8080/api/' | Set-Content $jsPath -Encoding UTF8
-          }
-          if (Test-Path $manifestPath) {
-            (Get-Content $manifestPath -Encoding UTF8) -replace 'http://127.0.0.1:8000/\*', 'http://ipw.daedong.ac.kr:8080/*' | Set-Content $manifestPath -Encoding UTF8
-          }
 
       - name: 📦 Setup Python Environment
         run: |

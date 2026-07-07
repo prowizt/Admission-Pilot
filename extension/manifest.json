@@ -11,6 +11,7 @@
     "storage"
   ],
   "host_permissions": [
+    "http://127.0.0.1:8000/*",
     "https://ipw.daedong.ac.kr:8443/*",
     "<all_urls>"
   ],

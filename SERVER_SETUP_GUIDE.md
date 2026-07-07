@@ -22,46 +22,19 @@
 
 ---
 
-## 2. Nginx 웹 서버 세팅
+## 2. Nginx 웹 서버 세팅 (HTTPS / SSL 인증서 포함)
 
-학생용 챗봇(포트 80)과 교직원 대시보드(포트 8080)를 동시에 서비스하고, API 요청을 백엔드로 넘겨주기 위해 Nginx를 세팅합니다.
+학생용 챗봇(포트 443)과 교직원 대시보드(포트 8443)를 안전한 HTTPS 통신으로 서비스하기 위해 Nginx 및 와일드카드 인증서를 세팅합니다.
 
-1. **다운로드**: Nginx for Windows 압축 파일을 다운로드 후 `C:\nginx` 에 압축 해제.
-2. **설정 변경**: `C:\nginx\conf\nginx.conf` 파일을 열고 아래와 같이 수정합니다.
-   ```nginx
-   http {
-       # ...기본 설정 생략...
-       
-       # [1] 학생용 챗봇 서버 (80번 포트)
-       server {
-           listen       80;
-           server_name  ipw.daedong.ac.kr localhost;
-           location / {
-               root   "C:/actions-runner/_work/Admission-Pilot/Admission-Pilot/student-web/dist";
-               index  index.html index.htm;
-               try_files $uri $uri/ /index.html;
-           }
-           location /api/ {
-               proxy_pass http://127.0.0.1:8000/;
-           }
-       }
-
-       # [2] 교직원용 대시보드 (8080번 포트)
-       server {
-           listen       8080;
-           server_name  ipw.daedong.ac.kr localhost;
-           location / {
-               root   "C:/actions-runner/_work/Admission-Pilot/Admission-Pilot/frontend/dist";
-               index  index.html index.htm;
-               try_files $uri $uri/ /index.html;
-           }
-           location /api/ {
-               proxy_pass http://127.0.0.1:8000/;
-           }
-       }
-   }
-   ```
-3. **실행**: `C:\nginx` 폴더에서 명령 프롬프트를 열고 `start nginx` 를 입력하여 백그라운드 실행.
+1. **설치 경로**: Nginx for Windows 압축 파일을 다운로드 후 `C:\tools\nginx-1.31.2` 에 압축 해제.
+2. **SSL 인증서 수동 복사 (중요!)**:
+   - `C:\tools\nginx-1.31.2\conf\ssl` 폴더를 생성합니다.
+   - 보안상 깃허브에 올릴 수 없는 대동대학교 와일드카드 인증서 파일 2개(`fullchain.crt`, `private.key`)를 USB나 원격 접속을 통해 이 폴더에 직접 복사해 둡니다.
+3. **설정 변경**: `C:\tools\nginx-1.31.2\conf\nginx.conf` 파일이 깃허브의 배포 스크립트를 통해 자동으로 덮어써지며 다음 규칙으로 동작합니다:
+   - **80번 포트**: 443(HTTPS)으로 강제 리다이렉트
+   - **443번 포트 (HTTPS)**: 학생용 챗봇 서빙 및 백엔드 프록시
+   - **8443번 포트 (HTTPS)**: 교직원용 대시보드 서빙 및 백엔드 프록시
+4. **실행**: 터미널을 열고 `C:\tools\nginx-1.31.2` 경로에서 `start nginx` 를 입력하여 백그라운드 실행.
 
 ---
 
@@ -97,36 +70,40 @@
 프로젝트 코드 최상단 `.github/workflows/deploy.yml` 을 만들어 다음 파이프라인을 구축했습니다.
 1. **기존 서버 끄기**: PM2와 잠겨있는 Python 프로세스를 강제 종료하여 삭제 권한 확보(`EBUSY` 에러 방지).
 2. **소스코드 다운로드**: 깃허브의 최신 버전을 내려받음.
-3. **동적 패치**: 크롬 확장프로그램의 API 주소를 로컬호스트에서 `ipw.daedong.ac.kr` 도메인으로 치환.
-4. **Python 환경 구축**: `venv` 생성 후 `requirements.txt` 설치.
-5. **.env 주입**: 앞서 만든 `C:\actions-runner\.env` 파일을 백엔드로 복사.
-6. **프론트엔드 빌드**: 학생용(`student-web`) 및 교직원용(`frontend`) 앱 빌드.
-7. **Nginx 설정 업데이트**: 경로: `C:\tools\nginx-1.31.2\conf\nginx.conf`
-*   Nginx 재시작: `C:\tools\nginx-1.31.2` 경로에서 `nginx -s reload` 실행로 재시작.
-8. **서버 시작**: PM2를 사용해 `main.py`를 무중단 데몬으로 실행.
+3. **Python 환경 구축**: `venv` 생성 후 `requirements.txt` 설치.
+4. **.env 주입**: 앞서 만든 `C:\actions-runner\.env` 파일을 백엔드로 복사.
+5. **프론트엔드 빌드**: 학생용(`student-web`) 및 교직원용(`frontend`) 앱 빌드.
+6. **Nginx 설정 업데이트**: 저장소의 `nginx/nginx.conf`를 `C:\tools\nginx-1.31.2\conf\nginx.conf`로 덮어쓰고 `nginx -s reload` 실행.
+7. **서버 시작**: PM2를 사용해 `main.py`를 무중단 데몬으로 실행.
 
 ---
 
 ## 6. 방화벽 및 마무리
 
-1. **방화벽 개방**: Windows Defender 방화벽 > 고급 설정 > 인바운드 규칙에서 **포트 80** 및 **8080** 을 외부에서 접근할 수 있도록 허용.
+1. **방화벽 개방**: Windows Defender 방화벽 > 고급 설정 > 인바운드 규칙에서 **포트 443** (학생용 HTTPS) 및 **8443** (교직원용 HTTPS) 을 외부에서 접근할 수 있도록 허용.
+   - (PowerShell 관리자 권한 명령어: `New-NetFirewallRule -DisplayName "Nginx HTTPS (443, 8443)" -Direction Inbound -LocalPort 443,8443 -Protocol TCP -Action Allow`)
 2. **배포 테스트**: 개발 PC에서 코드를 수정하고 `git add .`, `git commit`, `git push`를 실행한 후, 서버에서 제대로 배포가 완료되는지 확인.
 3. **결과 확인**:
-   - 학생용: `http://ipw.daedong.ac.kr` 접속 성공 확인
-   - 교직원용: `http://ipw.daedong.ac.kr:8080` 접속 성공 확인
+   - 학생용: `https://ipw.daedong.ac.kr` 접속 성공 및 자물쇠 마크 확인
+   - 교직원용: `https://ipw.daedong.ac.kr:8443` 접속 성공 및 자물쇠 마크 확인
 
 ---
 
 ## 7. 교직원용 크롬 확장프로그램 배포 및 설치 방법
 
-자동 배포가 완료되면 깃허브 로봇이 `extension/` 폴더 내부의 소스코드 주소를 새 도메인(`ipw.daedong.ac.kr`)으로 알아서 패치(수정)해 둡니다. 교직원 PC에 이 확장프로그램을 설치하는 방법은 다음과 같습니다.
+자동 배포 스크립트 없이도 확장프로그램은 하이브리드로 작동합니다. 개발자 PC의 `extension` 폴더를 그대로 압축해서 배포하면 됩니다.
 
-1. 서버(229)에 배포된 `extension` 폴더를 복사하여 교직원들에게 배포하거나, 로컬에서 다운로드 받은 `extension` 폴더를 사용합니다.
-2. 크롬 브라우저를 열고 주소창에 `chrome://extensions/` 를 입력하여 **확장 프로그램 관리** 페이지로 이동합니다.
+1. 개발 PC의 `extension` 폴더를 압축(`.zip`)하여 교직원들에게 배포합니다.
+2. 교직원들은 압축을 풀고 크롬 브라우저를 열어 주소창에 `chrome://extensions/` 를 입력합니다.
 3. 우측 상단의 **개발자 모드(Developer mode)** 스위치를 켭니다.
 4. 좌측 상단의 **압축해제된 확장 프로그램을 로드합니다(Load unpacked)** 버튼을 클릭합니다.
 5. 배포받은 `extension` 폴더를 선택하여 업로드하면 설치가 완료됩니다.
 6. 크롬 주소창 옆의 퍼즐(🧩) 아이콘을 눌러 "대동대 AI 도우미"를 고정(Pin)하고 누르면, 브라우저 우측에 챗봇 사이드 패널이 즉시 나타납니다.
+
+### 💡 [중요] 개발자 모드 체크박스 (하이브리드 환경 감지)
+- 확장프로그램 하단의 ⚙️(설정)을 누르면 **`[ ] 개발자 모드 (로컬 127.0.0.1 백엔드 사용)`** 체크박스가 있습니다.
+- **일반 교직원 (체크 해제됨)**: 기본적으로 229번 운영 서버(`https://ipw.daedong.ac.kr:8443`)를 바라보고 통신합니다.
+- **개발자 (체크 켬)**: 개발 PC의 로컬 백엔드(`127.0.0.1:8000`)를 강제로 바라보게 하여 테스트망과 운영망을 분리합니다.
 
 ### 💡 확장프로그램 업데이트 방법 (기능 추가 시)
 만약 나중에 코드가 수정되어 확장프로그램 기능이 업데이트된 경우, 기존에 설치했던 교직원들은 다음 방법으로 새로고침만 하면 됩니다.
@@ -144,11 +121,11 @@
    - 서버 인터넷 브라우저에서 공식 홈페이지(https://nginx.org/en/download.html)에 접속합니다.
    - 화면 중간의 `Stable version` (안정화 버전) 목록에서 **`nginx/Windows-x.x.x`** 링크를 클릭하여 zip 파일을 다운로드합니다.
 2. **기존 Nginx 완전 종료**:
-     ```cmd
-     cd C:\nginx
-     start nginx
-     ```
-7. **성공 확인**:
-   - 브라우저를 열고 `http://ipw.daedong.ac.kr` 에 정상적으로 접속되는지 확인한 뒤, 문제없이 챗봇이 열리면 구버전 폴더(`C:\nginx_old`)는 삭제하셔도 됩니다.
+   ```cmd
+   cd C:\tools\nginx-1.31.2
+   nginx -s stop
+   ```
+3. **성공 확인**:
+   - 브라우저를 열고 `https://ipw.daedong.ac.kr` 에 정상적으로 접속되는지 확인한 뒤, 문제없이 챗봇이 열리면 구버전 폴더는 삭제하셔도 됩니다.
 
 위 과정을 통해 Nginx 코어 엔진 업그레이드가 완료되며, 기존의 모든 라우팅 설정은 그대로 유지됩니다.

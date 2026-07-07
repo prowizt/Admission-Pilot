@@ -35,6 +35,29 @@ if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
 }
 
 const chatContainer = document.getElementById('chat-container');
+let BASE_URL = 'https://ipw.daedong.ac.kr:8443/api';
+const devModeCheckbox = document.getElementById('dev-mode-checkbox');
+
+// 앱 시작 시 개발자 모드 설정 불러오기
+chrome.storage.local.get(['isDevMode'], (result) => {
+  if (result.isDevMode) {
+    devModeCheckbox.checked = true;
+    BASE_URL = 'http://127.0.0.1:8000';
+  } else {
+    devModeCheckbox.checked = false;
+    BASE_URL = 'https://ipw.daedong.ac.kr:8443/api';
+  }
+  checkServerStatus(); // 설정 로드 후 상태 즉시 확인
+});
+
+devModeCheckbox.addEventListener('change', (e) => {
+  const isDev = e.target.checked;
+  chrome.storage.local.set({ isDevMode: isDev });
+  BASE_URL = isDev ? 'http://127.0.0.1:8000' : 'https://ipw.daedong.ac.kr:8443/api';
+  checkServerStatus(); // 토글 즉시 상태 확인
+});
+
+const chatBox = document.getElementById('chat-box');
 const chatInput = document.getElementById('chat-input');
 const btnSend = document.getElementById('btn-send');
 const btnStop = document.getElementById('btn-stop');
@@ -374,7 +397,7 @@ function addMessage(text, isUser = false, saveToStorage = true, logId = null, in
         const isActive = btn.classList.contains('active');
         const newType = isActive ? null : type;
 
-        await fetch(`https://ipw.daedong.ac.kr:8443/api/logs/audit/${logId}/feedback`, {
+        await fetch(`${BASE_URL}/logs/audit/${logId}/feedback`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ feedback: newType })
@@ -471,9 +494,16 @@ async function sendMessage() {
   const loadingDiv = document.createElement('div');
   loadingDiv.id = loadingId;
   loadingDiv.className = 'flex justify-start items-center gap-2 text-xs font-bold text-indigo-500 p-2 ml-1';
+  
+  let rModel = currentActiveModel.routerModelName || currentActiveModel.modelName;
+  let fModel = currentActiveModel.modelName;
+  let loadingMsg = (rModel === fModel) 
+    ? `AI(${fModel})가 규정과 DB를 검토 중입니다...` 
+    : `라우터AI(${rModel})와 분석AI(${fModel})가 DB와 규정을 검토 중입니다...`;
+
   loadingDiv.innerHTML = `
     <span class="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin"></span>
-    <span>AI(${currentActiveModel.modelName})가 규정과 DB를 검토 중입니다... <span id="timer-${loadingId}" class="text-orange-500 ml-1">(0초 경과)</span></span>
+    <span>${loadingMsg} <span id="timer-${loadingId}" class="text-orange-500 ml-1">(0초 경과)</span></span>
   `;
   chatContainer.appendChild(loadingDiv);
   chatContainer.scrollTop = chatContainer.scrollHeight;
@@ -494,7 +524,7 @@ async function sendMessage() {
     }
   }, 1000);
 
-  let endpoint = 'https://ipw.daedong.ac.kr:8443/api/chat';
+  let endpoint = `${BASE_URL}/chat`;
   let bodyData;
   let headers = {
     'x-gemini-key': currentActiveModel.apiKey
@@ -504,7 +534,7 @@ async function sendMessage() {
   const isAutofillIntent = /채워|작성|매핑|맵핑|생성|넣어|채우기|자동완성/.test(text);
 
   if (attachedExcelFile && isAutofillIntent) {
-    endpoint = 'https://ipw.daedong.ac.kr:8443/api/chat-excel-autofill';
+    endpoint = `${BASE_URL}/chat-excel-autofill`;
     const formData = new FormData();
     formData.append('file', attachedExcelFile);
     formData.append('question', text);
@@ -811,7 +841,7 @@ async function processFile(file) {
   formData.append('file', file);
 
   try {
-    const response = await fetch('https://ipw.daedong.ac.kr:8443/api/parse-file', {
+    const response = await fetch(`${BASE_URL}/parse-file`, {
       method: 'POST',
       body: formData
     });
@@ -886,7 +916,7 @@ const serverStatusText = document.getElementById('server-status-text');
 const serverStatusDot = document.getElementById('server-status-dot');
 
 function checkServerStatus() {
-  fetch('https://ipw.daedong.ac.kr:8443/api/health')
+  fetch(`${BASE_URL}/health`)
     .then(res => {
       if (res.ok) {
         serverStatusText.innerText = 'Online';

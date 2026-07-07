@@ -898,11 +898,18 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n[BACKEND] ===============================================")
     print(f"[BACKEND] 🚀 [{current_time}] 신규 채팅 요청 수신 - 접속 권한: {role_str}")
-    print(f"[BACKEND] ===============================================\n", flush=True)
+    print(f"[BACKEND] ===============================================")
     
     # [보안 통제] 사용자의 질문(question) 내에 포함된 민감한 개인정보(주민번호, 휴대전화번호)를 백엔드 초입에서 원천 마스킹
     if request.question:
         request.question = mask_pii(request.question)
+
+    print(f"[MAIN-CHAT] === [사용자 질문] ===")
+    print(f"[MAIN-CHAT] 💬 질문: {request.question if request.question else '(질문 없음)'}")
+    if request.scraped_context:
+        scraped_preview = request.scraped_context.replace('\n', ' ')
+        print(f"[MAIN-CHAT] 📄 스크랩 일부: {scraped_preview[:150]}...")
+    print(f"[MAIN-CHAT] =======================\n", flush=True)
         
     # [NEW] 학생용 웹 챗봇은 서버 환경변수(STUDENT_API_KEY)를 전용으로 사용하며 누락 시 오류를 발생시킵니다.
     if request.user_role == "student":

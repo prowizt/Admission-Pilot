@@ -11,7 +11,7 @@
   - **Python**: 백엔드 서버 구동용 (3.11 이상 권장)
   - **Node.js & npm**: 프론트엔드 빌드 및 프로세스 관리자(PM2) 구동용
   - **PM2**: 백엔드(FastAPI) 프로세스를 백그라운드에서 24시간 안정적으로 구동하는 데몬 매니저 (글로벌 설치: `npm install -g pm2`)
-  - **Nginx**: 웹 서버 및 리버스 프록시 (포트 80, 8080 트래픽을 처리하고 프론트엔드 정적 파일 서빙)
+  - **Nginx**: 웹 서버 및 리버스 프록시 (포트 80 트래픽을 443(HTTPS)으로 리다이렉트, 443 및 8443 포트로 프론트엔드 정적 파일 서빙 및 SSL 암호화 처리)
   - **Git & GitHub Actions Runner**: 소스코드 관리 및 CI/CD 자동 배포 서비스 (`C:\actions-runner` 에 설치됨)
 
 ---
@@ -31,7 +31,7 @@
 - **위치**: `/student-web`
 - **기술 스택**: React + Vite + TailwindCSS
 - **구동 환경 (로컬 개발)**: `http://localhost:5176/` (Vite Proxy를 통해 로컬 백엔드로 자동 연결됨)
-- **구동 환경 (운영 배포)**: Nginx의 **80번 포트**를 통해 `student-web/dist` 폴더의 정적 파일 서빙.
+- **구동 환경 (운영 배포)**: Nginx의 **443번 포트 (HTTPS)**를 통해 `student-web/dist` 폴더의 정적 파일 서빙 (80번 접속 시 443으로 강제 리다이렉트).
 - **특징**:
   - API 호출 시 상대 경로(`/api/chat`, `/api/health`)를 사용하며, 로컬에서는 Vite가, 운영에서는 Nginx가 이를 백엔드(8000)로 똑똑하게 프록시 전달함.
   - **gemini-2.5-flash** 모델 사용 (비용 절감 목적).
@@ -41,7 +41,7 @@
 - **위치**: `/frontend`
 - **기술 스택**: React + Vite + TailwindCSS
 - **구동 환경 (로컬 개발)**: `http://localhost:5175/` (Vite Proxy를 통해 로컬 백엔드로 자동 연결됨)
-- **구동 환경 (운영 배포)**: Nginx의 **8080번 포트**를 통해 `frontend/dist` 폴더의 정적 파일 서빙.
+- **구동 환경 (운영 배포)**: Nginx의 **8443번 포트 (HTTPS)**를 통해 `frontend/dist` 폴더의 정적 파일 서빙.
 - **기능**: 지식베이스(문서) 업로드, 서버 헬스체크, 통계/로그 확인 등 관리자 기능 수행.
 
 ### 2.4. Staff Chrome Extension (교직원용 크롬 확장프로그램)
@@ -50,7 +50,7 @@
   - 브라우저 우측 사이드 패널로 동작.
   - 그룹웨어 기안문 등 브라우저 화면의 텍스트를 드래그/스크랩하여 즉시 AI에게 분석 요청.
   - **gemini-3.5-flash** 모델 사용 (고성능 추론).
-  - 로컬 개발 시에는 `http://127.0.0.1:8000/api/`를 바라보며, 운영 배포 시에는 GitHub Actions가 자동으로 `http://ipw.daedong.ac.kr:8080/api/`로 주소를 패치(Patch)함.
+  - **하이브리드 환경 자동 인식**: 코드 내 하드코딩 대신 설정창(톱니바퀴)의 **개발자 모드 체크박스**를 통해 로컬 환경(`http://127.0.0.1:8000`)과 운영 환경(`https://ipw.daedong.ac.kr:8443/api`)을 자유자재로 전환하여 안전하게 통신함.
 
 ---
 
@@ -100,12 +100,11 @@
 1. **🛑 기존 백엔드 정지**: 
    - `pm2 delete admission-backend` 및 `taskkill /f /im python.exe` 실행. (잠김 현상 방지를 위해 권한 충돌이 없도록 예외 처리된 PowerShell `try-catch` 구문 적용)
 2. **📥 소스코드 다운로드**: 깃허브에서 최신 코드를 내려받음.
-3. **🔧 확장프로그램 URL 패치**: `extension/` 폴더 내의 로컬호스트 주소를 운영 도메인(`ipw.daedong.ac.kr`)으로 자동 변환.
-4. **📦 파이썬 환경 설정**: 가상환경(`venv`) 생성 및 `requirements.txt` 설치.
-5. **🔐 `.env` 주입**: 앞서 만든 `C:\actions-runner\.env` 파일을 백엔드로 복사.
-6. **⚛️ 프론트엔드 빌드**: 학생용(`student-web`) 및 교직원용(`frontend`) 앱 빌드.
-7. **🌐 Nginx 설정 자동 업데이트**: 저장소의 `nginx/nginx.conf`를 서버 `C:\nginx\conf\nginx.conf`로 복사하고 Nginx 재시작(`nginx -s reload`).
-8. **🚀 백엔드 PM2 시작**: `pm2 start main.py` 로 서비스 재가동.
+3. **📦 파이썬 환경 설정**: 가상환경(`venv`) 생성 및 `requirements.txt` 설치.
+4. **🔐 `.env` 주입**: 앞서 만든 `C:\actions-runner\.env` 파일을 백엔드로 복사.
+5. **⚛️ 프론트엔드 빌드**: 학생용(`student-web`) 및 교직원용(`frontend`) 앱 빌드.
+6. **🌐 Nginx 설정 자동 업데이트**: 저장소의 `nginx/nginx.conf`를 서버 `C:\tools\nginx-1.31.2\conf\nginx.conf`로 복사하고 Nginx 재시작(`nginx -s reload`). (※ SSL 인증서 폴더인 `ssl/`은 깃허브에 올라가지 않으므로, 최초 1회는 서버에 수동으로 복사되어 있어야 함)
+7. **🚀 백엔드 PM2 시작**: `pm2 start main.py` 로 서비스 재가동.
 
 ---
 
