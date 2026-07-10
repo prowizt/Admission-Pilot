@@ -354,7 +354,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
                     </div>
                   </div>
                   <div>
-                    <label className={labelClass}>파일 첨부 (PDF) *</label>
+                    <label className={labelClass}>파일 첨부 (PDF, Excel) *</label>
                     {isEditMode ? (
                       <div className="w-full border border-gray-200 bg-gray-50 rounded-lg p-3 text-center">
                         <FileText size={20} className="mx-auto mb-2 text-gray-400" />
@@ -363,9 +363,9 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
                       </div>
                     ) : (
                       <div onClick={() => fileInputRef.current?.click()} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} className={`w-full border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${selectedFile || isDragging ? 'border-indigo-400 bg-indigo-50' : 'border-gray-300 hover:bg-gray-50'}`}>
-                        <input type="file" accept=".pdf" className="hidden" ref={fileInputRef} onChange={handleFileChange} />
+                        <input type="file" accept=".pdf,.xlsx" className="hidden" ref={fileInputRef} onChange={handleFileChange} />
                         <Upload size={20} className={`mx-auto mb-2 ${selectedFile ? 'text-indigo-600' : 'text-gray-400'}`} />
-                        {selectedFile ? <p className="text-xs font-bold text-indigo-700 truncate">{selectedFile.name}</p> : <p className="text-xs text-gray-500 font-medium">여기를 클릭하거나 PDF 파일을 끌어다 놓으세요.</p>}
+                        {selectedFile ? <p className="text-xs font-bold text-indigo-700 truncate">{selectedFile.name}</p> : <p className="text-xs text-gray-500 font-medium">여기를 클릭하거나 PDF, 엑셀(.xlsx) 파일을 끌어다 놓으세요.</p>}
                       </div>
                     )}
                   </div>

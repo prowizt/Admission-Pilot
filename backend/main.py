@@ -351,23 +351,53 @@ async def upload_knowledge(
     """
     if doc_type not in ["rule", "reference"]:
         raise HTTPException(status_code=400, detail="doc_type은 'rule' 또는 'reference'여야 합니다.")
-    if not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="현재는 PDF 파일만 지원합니다.")
+    if not (file.filename.lower().endswith('.pdf') or file.filename.lower().endswith('.xlsx')):
+        raise HTTPException(status_code=400, detail="현재는 PDF 및 Excel(.xlsx) 파일만 지원합니다.")
 
-    # 1. PDF 텍스트 및 표 추출
+    # 1. 텍스트 및 표 추출
     try:
         content = await file.read()
         extracted_text = ""
-        with pdfplumber.open(io.BytesIO(content)) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text: extracted_text += page_text + "\n"
-                tables = page.extract_tables()
-                if tables:
-                    for table in tables:
-                        extracted_text += table_to_markdown(table)
+        filename_lower = file.filename.lower()
+        
+        if filename_lower.endswith('.pdf'):
+            with pdfplumber.open(io.BytesIO(content)) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text: extracted_text += page_text + "\n"
+                    tables = page.extract_tables()
+                    if tables:
+                        for table in tables:
+                            extracted_text += table_to_markdown(table)
+        elif filename_lower.endswith('.xlsx'):
+            import openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+            sheet = wb.worksheets[0]
+            
+            max_row = sheet.max_row
+            max_col = sheet.max_column
+            
+            grid = [[None for _ in range(max_col)] for _ in range(max_row)]
+            for row in range(max_row):
+                for col in range(max_col):
+                    val = sheet.cell(row=row+1, column=col+1).value
+                    if isinstance(val, str):
+                        val = val.replace('\n', ' ').strip()
+                    grid[row][col] = val
+                    
+            # 병합된 셀(merged cells) 처리: 병합된 영역 내 모든 셀에 좌상단 값 복사 (Flatten)
+            for merged_range in sheet.merged_cells.ranges:
+                min_col, min_row, max_col_merged, max_row_merged = merged_range.bounds
+                top_left_value = grid[min_row-1][min_col-1]
+                
+                for r in range(min_row-1, max_row_merged):
+                    for c in range(min_col-1, max_col_merged):
+                        grid[r][c] = top_left_value
+                        
+            extracted_text = table_to_markdown(grid)
+            
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"PDF 파싱 오류: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"문서 파싱 오류: {str(e)}")
 
     if not extracted_text.strip():
         raise HTTPException(status_code=400, detail="텍스트 추출 불가 (이미지 PDF 등)")
@@ -1071,7 +1101,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         3. **[ai_description 준수]** 컬럼 설명(`ai_description`)에 가능한 코드값이나 텍스트 형태(예: '합격자(최종아님),최종등록자(최종합격자)')가 콤마로 나열되어 있다면, 이를 실제 DB에 저장된 데이터 명칭으로 인지하십시오. 문자열 비교 조건절(WHERE)을 작성할 때 텍스트를 자의적으로 단축하거나 가공(예: 괄호 제거 등)하지 말고 카탈로그에 명시된 문자열 그대로(예: `[최종입시결과] = '최종등록자(최종합격자)'`, `[정원내외명] = '정원외'`) 매칭하여 쿼리를 작성하십시오.
         4. 문자열 조건은 무조건 `=` 대신 `LIKE`를 사용하되, 사용자의 단어에서 핵심 형태소만 짧게 잘라서 검색해! (단, 3번 규칙에 따라 콤마로 나열된 고유값이 확실하고 정밀 비교가 필요한 경우는 `=`로 완전히 일치시키세요. **또한 LIKE '%...%' 구문 안에 절대로 띄어쓰기나 공백을 자의적으로 넣지 마세요.** 예: '%경 남%' 불가, '%경남%' 정상)
         5. 통계나 숫자를 물어보면 무조건 `COUNT()`, `SUM()` 같은 집계 함수를 사용해!
-        6. 목록을 물어볼 때는 데이터 폭발 방지를 위해 `SELECT TOP 30 * FROM ...` 처럼 TOP 제한을 걸어!
+        6. 목록을 물어볼 때는 데이터 폭발 방지를 위해 `SELECT TOP 300 * FROM ...` 처럼 TOP 제한을 걸어!
         7. **[학년도 강제]** 질문에 특정 연도/학년도가 포함되어 있다면 반드시 `WHERE [입시학년도] = '2026'` 과 같이 학년도 조건을 추가해!
         8. **[스크랩/첨부 문서 데이터 구조 분석 및 쿼리 매핑 규칙]**:
            - 사용자가 제시한 `[질문]` 하단에는 스크랩되거나 첨부된 문서의 표 내용(예: 학과명, 지원인원, 최종등록자수, 정원내외구분, 신입편입여부 등)이 포함되어 있습니다.
@@ -1837,10 +1867,15 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 full_text = ""
                 try:
                     for chunk in response:
-                        if chunk.text:
-                            full_text += chunk.text
-                            # 프론트엔드로 조각 즉시 방출
-                            yield f"data: {json.dumps({'chunk': chunk.text}, ensure_ascii=False)}\n\n"
+                        try:
+                            text = chunk.text
+                            if text:
+                                full_text += text
+                                # 프론트엔드로 조각 즉시 방출
+                                yield f"data: {json.dumps({'chunk': text}, ensure_ascii=False)}\n\n"
+                        except ValueError:
+                            # 마지막 청크 등 텍스트 파트가 없는 경우(finish_reason=1) 무시
+                            continue
                     
                     time_final_end = time.time()
                     print(f"⏱️ 최종 AI 답변 소요 시간 (스트리밍 완료): {time_final_end - time_db_end:.2f}초")

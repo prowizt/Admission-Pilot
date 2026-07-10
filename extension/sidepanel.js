@@ -752,24 +752,61 @@ btnScrap.addEventListener('click', async () => {
         const rows = table.querySelectorAll('tr');
         if (rows.length === 0) return;
 
+        // 가상 격자(2D Grid) 생성
+        const grid = [];
+        
         rows.forEach((row, rowIndex) => {
           const cells = row.querySelectorAll('th, td');
-          if (cells.length === 0) return;
-
-          let rowText = '|';
+          if (!grid[rowIndex]) grid[rowIndex] = [];
+          
+          let colIndex = 0;
           cells.forEach(cell => {
-            let cellText = cell.innerText.replace(/\s+/g, ' ').trim();
-            rowText += ` ${cellText} |`;
+             // 현재 행에서 빈 셀 찾기 (이전 행의 rowspan으로 인해 이미 채워져 있을 수 있음)
+             while (grid[rowIndex][colIndex] !== undefined) {
+                 colIndex++;
+             }
+             
+             let cellText = cell.innerText.replace(/\s+/g, ' ').trim();
+             const rowspan = parseInt(cell.getAttribute('rowspan')) || 1;
+             const colspan = parseInt(cell.getAttribute('colspan')) || 1;
+             
+             // [안전장치] HTML 코딩 오류(rowspan 초과) 방어: 부모 섹션(thead, tbody 등)의 경계를 넘지 못하게 차단
+             const parentSection = cell.closest('thead, tbody, tfoot') || table;
+             const sectionRows = Array.from(parentSection.children).filter(child => child.tagName === 'TR');
+             const sectionRowIndex = sectionRows.indexOf(row);
+             // 현재 셀이 속한 섹션에서 아래로 남은 실제 줄 수까지만 병합 허용
+             const maxRowspan = sectionRowIndex >= 0 ? Math.min(rowspan, sectionRows.length - sectionRowIndex) : rowspan;
+             
+             // 병합된 범위만큼 격자에 텍스트 반복 채우기 (AI 문맥 인지용)
+             for (let r = 0; r < maxRowspan; r++) {
+                 for (let c = 0; c < colspan; c++) {
+                     if (!grid[rowIndex + r]) grid[rowIndex + r] = [];
+                     grid[rowIndex + r][colIndex + c] = cellText;
+                 }
+             }
+             colIndex += colspan;
           });
-          markdownTable += rowText + '\n';
-
-          if (rowIndex === 0 && rows.length > 1) {
-            let separator = '|';
-            cells.forEach(() => {
-              separator += ' --- |';
-            });
-            markdownTable += separator + '\n';
-          }
+        });
+        
+        // 격자(Grid)를 마크다운 표로 변환
+        grid.forEach((rowArray, rIdx) => {
+           let rowText = '|';
+           // 배열의 빈 요소가 생길 수 있으므로 최대 길이를 구함
+           const maxCols = rowArray.length;
+           for (let i = 0; i < maxCols; i++) {
+               const text = rowArray[i] || '';
+               rowText += ` ${text} |`;
+           }
+           markdownTable += rowText + '\n';
+           
+           // 헤더 구분선 추가
+           if (rIdx === 0 && grid.length > 1) {
+               let separator = '|';
+               for (let i = 0; i < maxCols; i++) {
+                   separator += ' --- |';
+               }
+               markdownTable += separator + '\n';
+           }
         });
         markdownTable += '\n';
 
