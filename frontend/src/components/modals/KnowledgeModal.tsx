@@ -77,8 +77,12 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
 
   const processFile = (file: File) => {
     if (activeTab === 'documents') {
-      if (file.type === "application/pdf" || file.name.toLowerCase().endsWith('.pdf')) setSelectedFile(file);
-      else CustomSwal.fire({ icon: 'error', title: '형식 오류', text: 'PDF 파일만 첨부 가능합니다.' });
+      const fileExt = file.name.toLowerCase();
+      if (file.type === "application/pdf" || fileExt.endsWith('.pdf') || fileExt.endsWith('.xlsx') || fileExt.endsWith('.xls') || file.type.includes('spreadsheetml') || file.type.includes('excel')) {
+        setSelectedFile(file);
+      } else {
+        CustomSwal.fire({ icon: 'error', title: '형식 오류', text: 'PDF 또는 엑셀(.xlsx) 파일만 첨부 가능합니다.' });
+      }
     } else {
       if (file.name.toLowerCase().match(/\.(xlsx|xls)$/)) {
         setSelectedFile(file);
@@ -279,7 +283,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
   const handleBeforeSubmit = () => {
     if (activeTab === 'documents') {
       if (!formData.title.trim()) return CustomSwal.fire({ icon: 'warning', title: '입력 누락', text: '문서 제목을 입력해주세요.' });
-      if (!isEditMode && !selectedFile) return CustomSwal.fire({ icon: 'warning', title: '파일 누락', text: 'PDF 파일을 첨부해주세요.' });
+      if (!isEditMode && !selectedFile) return CustomSwal.fire({ icon: 'warning', title: '파일 누락', text: 'PDF 또는 엑셀 파일을 첨부해주세요.' });
     } else if (activeTab === 'knowledge') {
       if (!formData.category.trim()) return CustomSwal.fire({ icon: 'warning', title: '입력 누락', text: '지식 분류를 선택해주세요.' });
       if (!formData.content.trim()) return CustomSwal.fire({ icon: 'warning', title: '입력 누락', text: '지식 내용을 입력해주세요.' });
@@ -303,7 +307,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
           <h3 className="font-bold text-sm tracking-wide flex items-center gap-1.5">
             {activeTab === 'documents' ? <FileText size={18} /> : (activeTab === 'knowledge' ? <ShieldHalf size={18} /> : <Database size={18} />)}
             {activeTab === 'documents' 
-              ? `비정형 문서(PDF) ${isEditMode ? '수정' : '등록'}` 
+              ? `지식 문서(PDF/Excel) ${isEditMode ? '수정' : '등록'}` 
               : activeTab === 'knowledge'
                 ? `실시간 보완 지식 ${isEditMode ? '수정' : '등록'}`
                 : `정형 데이터 ${isEditMode ? '상세설정' : '연동'}`
