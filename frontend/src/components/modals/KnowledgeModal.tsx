@@ -471,7 +471,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
               {activeTab !== 'knowledge' && (
                 <div>
                   <label className={labelClass}>AI 및 관리자용 테이블 설명 (힌트)</label>
-                  <textarea rows={2} value={formData.description} onChange={e => setFormData({ ...formData, description: e.target.value })} className={`${inputClass} resize-none`} placeholder="AI가 문맥을 파악할 수 있는 설명을 적어주세요." />
+                  <textarea rows={4} value={formData.description} onChange={e => setFormData({ ...formData, description: e.target.value })} className={`${inputClass} resize-none`} placeholder="AI가 문맥을 파악할 수 있는 설명을 적어주세요." />
                 </div>
               )}
 

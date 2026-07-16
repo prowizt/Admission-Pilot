@@ -289,10 +289,10 @@ export default function Dashboard() {
                   <table className="w-full text-left border-collapse min-w-[600px]">
                     <thead>
                       <tr className="bg-slate-100 border-b border-slate-300">
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">권한</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-20 text-center">유형</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-20 text-center">연도</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700">문서 제목</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">권한</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">등록일</th>
                       </tr>
                     </thead>
@@ -302,6 +302,13 @@ export default function Dashboard() {
                       ) : (
                         paginatedDocuments.map(doc => (
                           <tr key={doc.doc_id} onClick={() => { setSelectedDoc(doc); setIsModalOpen(true); }} className="border-b border-gray-100 hover:bg-indigo-50/30 transition-colors cursor-pointer group">
+                            <td className="px-4 py-4 text-center whitespace-nowrap">
+                              {doc.is_public === 'Y' ? (
+                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded whitespace-nowrap"><Globe size={12}/> 대외공개</span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded whitespace-nowrap"><Lock size={12}/> 직원전용</span>
+                              )}
+                            </td>
                             <td className="px-4 py-4 min-w-0 text-center whitespace-nowrap">
                               <span className={`text-[10px] px-2 py-1 rounded font-bold inline-block ${(doc.doc_type || '').toLowerCase() === 'rule' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
                                 {(doc.doc_type || 'UNKNOWN').toUpperCase()}
@@ -312,18 +319,11 @@ export default function Dashboard() {
                             </td>
                             <td className="px-4 py-4 min-w-0">
                               <div className="flex items-center gap-2">
-                                <div className="font-bold text-gray-800 text-sm truncate">{doc.title}</div>
+                                <div className={`font-bold text-sm truncate ${doc.is_public === 'Y' ? 'text-emerald-700' : 'text-gray-800'}`}>{doc.title}</div>
                                 <button onClick={(e) => { e.stopPropagation(); handlePreview(doc.doc_type, doc.doc_id, doc.title); }} className="px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded text-[10px] font-bold hover:bg-indigo-100 flex items-center gap-1 whitespace-nowrap shrink-0">
                                   <Eye size={10} /> 본문
                                 </button>
                               </div>
-                            </td>
-                            <td className="px-4 py-4 text-center whitespace-nowrap">
-                              {doc.is_public === 'Y' ? (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded whitespace-nowrap"><Globe size={12}/> 대외공개</span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded whitespace-nowrap"><Lock size={12}/> 직원전용</span>
-                              )}
                             </td>
                             <td className="px-4 py-4 text-center text-[11px] text-gray-500 font-mono whitespace-nowrap">
                               {doc.uploaded_at}
@@ -357,7 +357,7 @@ export default function Dashboard() {
                           <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold shrink-0 ${(doc.doc_type || '').toLowerCase() === 'rule' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
                             {(doc.doc_type || 'UNKNOWN').toUpperCase()}
                           </span>
-                          <span className="font-bold text-gray-800 text-sm truncate">{doc.title}</span>
+                          <span className={`font-bold text-sm truncate ${doc.is_public === 'Y' ? 'text-emerald-700' : 'text-gray-800'}`}>{doc.title}</span>
                         </div>
                       </div>
                       <div className="text-[11px] text-gray-500 truncate mt-0.5">{doc.description}</div>
@@ -387,10 +387,10 @@ export default function Dashboard() {
                   <table className="w-full text-left border-collapse min-w-[600px]">
                     <thead>
                       <tr className="bg-slate-100 border-b border-slate-300">
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">권한</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-24">출처</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-1/3">데이터명 (View/Table 명)</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700">AI 참조 설명 (Hint)</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">권한</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">연동일</th>
                       </tr>
                     </thead>
@@ -400,22 +400,22 @@ export default function Dashboard() {
                       ) : (
                         paginatedTables.map(table => (
                           <tr key={table.table_name} onClick={() => { setSelectedDoc(table); setIsModalOpen(true); }} className="border-b border-gray-100 hover:bg-indigo-50/30 transition-colors cursor-pointer group">
+                            <td className="px-4 py-3 text-center whitespace-nowrap">
+                              {table.is_public === 'Y' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded whitespace-nowrap"><Globe size={12}/> 전체공개</span>}
+                              {table.is_public === 'P' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded whitespace-nowrap"><ShieldHalf size={12}/> 부분공개</span>}
+                              {table.is_public === 'N' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded whitespace-nowrap"><Lock size={12}/> 직원전용</span>}
+                            </td>
                             <td className="px-4 py-3 min-w-0 text-center">
                               <span className={`text-[10px] px-2 py-1 rounded font-bold block ${table.db_source === 'INTERNAL' ? 'bg-orange-50 text-orange-600' : 'bg-teal-50 text-teal-600'}`}>
                                 {table.db_source === 'INTERNAL' ? '내부(엑셀)' : '종합학사'}
                               </span>
                             </td>
                             <td className="px-4 py-3 min-w-0">
-                              <div className="font-bold text-gray-800 text-sm truncate">{table.table_name_kr}</div>
+                              <div className={`font-bold text-sm truncate ${table.is_public === 'Y' ? 'text-emerald-700' : 'text-gray-800'}`}>{table.table_name_kr}</div>
                               <div className="text-[11px] text-gray-400 truncate mt-0.5">{table.table_name}</div>
                             </td>
                             <td className="px-4 py-3 min-w-0">
                               <p className="text-[11px] text-gray-500 truncate max-w-sm" title={table.description}>{table.description}</p>
-                            </td>
-                            <td className="px-4 py-3 text-center whitespace-nowrap">
-                              {table.is_public === 'Y' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded whitespace-nowrap"><Globe size={12}/> 전체공개</span>}
-                              {table.is_public === 'P' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded whitespace-nowrap"><ShieldHalf size={12}/> 부분공개</span>}
-                              {table.is_public === 'N' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded whitespace-nowrap"><Lock size={12}/> 직원전용</span>}
                             </td>
                             <td className="px-4 py-3 text-center text-[11px] text-gray-500 font-mono whitespace-nowrap">
                               {table.created_at}
@@ -449,7 +449,7 @@ export default function Dashboard() {
                           <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold shrink-0 ${table.db_source === 'INTERNAL' ? 'bg-orange-50 text-orange-600' : 'bg-teal-50 text-teal-600'}`}>
                             {table.db_source === 'INTERNAL' ? '엑셀' : '종합학사'}
                           </span>
-                          <span className="font-bold text-gray-800 text-sm truncate">{table.table_name_kr}</span>
+                          <span className={`font-bold text-sm truncate ${table.is_public === 'Y' ? 'text-emerald-700' : 'text-gray-800'}`}>{table.table_name_kr}</span>
                         </div>
                       </div>
                       <div className="text-[11px] text-gray-500 truncate mt-0.5">{table.description}</div>

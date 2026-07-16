@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import axios from 'axios';
-import { Activity, BrainCircuit, MessageSquare, Database, Sparkles, AlertTriangle, Clock, RefreshCw, ChevronRight, X, TerminalSquare, BookOpen, Key, ChevronLeft, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { Activity, BrainCircuit, MessageSquare, Database, Sparkles, AlertTriangle, Clock, RefreshCw, ChevronRight, X, TerminalSquare, BookOpen, Key, ChevronLeft, ThumbsUp, ThumbsDown, Copy, Check } from 'lucide-react';
 
 const formatLatency = (ms: number | undefined) => {
   if (!ms) return '-';
@@ -21,6 +21,8 @@ export default function Logs() {
   const [analytics, setAnalytics] = useState<any>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [selectedLog, setSelectedLog] = useState<any>(null);
+  const [copiedScrap, setCopiedScrap] = useState(false);
+  const [copiedAll, setCopiedAll] = useState(false);
 
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
@@ -482,27 +484,94 @@ export default function Logs() {
                 <TerminalSquare size={18} className="text-indigo-400" />
                 로그 상세 (ID: #{selectedLog.id})
               </h3>
-              <button onClick={() => setSelectedLog(null)} className="p-1.5 hover:bg-white/20 rounded-md transition-colors">
-                <X size={18} />
-              </button>
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={() => {
+                    const text = `[Log ID: #${selectedLog.id}]
+Question: ${selectedLog.question || ''}
+Answer: ${selectedLog.answer || ''}
+
+[Performance]
+Total Latency: ${formatLatency(selectedLog.latency_ms)}
+Router AI: ${formatLatency(selectedLog.router_latency_ms)}
+DB/RAG: ${formatLatency(selectedLog.db_latency_ms)}
+Final Chatbot AI: ${formatLatency(selectedLog.chat_latency_ms)}
+
+[Models & Tokens]
+Final Model: ${selectedLog.model_name || ''} (In: ${selectedLog.chat_in_tokens || 0}, Out: ${selectedLog.chat_out_tokens || 0})
+Router Model: ${selectedLog.router_model_name || ''} (In: ${selectedLog.router_in_tokens || 0}, Out: ${selectedLog.router_out_tokens || 0})
+Total Tokens: ${selectedLog.total_tokens || 0}
+Estimated Cost: ₩${selectedLog.estimated_cost || 0}
+
+[RAG & SQL Context]
+SQL Query:
+${selectedLog.sql_query || 'NONE'}
+
+RAG Query:
+${selectedLog.rag_query || 'NONE'}
+
+RAG Documents:
+${selectedLog.rag_documents || 'NONE'}
+
+Scraped Context:
+${selectedLog.scraped_context || 'NONE'}`;
+                    
+                    navigator.clipboard.writeText(text);
+                    setCopiedAll(true);
+                    setTimeout(() => setCopiedAll(false), 2000);
+                  }}
+                  className="px-3 py-1.5 bg-indigo-800 hover:bg-indigo-700 border border-indigo-700 rounded-md text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm"
+                  title="전체 로그 내용을 클립보드에 복사합니다"
+                >
+                  {copiedAll ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} className="text-indigo-200" />}
+                  {copiedAll ? '복사 완료' : '전체 복사'}
+                </button>
+                <div className="w-px h-4 bg-indigo-700/50 mx-1"></div>
+                <button onClick={() => setSelectedLog(null)} className="p-1.5 hover:bg-white/20 rounded-md transition-colors" title="닫기">
+                  <X size={18} />
+                </button>
+              </div>
             </div>
             
             <div className="p-4 sm:p-6 overflow-y-auto space-y-6 flex-1 min-h-0 bg-slate-50 custom-scrollbar">
               
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center gap-3">
-                  <div className="p-2 bg-indigo-50 text-indigo-500 rounded-lg"><Clock size={20}/></div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {/* 1. 일시 및 전체 소요시간 (Left, 1 column) */}
+                <div className="bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-center gap-3 relative overflow-hidden">
+                  <div className="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div>
+                  <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                    <Clock size={14} className="text-indigo-500" /> 일시 및 총 소요시간
+                  </div>
                   <div>
-                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">일시 및 성능</div>
-                    <div className="font-bold text-slate-700 text-sm">{selectedLog.created_at} <span className="text-indigo-600 text-xs ml-1 font-medium">({formatLatency(selectedLog.latency_ms)} 소요)</span></div>
+                    <div className="font-bold text-slate-700 text-xs sm:text-sm mb-1">{selectedLog.created_at}</div>
+                    <div className="text-indigo-600 text-sm font-bold">총 {formatLatency(selectedLog.latency_ms)} 소요</div>
                   </div>
                 </div>
-                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center gap-3">
-                  <div className="p-2 bg-purple-50 text-purple-500 rounded-lg"><BrainCircuit size={20}/></div>
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">사용 모델</div>
-                    <div className="font-bold text-slate-700 text-sm truncate">{selectedLog.model_name}</div>
+
+                {/* 2. 구간별 세부 소요시간 분석 (Right, 2 columns) */}
+                <div className="md:col-span-2 bg-white p-4 sm:p-5 rounded-xl border border-slate-200 shadow-sm relative overflow-hidden flex flex-col justify-center">
+                  <div className="absolute top-0 right-0 w-1 h-full bg-blue-500"></div>
+                  <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+                    <Activity size={14} className="text-blue-500" /> 구간별 세부 소요시간 분석
                   </div>
+                  {(selectedLog.router_latency_ms != null || selectedLog.db_latency_ms != null || selectedLog.chat_latency_ms != null) ? (
+                    <div className="grid grid-cols-3 gap-2 sm:gap-4">
+                      <div className="flex flex-col">
+                        <span className="text-[10px] sm:text-xs text-slate-500 mb-1">라우터 AI 검토</span>
+                        <span className="font-bold text-slate-700 text-xs sm:text-sm">{selectedLog.router_latency_ms != null ? formatLatency(selectedLog.router_latency_ms) : '-'}</span>
+                      </div>
+                      <div className="flex flex-col border-l border-slate-100 pl-3 sm:pl-4">
+                        <span className="text-[10px] sm:text-xs text-slate-500 mb-1">DB / RAG 검색</span>
+                        <span className="font-bold text-slate-700 text-xs sm:text-sm">{selectedLog.db_latency_ms != null ? formatLatency(selectedLog.db_latency_ms) : '-'}</span>
+                      </div>
+                      <div className="flex flex-col border-l border-slate-100 pl-3 sm:pl-4">
+                        <span className="text-[10px] sm:text-xs text-slate-500 mb-1">최종 답변 생성</span>
+                        <span className="font-bold text-slate-700 text-xs sm:text-sm">{selectedLog.chat_latency_ms != null ? formatLatency(selectedLog.chat_latency_ms) : '-'}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-slate-400 font-medium">이전 로그 데이터는 세부 소요시간 기록이 제공되지 않습니다.</div>
+                  )}
                 </div>
               </div>
               
@@ -513,19 +582,13 @@ export default function Logs() {
                     <div className="font-bold text-indigo-600 text-xl">{selectedLog.total_tokens.toLocaleString()} <span className="text-sm text-slate-500 font-medium">Tokens</span></div>
                     <div className="text-xs text-slate-500 font-bold mt-1">약 {Number(selectedLog.estimated_cost).toFixed(2)}원 과금됨</div>
                   </div>
-                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 truncate" title={selectedLog.model_name}>최종 챗봇 AI ({selectedLog.model_name})</div>
-                    <div className="flex justify-between items-center text-sm mb-1">
-                      <span className="text-slate-500">입력 토큰:</span>
-                      <span className="font-bold text-slate-700">{selectedLog.chat_in_tokens?.toLocaleString() || 0}</span>
+                  <div className={`bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-center ${!selectedLog.router_model_name || selectedLog.router_model_name === 'NONE' ? 'opacity-50' : ''}`}>
+                    <div className="text-sm font-extrabold text-blue-600 uppercase tracking-wider mb-2 truncate flex items-center flex-wrap gap-1" title={selectedLog.router_model_name || 'NONE'}>
+                      라우터 AI 
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200 tracking-normal">
+                        {selectedLog.router_model_name || '사용 안함'}
+                      </span>
                     </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-slate-500">출력 토큰:</span>
-                      <span className="font-bold text-slate-700">{selectedLog.chat_out_tokens?.toLocaleString() || 0}</span>
-                    </div>
-                  </div>
-                  <div className={`bg-white p-4 rounded-xl border border-slate-200 shadow-sm ${!selectedLog.router_model_name || selectedLog.router_model_name === 'NONE' ? 'opacity-50' : ''}`}>
-                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 truncate" title={selectedLog.router_model_name || 'NONE'}>라우터 AI ({selectedLog.router_model_name || '사용 안함'})</div>
                     <div className="flex justify-between items-center text-sm mb-1">
                       <span className="text-slate-500">입력 토큰:</span>
                       <span className="font-bold text-slate-700">{selectedLog.router_in_tokens?.toLocaleString() || 0}</span>
@@ -533,6 +596,22 @@ export default function Logs() {
                     <div className="flex justify-between items-center text-sm">
                       <span className="text-slate-500">출력 토큰:</span>
                       <span className="font-bold text-slate-700">{selectedLog.router_out_tokens?.toLocaleString() || 0}</span>
+                    </div>
+                  </div>
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-center">
+                    <div className="text-sm font-extrabold text-indigo-600 uppercase tracking-wider mb-2 truncate flex items-center flex-wrap gap-1" title={selectedLog.model_name}>
+                      최종 챗봇 AI 
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 tracking-normal">
+                        {selectedLog.model_name}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center text-sm mb-1">
+                      <span className="text-slate-500">입력 토큰:</span>
+                      <span className="font-bold text-slate-700">{selectedLog.chat_in_tokens?.toLocaleString() || 0}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-slate-500">출력 토큰:</span>
+                      <span className="font-bold text-slate-700">{selectedLog.chat_out_tokens?.toLocaleString() || 0}</span>
                     </div>
                   </div>
                 </div>
@@ -544,16 +623,70 @@ export default function Logs() {
                 </h4>
                 <p className="text-slate-800 whitespace-pre-wrap text-sm leading-relaxed font-medium">{selectedLog.question}</p>
                 {selectedLog.scraped_context && (
-                  <div className="mt-4 p-3 bg-slate-50 rounded-lg text-xs border border-slate-100">
-                    <div className="font-bold text-slate-500 mb-1">참고용 스크랩 원문</div>
+                  <div className="mt-4 p-3 bg-slate-50 rounded-lg text-xs border border-slate-100 group relative">
+                    <div className="flex justify-between items-center mb-1">
+                      <div className="font-bold text-slate-500">참고용 스크랩 원문</div>
+                      <button 
+                        onClick={() => { 
+                          navigator.clipboard.writeText(selectedLog.scraped_context); 
+                          setCopiedScrap(true); 
+                          setTimeout(() => setCopiedScrap(false), 2000); 
+                        }} 
+                        className="text-slate-500 hover:text-indigo-600 transition-colors p-1 bg-white rounded shadow-sm border border-slate-200 flex items-center gap-1"
+                        title="원문 복사하기"
+                      >
+                        {copiedScrap ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+                        <span className="text-[10px] font-bold">{copiedScrap ? '복사됨' : '복사'}</span>
+                      </button>
+                    </div>
                     <p className="text-slate-600 line-clamp-3 leading-relaxed" title={selectedLog.scraped_context}>{selectedLog.scraped_context}</p>
                   </div>
                 )}
               </div>
 
-              {(selectedLog.sql_query && selectedLog.sql_query !== 'NONE') || (selectedLog.rag_query && selectedLog.rag_query !== 'NONE') ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {selectedLog.sql_query && selectedLog.sql_query !== 'NONE' && (
+              {(() => {
+                const hasSql = selectedLog.sql_query && selectedLog.sql_query !== 'NONE';
+                const hasRag = selectedLog.rag_query && selectedLog.rag_query !== 'NONE';
+
+                if (hasSql && hasRag) {
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="bg-[#1e1e2e] p-5 rounded-xl shadow-inner overflow-hidden flex flex-col">
+                        <h4 className="font-bold text-blue-400 mb-3 flex items-center gap-2 text-sm">
+                          <Database size={16} /> 추출된 T-SQL 쿼리
+                        </h4>
+                        <div className="flex-1 overflow-auto custom-scrollbar">
+                          <pre className="text-[#a6accd] text-xs whitespace-pre-wrap font-mono">
+                            {selectedLog.sql_query}
+                          </pre>
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-4">
+                        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col h-full">
+                          <h4 className="font-bold text-emerald-600 mb-3 flex items-center gap-2 text-sm">
+                            <BookOpen size={16} /> RAG (문서 검색) 키워드
+                          </h4>
+                          <div className="p-3 bg-emerald-50 text-emerald-800 rounded-lg font-medium text-sm border border-emerald-100 flex-1">
+                            {selectedLog.rag_query}
+                          </div>
+                        </div>
+                        {selectedLog.rag_documents && (
+                          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col h-full">
+                            <h4 className="font-bold text-emerald-600 mb-3 flex items-center gap-2 text-sm">
+                              <BookOpen size={16} /> 참고된 PDF 문서명
+                            </h4>
+                            <div className="p-3 bg-slate-50 text-slate-700 rounded-lg font-medium text-sm border border-slate-100 whitespace-pre-wrap flex-1">
+                              {selectedLog.rag_documents}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
+
+                if (hasSql && !hasRag) {
+                  return (
                     <div className="bg-[#1e1e2e] p-5 rounded-xl shadow-inner overflow-hidden flex flex-col">
                       <h4 className="font-bold text-blue-400 mb-3 flex items-center gap-2 text-sm">
                         <Database size={16} /> 추출된 T-SQL 쿼리
@@ -564,32 +697,36 @@ export default function Logs() {
                         </pre>
                       </div>
                     </div>
-                  )}
-                  {selectedLog.rag_query && selectedLog.rag_query !== 'NONE' && (
-                    <div className="flex flex-col gap-4">
+                  );
+                }
+
+                if (!hasSql && hasRag) {
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col">
                         <h4 className="font-bold text-emerald-600 mb-3 flex items-center gap-2 text-sm">
                           <BookOpen size={16} /> RAG (문서 검색) 키워드
                         </h4>
-                        <div className="p-3 bg-emerald-50 text-emerald-800 rounded-lg font-medium text-sm border border-emerald-100">
+                        <div className="p-3 bg-emerald-50 text-emerald-800 rounded-lg font-medium text-sm border border-emerald-100 flex-1">
                           {selectedLog.rag_query}
                         </div>
                       </div>
-                      
                       {selectedLog.rag_documents && (
                         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col">
                           <h4 className="font-bold text-emerald-600 mb-3 flex items-center gap-2 text-sm">
                             <BookOpen size={16} /> 참고된 PDF 문서명
                           </h4>
-                          <div className="p-3 bg-slate-50 text-slate-700 rounded-lg font-medium text-sm border border-slate-100 whitespace-pre-wrap">
+                          <div className="p-3 bg-slate-50 text-slate-700 rounded-lg font-medium text-sm border border-slate-100 whitespace-pre-wrap flex-1">
                             {selectedLog.rag_documents}
                           </div>
                         </div>
                       )}
                     </div>
-                  )}
-                </div>
-              ) : null}
+                  );
+                }
+
+                return null;
+              })()}
 
               <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm relative overflow-hidden">
                 <h4 className="font-bold text-slate-800 mb-3 flex items-center gap-2">

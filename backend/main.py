@@ -1886,6 +1886,9 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     print(f"⏱️ 최종 AI 답변 소요 시간 (스트리밍 완료): {time_final_end - time_db_end:.2f}초")
                     
                     latency_ms = int((time.time() - start_time) * 1000)
+                    router_lat = int((time_router_end - start_time) * 1000)
+                    db_lat = int((time_db_end - time_router_end) * 1000)
+                    chat_lat = int((time_final_end - time_db_end) * 1000)
                     log_id = None
                     try:
                         # [NEW] 영수증 출력 및 토큰 데이터 확보
@@ -1903,15 +1906,15 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                                     sql_query, rag_query, answer, latency_ms,
                                     router_model_name, router_in_tokens, router_out_tokens,
                                     chat_in_tokens, chat_out_tokens, total_tokens, estimated_cost,
-                                    rag_documents
+                                    rag_documents, router_latency_ms, db_latency_ms, chat_latency_ms
                                 ) 
                                 OUTPUT INSERTED.id
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """, (
                                 safe_str(request.user_role), safe_str(request.model_name), safe_str(request.question), safe_str(request.scraped_context),
                                 safe_str(sql_query), safe_str(rag_query), safe_str(full_text), latency_ms,
                                 t_data[0], t_data[1], t_data[2], t_data[3], t_data[4], t_data[5], t_data[6],
-                                safe_str(t_data[7])
+                                safe_str(t_data[7]), router_lat, db_lat, chat_lat
                             ))
                             inserted_row = cursor.fetchone()
                             log_id = inserted_row[0] if inserted_row else None
@@ -1952,6 +1955,9 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             t_data = print_token_receipt(prompt, response.text, request.model_name, used_router_model, router_in_tokens, router_out_tokens)
             
             latency_ms = int((time.time() - start_time) * 1000)
+            router_lat = int((time_router_end - start_time) * 1000)
+            db_lat = int((time_db_end - time_router_end) * 1000)
+            chat_lat = int((time_final_end - time_db_end) * 1000)
             log_id = None
             try:
                 if conn:
@@ -1968,15 +1974,15 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                             sql_query, rag_query, answer, latency_ms,
                             router_model_name, router_in_tokens, router_out_tokens,
                             chat_in_tokens, chat_out_tokens, total_tokens, estimated_cost,
-                            rag_documents
+                            rag_documents, router_latency_ms, db_latency_ms, chat_latency_ms
                         ) 
                         OUTPUT INSERTED.id
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         safe_str(request.user_role), safe_str(request.model_name), safe_str(request.question), safe_str(request.scraped_context),
                         safe_str(sql_query), safe_str(rag_query), safe_str(response.text), latency_ms,
                         t_data[0], t_data[1], t_data[2], t_data[3], t_data[4], t_data[5], t_data[6],
-                        safe_str(t_data[7])
+                        safe_str(t_data[7]), router_lat, db_lat, chat_lat
                     ))
                     inserted_row = cursor.fetchone()
                     log_id = inserted_row[0] if inserted_row else None
@@ -2041,7 +2047,7 @@ async def get_audit_logs():
                    sql_query, rag_query, answer, latency_ms, user_feedback,
                    router_model_name, router_in_tokens, router_out_tokens,
                    chat_in_tokens, chat_out_tokens, total_tokens, estimated_cost,
-                   rag_documents,
+                   rag_documents, router_latency_ms, db_latency_ms, chat_latency_ms,
                    CONVERT(VARCHAR(19), created_at, 120) AS created_at
             FROM Sys_AIAuditLog
             ORDER BY id DESC
