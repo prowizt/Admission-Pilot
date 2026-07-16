@@ -823,7 +823,13 @@ btnScrap.addEventListener('click', async () => {
       });
 
       let text = document.body.innerText;
-
+      
+      // [개선] 전자결재 시스템 UI (이전/다음 문서) 등 불필요한 내비게이션 텍스트 제거
+      text = text.split('\n')
+                 .filter(line => !line.trim().startsWith('이전 '))
+                 .filter(line => !line.trim().startsWith('다음 '))
+                 .join('\n');
+                 
       originalPlaceholders.forEach(item => {
         if (item.parent && item.placeholder.parentNode) {
           item.parent.replaceChild(item.table, item.placeholder);

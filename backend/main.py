@@ -1174,7 +1174,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 k_content = k_action_data.get("content", "")
                 
                 # [연도 자동 보정] 사용자 질문이나 스크랩된 문서에서 4자리 연도를 모두 감지하여 RAG 필터에 자동 적용합니다.
-                all_text = (request.question or "") + " " + (request.scraped_context or "")
+                # [개선] 라우터 AI가 의도적으로 생성한 rag_query 내부의 연도도 감지 대상에 포함합니다.
+                all_text = (request.question or "") + " " + (request.scraped_context or "") + " " + (rag_query or "")
                 # 단순히 202x 형태가 아닌 '202x년', '202x학년도' 와 같이 명확한 연도 지칭만 감지 (Copyright 등 풋터 오염 방지)
                 detected_years = re.findall(r"\b(202\d)\s*(?:학년도|년도|년)", all_text)
                 
@@ -1432,8 +1433,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 if not queries:
                     queries = [chroma_query]
 
-                rule_docs_map = {}
-                ref_docs_map = {}
+                # [개선] 쿼리별 개별 수집을 위한 자료구조 초기화
+                docs_per_query = {q_idx: {} for q_idx in range(len(queries))}
 
                 # [보안 통제 및 검색 최적화] 학생인 경우, MS-SQL에서 미리 공개된 문서 목록만 가져와서 ChromaDB 검색 범위 자체를 좁힙니다.
                 public_filenames = []
@@ -1525,8 +1526,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                                 
 
                                 # 중복 제거 시 최소 distance 유지
-                                if fname not in rule_docs_map or dist < rule_docs_map[fname]["distance"]:
-                                    rule_docs_map[fname] = {"doc_text": doc_text, "meta": meta, "distance": dist}
+                                if fname not in docs_per_query[q_idx] or dist < docs_per_query[q_idx][fname]["distance"]:
+                                    docs_per_query[q_idx][fname] = {"doc_text": doc_text, "meta": meta, "distance": dist, "source": "rule"}
                 except Exception as q_err:
                     print(f"Rule DB query error: {q_err}")
 
@@ -1556,28 +1557,27 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                                     if q_clean in fname_clean or fname_clean in q_clean:
                                         dist = min(dist, 0.1)
 
-                                if fname not in ref_docs_map or dist < ref_docs_map[fname]["distance"]:
-                                    ref_docs_map[fname] = {"doc_text": doc_text, "meta": meta, "distance": dist}
+                                if fname not in docs_per_query[q_idx] or dist < docs_per_query[q_idx][fname]["distance"]:
+                                    docs_per_query[q_idx][fname] = {"doc_text": doc_text, "meta": meta, "distance": dist, "source": "ref"}
                 except Exception as q_err:
                     print(f"Reference DB query error: {q_err}")
 
-                # distance 기준 오름차순 통합 정렬 후 상위 최대 6개 추출 (Safe Limit)
-                sorted_rules = sorted(rule_docs_map.values(), key=lambda x: x["distance"])
-                sorted_refs = sorted(ref_docs_map.values(), key=lambda x: x["distance"])
-
                 # [NEW] 조회된 문서들의 관리자 힌트(description)와 공개여부(is_public)를 DB에서 가져와 맵핑
-                all_matched_files = list(set(
-                    [d["meta"].get("filename", "이름없음") for d in sorted_rules] + 
-                    [d["meta"].get("filename", "이름없음") for d in sorted_refs]
-                ))
+                # docs_per_query 에 모인 모든 파일명을 추출합니다.
+                all_raw_files = set()
+                for q_idx in range(len(queries)):
+                    for fname in docs_per_query[q_idx].keys():
+                        all_raw_files.add(fname)
+                all_raw_files_list = list(all_raw_files)
+
                 doc_hints = {}
                 public_status = {}
-                if all_matched_files:
+                if all_raw_files_list:
                     if conn:
                         try:
                             h_cursor = conn.cursor()
-                            placeholders = ",".join(["?"] * len(all_matched_files))
-                            h_cursor.execute(f"SELECT filename, description, is_public FROM Sys_DocumentCatalog WHERE filename IN ({placeholders})", all_matched_files)
+                            placeholders = ",".join(["?"] * len(all_raw_files_list))
+                            h_cursor.execute(f"SELECT filename, description, is_public FROM Sys_DocumentCatalog WHERE filename IN ({placeholders})", all_raw_files_list)
                             for r in h_cursor.fetchall():
                                 if r[1] and r[1].strip():
                                     doc_hints[r[0]] = r[1]
@@ -1588,22 +1588,45 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 time_db_end = time.time()
                 print(f"⏱️ DB 검색 및 전처리 소요 시간: {time_db_end - time_router_end:.2f}초")
 
-                # [보안 필터링] 학생 권한인 경우 비공개 문서 강제 제거
+                # [보안 통제] 학생 권한 필터링 - 비공개 문서를 RAG 컨텍스트에서 제외
                 if request.user_role == "student":
-                    sorted_rules = [d for d in sorted_rules if public_status.get(d["meta"].get("filename", ""), "N") == "Y"]
-                    sorted_refs = [d for d in sorted_refs if public_status.get(d["meta"].get("filename", ""), "N") == "Y"]
+                    for q_idx in range(len(queries)):
+                        docs_per_query[q_idx] = {
+                            fname: doc for fname, doc in docs_per_query[q_idx].items()
+                            if public_status.get(fname, "N") == "Y"
+                        }
                     print("[보안 통제] 학생 권한 필터링 - 비공개 문서를 RAG 컨텍스트에서 제외합니다.")
 
-                # [최적화] 통짜 문서 환경에 맞춰, 학생용 챗봇은 최상위 5개, 교직원용(관리자)은 7개까지만 참조하도록 토큰 소모를 방지합니다.
+                # [개선] 라운드 로빈(Round-Robin) 방식으로 각 쿼리별 1등 문서를 공평하게 선발
                 chunk_limit = 5 if request.user_role == "student" else 7
                 
-                # Rule DB와 Reference DB의 검색 결과를 통합하여 전체에서 가장 유사도가 높은 상위 N개만 추출합니다.
-                all_matched = sorted_rules + sorted_refs
-                all_matched = sorted(all_matched, key=lambda x: x["distance"])[:chunk_limit]
+                sorted_docs_per_query = {}
+                for q_idx in range(len(queries)):
+                    sorted_docs_per_query[q_idx] = sorted(docs_per_query[q_idx].values(), key=lambda x: x["distance"])
                 
-                # 다시 Rule과 Reference로 분리 (아래쪽 출력 및 포맷팅 로직 유지)
-                final_rules = [d for d in all_matched if d in sorted_rules]
-                final_refs = [d for d in all_matched if d in sorted_refs]
+                all_matched_files_set = set()
+                all_matched = []
+                max_docs_in_a_query = max([len(docs) for docs in sorted_docs_per_query.values()]) if sorted_docs_per_query else 0
+                
+                for rank in range(max_docs_in_a_query):
+                    for q_idx in range(len(queries)):
+                        if len(all_matched) >= chunk_limit:
+                            break
+                        
+                        docs = sorted_docs_per_query[q_idx]
+                        if rank < len(docs):
+                            doc = docs[rank]
+                            fname = doc["meta"].get("filename", "이름없음")
+                            if fname not in all_matched_files_set:
+                                all_matched_files_set.add(fname)
+                                all_matched.append(doc)
+                                
+                    if len(all_matched) >= chunk_limit:
+                        break
+
+                # 다시 Rule과 Reference로 분리 (아래쪽 출력 및 포맷팅 로직 호환성 유지)
+                final_rules = [d for d in all_matched if d["source"] == "rule"]
+                final_refs = [d for d in all_matched if d["source"] == "ref"]
 
                 # [터미널 검색 현황 출력 - cp949 인코딩 에러 방지를 위해 이모지 제거]
                 matched_rule_files = [d["meta"].get("filename", "이름없음") for d in final_rules]
