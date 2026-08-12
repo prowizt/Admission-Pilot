@@ -581,7 +581,8 @@ async function sendMessage() {
     const data = await response.json();
 
     if (data.status === 'success') {
-      addMessage(data.answer, false, true, data.log_id, null, data.latency_ms);
+      const finalAnswer = data.answer ? data.answer.replace(/\$\\rightarrow\$/g, '→').replace(/\\rightarrow/g, '→') : '';
+      addMessage(finalAnswer, false, true, data.log_id, null, data.latency_ms);
       
       // 엑셀 생성 결과가 있으면 다운로드 실행
       if (data.excel_base64) {

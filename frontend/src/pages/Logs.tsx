@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import axios from 'axios';
+import { format } from 'sql-formatter';
 import { Activity, BrainCircuit, MessageSquare, Database, Sparkles, AlertTriangle, Clock, RefreshCw, ChevronRight, X, TerminalSquare, BookOpen, Key, ChevronLeft, ThumbsUp, ThumbsDown, Copy, Check } from 'lucide-react';
 
 const formatLatency = (ms: number | undefined) => {
@@ -22,6 +23,7 @@ export default function Logs() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [selectedLog, setSelectedLog] = useState<any>(null);
   const [copiedScrap, setCopiedScrap] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
 
   // Pagination states
@@ -243,7 +245,9 @@ export default function Logs() {
                           </td>
                           <td className="px-4 py-3 align-middle">
                             <div className="flex flex-col gap-1">
-                              <span className="text-[11px] font-bold text-slate-700 bg-slate-100 w-fit px-1.5 py-0.5 rounded border border-slate-200">
+                              <span className={`text-[11px] font-bold w-fit px-1.5 py-0.5 rounded border ${
+                                log.user_role === 'staff' ? 'text-indigo-700 bg-indigo-50 border-indigo-200' : 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                              }`}>
                                 {log.user_role === 'staff' ? '교직원' : '수험생'}
                               </span>
                               <span className="text-[10px] text-slate-400 truncate max-w-[100px]" title={log.model_name}>
@@ -261,7 +265,7 @@ export default function Logs() {
                               </div>
                               {log.total_tokens != null && (
                                 <div className="text-[10px] text-slate-400 font-bold mt-0.5">
-                                  🪙 총 {log.total_tokens.toLocaleString()} 토큰 (약 {Number(log.estimated_cost).toFixed(2)}원)
+                                  🪙 총 {log.total_tokens.toLocaleString()} 토큰 (약 {Number(log.estimated_cost).toFixed(1)}원)
                                 </div>
                               )}
                             </div>
@@ -319,7 +323,9 @@ export default function Logs() {
                     <div key={log.id} onClick={() => setSelectedLog(log)} className="p-4 hover:bg-indigo-50/40 active:bg-indigo-50 transition-colors cursor-pointer flex flex-col gap-2">
                       <div className="flex justify-between items-center">
                         <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                            log.user_role === 'staff' ? 'text-indigo-700 bg-indigo-50 border-indigo-200' : 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                          }`}>
                             {log.user_role === 'staff' ? '교직원' : '수험생'}
                           </span>
                           <span className="text-[11px] text-slate-500 font-medium">{log.created_at}</span>
@@ -337,7 +343,7 @@ export default function Logs() {
                       </div>
                       {log.total_tokens != null && (
                         <div className="text-[10px] text-slate-500 font-bold">
-                          🪙 총 {log.total_tokens.toLocaleString()} 토큰 (약 {Number(log.estimated_cost).toFixed(2)}원)
+                          🪙 총 {log.total_tokens.toLocaleString()} 토큰 (약 {Number(log.estimated_cost).toFixed(1)}원)
                         </div>
                       )}
                       
@@ -501,7 +507,7 @@ Final Chatbot AI: ${formatLatency(selectedLog.chat_latency_ms)}
 Final Model: ${selectedLog.model_name || ''} (In: ${selectedLog.chat_in_tokens || 0}, Out: ${selectedLog.chat_out_tokens || 0})
 Router Model: ${selectedLog.router_model_name || ''} (In: ${selectedLog.router_in_tokens || 0}, Out: ${selectedLog.router_out_tokens || 0})
 Total Tokens: ${selectedLog.total_tokens || 0}
-Estimated Cost: ₩${selectedLog.estimated_cost || 0}
+Estimated Cost: ₩${selectedLog.estimated_cost ? Number(selectedLog.estimated_cost).toFixed(1) : 0}
 
 [RAG & SQL Context]
 SQL Query:
@@ -580,7 +586,7 @@ ${selectedLog.scraped_context || 'NONE'}`;
                   <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-center">
                     <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">총 소모 토큰 및 비용</div>
                     <div className="font-bold text-indigo-600 text-xl">{selectedLog.total_tokens.toLocaleString()} <span className="text-sm text-slate-500 font-medium">Tokens</span></div>
-                    <div className="text-xs text-slate-500 font-bold mt-1">약 {Number(selectedLog.estimated_cost).toFixed(2)}원 과금됨</div>
+                    <div className="text-xs text-slate-500 font-bold mt-1">약 {Number(selectedLog.estimated_cost).toFixed(1)}원 과금됨</div>
                   </div>
                   <div className={`bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-center ${!selectedLog.router_model_name || selectedLog.router_model_name === 'NONE' ? 'opacity-50' : ''}`}>
                     <div className="text-sm font-extrabold text-blue-600 uppercase tracking-wider mb-2 truncate flex items-center flex-wrap gap-1" title={selectedLog.router_model_name || 'NONE'}>
@@ -646,21 +652,48 @@ ${selectedLog.scraped_context || 'NONE'}`;
 
               {(() => {
                 const hasSql = selectedLog.sql_query && selectedLog.sql_query !== 'NONE';
-                const hasRag = selectedLog.rag_query && selectedLog.rag_query !== 'NONE';
+                const hasRag = (selectedLog.rag_query && selectedLog.rag_query !== 'NONE') || (selectedLog.rag_documents && selectedLog.rag_documents !== 'NONE');
+
+                let formattedSql = '';
+                if (hasSql) {
+                  try {
+                    formattedSql = format(selectedLog.sql_query, { language: 'tsql' });
+                  } catch (e) {
+                    formattedSql = selectedLog.sql_query;
+                  }
+                }
+
+                const renderSqlBlock = () => (
+                  <div className="bg-[#1e1e2e] p-5 rounded-xl shadow-inner overflow-hidden flex flex-col relative group h-full">
+                    <div className="flex justify-between items-center mb-3">
+                      <h4 className="font-bold text-blue-400 flex items-center gap-2 text-sm">
+                        <Database size={16} /> 추출된 T-SQL 쿼리
+                      </h4>
+                      <button 
+                        onClick={() => {
+                          navigator.clipboard.writeText(formattedSql);
+                          setCopiedSql(true);
+                          setTimeout(() => setCopiedSql(false), 2000);
+                        }}
+                        className="text-slate-400 hover:text-white transition-colors p-1.5 bg-white/5 hover:bg-white/10 rounded-md shadow-sm border border-white/10 flex items-center gap-1 opacity-0 group-hover:opacity-100 focus:opacity-100"
+                        title="SQL 복사하기"
+                      >
+                        {copiedSql ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                        <span className="text-[10px] font-bold">{copiedSql ? '복사됨' : '복사'}</span>
+                      </button>
+                    </div>
+                    <div className="flex-1 overflow-auto custom-scrollbar">
+                      <pre className="text-[#a6accd] text-xs whitespace-pre-wrap font-mono">
+                        {formattedSql}
+                      </pre>
+                    </div>
+                  </div>
+                );
 
                 if (hasSql && hasRag) {
                   return (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="bg-[#1e1e2e] p-5 rounded-xl shadow-inner overflow-hidden flex flex-col">
-                        <h4 className="font-bold text-blue-400 mb-3 flex items-center gap-2 text-sm">
-                          <Database size={16} /> 추출된 T-SQL 쿼리
-                        </h4>
-                        <div className="flex-1 overflow-auto custom-scrollbar">
-                          <pre className="text-[#a6accd] text-xs whitespace-pre-wrap font-mono">
-                            {selectedLog.sql_query}
-                          </pre>
-                        </div>
-                      </div>
+                      {renderSqlBlock()}
                       <div className="flex flex-col gap-4">
                         <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col h-full">
                           <h4 className="font-bold text-emerald-600 mb-3 flex items-center gap-2 text-sm">
@@ -686,18 +719,7 @@ ${selectedLog.scraped_context || 'NONE'}`;
                 }
 
                 if (hasSql && !hasRag) {
-                  return (
-                    <div className="bg-[#1e1e2e] p-5 rounded-xl shadow-inner overflow-hidden flex flex-col">
-                      <h4 className="font-bold text-blue-400 mb-3 flex items-center gap-2 text-sm">
-                        <Database size={16} /> 추출된 T-SQL 쿼리
-                      </h4>
-                      <div className="flex-1 overflow-auto custom-scrollbar">
-                        <pre className="text-[#a6accd] text-xs whitespace-pre-wrap font-mono">
-                          {selectedLog.sql_query}
-                        </pre>
-                      </div>
-                    </div>
-                  );
+                  return renderSqlBlock();
                 }
 
                 if (!hasSql && hasRag) {
@@ -733,7 +755,7 @@ ${selectedLog.scraped_context || 'NONE'}`;
                   <Sparkles size={16} className="text-slate-600"/> 최종 AI 답변 (Answer)
                 </h4>
                 <div className="text-slate-700 whitespace-pre-wrap text-sm leading-relaxed bg-slate-50/50 p-4 rounded-lg border border-slate-100">
-                  {selectedLog.answer}
+                  {selectedLog.answer ? selectedLog.answer.replace(/\$\\rightarrow\$/g, '→').replace(/\\rightarrow/g, '→') : ''}
                 </div>
                 
                 <div className="mt-4 flex items-center justify-end gap-2 pt-4 border-t border-slate-100">

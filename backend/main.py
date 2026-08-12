@@ -538,6 +538,10 @@ async def parse_file(file: UploadFile = File(...)):
         if not extracted_text.strip():
             raise ValueError("추출된 텍스트가 없습니다.")
             
+        # [PDF 파싱 버그 방지] PDF fake-bold(글자 겹쳐찍기)나 워터마크로 인해 동일 문자가 5번 이상 비정상 반복되는 현상 제거 (숫자 및 특수기호 제외)
+        import re
+        extracted_text = re.sub(r'([^\s\.\-_=\*~0-9])\1{4,}', r'\1', extracted_text)
+            
         safe_text = mask_personal_info(extracted_text)
         
         return {
@@ -1110,7 +1114,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
            - 만약 사용자의 질의나 스크랩 문서가 특정 데이터 대조를 요하지 않는 일반 서류이거나, 대조할 대상 데이터가 문서 내에 명시적으로 존재하지 않는다면, 불필요한 쿼리를 작성하지 말고 `sql_query`를 무조건 "NONE"으로 설정하십시오.
         9. **[구매/예산/계약 문서 감지 및 RAG 쿼리 확장 규칙]**:
            - 사용자의 [질문]이나 스크랩된 문서 내용(제목 등)에 '원인기안', '제작 계획', '구입', '품의', '지출', '계약' 등의 실무 행정/예산 집행 키워드가 감지될 경우, 명시적으로 '구매'나 '예산'이라는 단어가 없더라도 이는 100% 구매 및 예산 관련 기안문으로 간주해야 합니다.
-           - 이 경우 AI는 행정 결재선뿐만 아니라 금액 및 예산 한도의 적정성을 필수적으로 검토해야 하므로, **반드시 `rag_search_query`에 '구매예산규정, 재무회계규정' 등 사내 예산/구매 관련 핵심 규정 문서 명칭을 강제로 추가**하여 RAG 검색 풀에 포함시키십시오.
+           - 이 경우 AI는 행정 결재선뿐만 아니라 금액 및 예산 한도의 적정성을 필수적으로 검토해야 하므로, **반드시 `rag_search_query`에 '구매 규정, 예산ㆍ회계 규정, 본예산' 등 사내 예산/구매 관련 핵심 규정 문서 명칭을 강제로 추가**하여 RAG 검색 풀에 포함시키십시오.
         10. **[지역명 약어 자동 변환 규칙]**: 사용자가 질문에 '부울경'이라고 입력하면 반드시 `[출신고교시도] LIKE '%부산%' OR [출신고교시도] LIKE '%울산%' OR [출신고교시도] LIKE '%경상남도%'` 형태로 3개의 조건을 OR로 묶어서 풀어 검색하십시오. '경남', '전북', '충남' 등의 다른 지역 약어가 사용된 경우에도 DB에는 '경상남도', '전라북도', '충청남도' 등으로 정식 명칭이 저장되어 있으므로, 반드시 정식 명칭으로 변환하여 `LIKE '%경상남도%'` 형태로 검색하십시오.
 
 
@@ -1173,24 +1177,30 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 k_category = k_action_data.get("category", "기타")
                 k_content = k_action_data.get("content", "")
                 
-                # [연도 자동 보정] 사용자 질문이나 스크랩된 문서에서 4자리 연도를 모두 감지하여 RAG 필터에 자동 적용합니다.
-                # [개선] 라우터 AI가 의도적으로 생성한 rag_query 내부의 연도도 감지 대상에 포함합니다.
-                all_text = (request.question or "") + " " + (request.scraped_context or "") + " " + (rag_query or "")
-                # 단순히 202x 형태가 아닌 '202x년', '202x학년도' 와 같이 명확한 연도 지칭만 감지 (Copyright 등 풋터 오염 방지)
-                detected_years = re.findall(r"\b(202\d)\s*(?:학년도|년도|년)", all_text)
-                
-                final_years = set()
+                # [연도 자동 보정] 라우터 AI 지정 연도 + 텍스트 감지 연도를 모두 통합하여 N+1 자동 확장을 적용합니다.
+                ai_years = []
                 if isinstance(rag_year_filter, str) and rag_year_filter != "ALL":
-                    final_years.add(rag_year_filter)
+                    ai_years.append(rag_year_filter)
                 elif isinstance(rag_year_filter, list):
-                    final_years.update(rag_year_filter)
+                    ai_years.extend(rag_year_filter)
+
+                all_text = (request.question or "") + " " + (request.scraped_context or "") + " " + (rag_query or "")
+                # 단순히 202x 형태가 아닌 '202x년', '202x학년도' 와 같이 명확한 연도 지칭 및 '202x-MM-DD' 형태의 기안/결재일자 연도 감지 (Copyright 등 풋터 오염 방지)
+                detected_years = re.findall(r"\b(202\d)(?:\s*(?:학년도|년도|년)|[-./]\s*\d{1,2}\b)", all_text)
                 
-                if detected_years:
-                    final_years.update(detected_years)
+                combined_base_years = set(ai_years + detected_years)
+
+                # [NEW] 입시 도메인 특화 연도 자동 확장(+1): N년도 이벤트는 N+1학년도 규정을 적용받으므로 감지/지정된 연도의 +1 연도도 필터에 허용
+                expanded_years = set()
+                for dy in combined_base_years:
+                    expanded_years.add(dy)
+                    # [이중 확장 방지] 바로 앞 연도(Y-1)가 이미 감지되었다면, 현재 연도(Y)는 이미 앞 연도의 N+1 결과물이므로 추가 확장을 스킵합니다.
+                    if str(int(dy) - 1) not in combined_base_years:
+                        expanded_years.add(str(int(dy) + 1))
                 
-                if final_years:
-                    rag_year_filter = sorted(list(final_years))
-                    print(f"[연도 보정] 질문/스크랩 내에서 {rag_year_filter} 학년도를 감지하여 필터를 적용합니다.")
+                if expanded_years:
+                    rag_year_filter = sorted(list(expanded_years))
+                    print(f"[연도 보정] 질문/스크랩 및 AI 지정 연도를 통합/확장하여 {rag_year_filter} 학년도를 감지하여 필터를 적용합니다.")
                 else:
                     rag_year_filter = "ALL"
             except Exception as json_err:
@@ -1394,6 +1404,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         chroma_context = ""
         results_metadatas = []
         rag_documents_str = None
+        final_rules = []
+        final_refs = []
 
         # [AI 기반 스마트 라우팅 적용]
         # 스크랩 문서가 없고, AI가 카탈로그를 분석한 결과 문서 검색(RAG)이 불필요하다고 판단했다면 생략합니다.
@@ -1431,7 +1443,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 # 쉼표(,)를 기준으로 쿼리 분할
                 queries = [q.strip() for q in chroma_query.split(",") if q.strip()]
                 if not queries:
-                    queries = [chroma_query]
+                    print("=== [스마트 RAG] 검색 키워드가 비어 있어 비정형 문서(RAG) 검색을 생략합니다 ===")
+                    raise Exception("RAG 검색 쿼리가 비어 있습니다.")
 
                 # [개선] 쿼리별 개별 수집을 위한 자료구조 초기화
                 docs_per_query = {q_idx: {} for q_idx in range(len(queries))}
@@ -1503,8 +1516,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                                 # [NEW] 타겟 문서 지정 (Target Document Enforcement)
                                 if target_documents:
                                     fname_lower = fname.lower()
-                                    target_clean = [re.sub(r'[^a-zA-Z0-9가-힣]', '', t).lower() for t in target_documents]
-                                    fname_only_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', fname.replace(".pdf", "")).lower()
+                                    target_clean = [re.sub(r'[^a-zA-Z0-9가-힣]', '', re.sub(r'\.[a-zA-Z0-9]+$', '', t)).lower() for t in target_documents]
+                                    fname_only_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', re.sub(r'\.[a-zA-Z0-9]+$', '', fname)).lower()
                                     if not any((tc in fname_only_clean or fname_only_clean in tc or tc in fname_lower) for tc in target_clean):
                                         continue
                                 
@@ -1545,13 +1558,13 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                                 # [NEW] 타겟 문서 지정 (Target Document Enforcement)
                                 if target_documents:
                                     fname_lower = fname.lower()
-                                    target_clean = [re.sub(r'[^a-zA-Z0-9가-힣]', '', t).lower() for t in target_documents]
-                                    fname_only_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', fname.replace(".pdf", "")).lower()
+                                    target_clean = [re.sub(r'[^a-zA-Z0-9가-힣]', '', re.sub(r'\.[a-zA-Z0-9]+$', '', t)).lower() for t in target_documents]
+                                    fname_only_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', re.sub(r'\.[a-zA-Z0-9]+$', '', fname)).lower()
                                     if not any((tc in fname_only_clean or fname_only_clean in tc or tc in fname_lower) for tc in target_clean):
                                         continue
                                 
                                 # [보정 알고리즘] 쿼리 텍스트와 파일명 키워드 매칭 보너스 부여
-                                fname_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', fname.replace(".pdf", "")).lower()
+                                fname_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', re.sub(r'\.[a-zA-Z0-9]+$', '', fname)).lower()
                                 q_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', q_str).lower()
                                 if q_clean and fname_clean:
                                     if q_clean in fname_clean or fname_clean in q_clean:
@@ -1631,8 +1644,12 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 # [터미널 검색 현황 출력 - cp949 인코딩 에러 방지를 위해 이모지 제거]
                 matched_rule_files = [d["meta"].get("filename", "이름없음") for d in final_rules]
                 matched_ref_files = [d["meta"].get("filename", "이름없음") for d in final_refs]
-                print(f"[RAG 검색 성공] Rule DB 매칭 문서: {matched_rule_files}")
-                print(f"[RAG 검색 성공] Reference DB 매칭 문서: {matched_ref_files}")
+                print(f"[RAG 검색 성공] Rule DB 매칭 문서 ({len(matched_rule_files)}건):")
+                if matched_rule_files:
+                    print("  - " + "\n  - ".join(matched_rule_files))
+                print(f"[RAG 검색 성공] Reference DB 매칭 문서 ({len(matched_ref_files)}건):")
+                if matched_ref_files:
+                    print("  - " + "\n  - ".join(matched_ref_files))
 
                 if final_rules:
                     formatted_docs = []
@@ -1734,10 +1751,10 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 3. 표에 나와있는 경쟁률, 후보 순위, 등급 등의 팩트는 주저하지 말고 확신을 가지고 대답해.
 4. **[빠른 답변(Fail-Fast) 의무]**: 만약 위 팩트 정보들에 질문과 관련된 데이터가 존재하지 않는다면(예: 없는 기숙사를 묻는 경우 등), 절대 억지로 고민하거나 지어내지 마. 즉시 "죄송합니다. 해당 질문에 관련된 정보를 찾을 수 없습니다."라고 짧게 답변을 끝내고 즉각 종료해.
 5. **[개인정보 보호 안내 의무]**: 만약 사용자의 질문에 마스킹 처리된 개인정보(예: `010-****-7001`, `900101-1******` 등)가 포함되어 있다면, 답변의 최상단에 **'⚠️ 개인정보 보호를 위해 입력하신 정보는 시스템에 의해 안전하게 마스킹 처리되었습니다. 추가적인 개인정보 입력은 자제해 주시기 바랍니다.'** 라는 안내 문구를 반드시 포함하여 답변해.
-6. 유니코드 화살표 기호(예: →)를 사용하고, LaTeX 기호는 쓰지 마.
-7. **[정보 임의 생성 엄격 금지]**: <시스템 DB 및 규정 문서 팩트>에 명시적으로 기재되어 있지 않은 대동대학교 입학처 전화번호, 홈페이지 링크, 부서명 등을 절대로 임의로 지어내서 안내하지 마. 모르는 연락처는 아예 적지 마.
-8. 💡 **[비정형 문서 기호/단어 의미 규칙]**: 문서 표에서 하이픈(`-`) 기호는 '데이터 값이 존재하지 않음(해당 전형으로 모집하지 않음)'을 의미하여 숫자 0과 같고, 그 외 텍스트로 모집 인원이 기재되어 있다면 해당 문구의 문맥(예: 무제한 모집 등)을 그대로 반영해.
-9. 💡 **[PDF 표 병합(빈칸) 추론 지침]**: <시스템 DB 및 규정 문서 팩트>의 표에 특정 칸이 비어있다면, 절대 '0명'이나 '해당 없음'으로 단정짓지 마. PDF 문서 구조상 윗칸의 텍스트가 병합되어 생략(빈칸) 처리된 것일 확률이 매우 높으므로, 빈칸을 보면 반드시 바로 윗칸의 데이터를 그대로 상속받아 이어붙인 뒤 정확하게 답변해.
+6. **[정보 임의 생성 엄격 금지]**: <시스템 DB 및 규정 문서 팩트>에 명시적으로 기재되어 있지 않은 대동대학교 입학처 전화번호, 홈페이지 링크, 부서명 등을 절대로 임의로 지어내서 안내하지 마. 모르는 연락처는 아예 적지 마.
+7. 💡 **[비정형 문서 기호/단어 의미 규칙]**: 문서 표에서 하이픈(`-`) 기호는 '데이터 값이 존재하지 않음(해당 전형으로 모집하지 않음)'을 의미하여 숫자 0과 같고, 그 외 텍스트로 모집 인원이 기재되어 있다면 해당 문구의 문맥(예: 무제한 모집 등)을 그대로 반영해.
+8. 💡 **[PDF 표 병합(빈칸) 추론 지침]**: <시스템 DB 및 규정 문서 팩트>의 표에 특정 칸이 비어있다면, 절대 '0명'이나 '해당 없음'으로 단정짓지 마. PDF 문서 구조상 윗칸의 텍스트가 병합되어 생략(빈칸) 처리된 것일 확률이 매우 높으므로, 빈칸을 보면 반드시 바로 윗칸의 데이터를 그대로 상속받아 이어붙인 뒤 정확하게 답변해.
+9. 🚨 **[특수문자 및 수식 규정(LaTeX 절대 금지)]**: 어떠한 경우에도 LaTeX 수학 기호나 수식 블록(예: `$`, `$$`, `\text{{}}`, `\times`, `\rightarrow`)을 절대로 사용하지 마. (❌ 잘못된 예: `$12,600\text{{원}} \times 12\text{{부}} = 151,200\text{{원}}$` ➡️ 🟢 올바른 예: `12,600원 x 12부 = 151,200원`). 화살표는 반드시 유니코드(→)를 사용해.
 """
         else:
             prompt = f"""
@@ -1794,16 +1811,16 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
     - 통계 대조를 수행할 경우에 한하여, 학과별 통계 대조 시 개별 라인마다 `[일치]`, `[불일치 - 서류: O명, DB: O명]`, `[불일치 - 서류 미기재]` 와 같이 상태를 1:1로 정밀하게 명시하십시오.
     - `[일치]` 판정을 받은 학과라도 절대 임의로 요약하거나 일부 전형만 예시로 출력하지 마십시오. 괄호 `()` 안에 해당 학과에 배정된 모든 개별 전형명과 그 데이터(숫자 또는 문자 등 형태 무관)를 하나도 빠짐없이 100% 나열하여, 관리자가 모든 컬럼이 누락 없이 대조되었음을 시각적으로 확인할 수 있게 하십시오.
     - 서류 데이터가 존재하지 않는 학과는 `[불일치 - 서류 미기재]`로 표시하되, 최상단에 거창한 경고 안내문을 띄우지 마십시오.
-14. **[특수문자 및 수식 규정(LaTeX 절대 금지)]**: 답변 내에 어떠한 경우에도 LaTeX 수학 기호나 수식 블록(예: `$`, `$$`, `\text{{}}`, `\times`, `\rightarrow`)을 절대로 사용하지 마십시오. 곱하기 기호는 일반 알파벳 `x`나 `*`를 사용하고, 모든 수식과 기호는 순수 일반 텍스트 및 유니코드로만 작성하십시오.
-15. **[실시간 보완 지식 한정 변호 금지 및 상세 분석 조절]**:
+14. **[실시간 보완 지식 한정 변호 금지 및 상세 분석 조절]**:
     - <판단 기준 3>에 등재된 예외 정책에 의하여 참작된 건에 대해서만 구구절절한 변호 문구를 서술하지 말고 생략하십시오.
     - 사용자가 "상세히", "빠짐없이" 분석해 달라고 요청한 경우에만 문서를 처음부터 끝까지 생략 없이 구체적으로 리포트하십시오.
-16. **[실시간 지식 업데이트 성공 시 피드백 알림 강제]**: <지식 업데이트 반영 내역>에 저장/삭제 완료 알림 메시지가 있다면 답변 최상단에 마크다운 인용구 형태로 100% 원문 그대로 노출하십시오.
-17. 💡 **[RAG 검색 한계 인지 및 오판 방지]**: RAG로 인출된 텍스트 조각이 문서의 전체 표나 세부 조항을 완벽히 포함하지 않을 수 있습니다. 텍스트 조각에 특정 수치나 세부 조항이 명시적으로 보이지 않더라도, 섣불리 오답이나 누락이라고 단정짓지 말고 '관련 규정의 전체 원문을 재확인해야 합니다'와 같이 유보적으로 답변하십시오.
-18. **[학생 전용 빠른 답변(Fail-Fast) 의무 (엄격 적용)]**: 질문과 관련된 데이터가 단 한 줄도 존재하지 않을 경우, 억지로 추론하지 말고 "죄송합니다. 해당 질문에 관련된 정보를 찾을 수 없습니다."라고 한 문장으로 답변을 끝내십시오.
-19. 💡 **[비정형 문서 기호/단어 의미 규칙]**: 비정형 문서 표에서 하이픈(`-`) 기호는 '데이터 값이 존재하지 않음(해당 전형으로 모집하지 않음)'을 의미하므로 특별한 지시가 없다면 숫자 `0`과 동일하게 취급하십시오. 또한 모집 인원이 숫자가 아닌 텍스트로 기재되어 있다면 해당 문구의 의미(예: 인원 무제한 등)를 그대로 문맥에 맞게 해석하십시오.
-20. 💡 **[데이터 충돌 시 우선순위 규칙]**: 만약 <판단 기준 1: 시스템 DB 최신 팩트>와 <판단 기준 2: 사내 규정 및 과거 문서>의 내용이 서로 상이하거나 충돌할 경우, 최신 통계 데이터인 **<판단 기준 1: 시스템 DB>의 값을 최우선으로 참고**하여 답변하십시오.
-21. 💡 **[PDF 표 병합(빈칸) 추론 절대 지침]**: <판단 기준 2: 사내 규정(RAG)> 내 문서의 표에 특정 칸이 비어있다면, 무조건 '해당 없음'이나 '모집 안함'으로 단정짓지 마십시오. PDF 변환 특성상 **윗칸의 텍스트가 병합되어 생략(빈칸) 처리된 것일 확률이 99%**입니다. 따라서 <검토 대상 문서(스크랩)>에는 글자가 채워져 있고 PDF 기준 문서에는 빈칸일 경우, "스크랩이 틀렸다"고 절대 오진하지 말고 윗칸 문맥을 이어붙여 정상 병합된 팩트로 인정하십시오.
+15. **[실시간 지식 업데이트 성공 시 피드백 알림 강제]**: <지식 업데이트 반영 내역>에 저장/삭제 완료 알림 메시지가 있다면 답변 최상단에 마크다운 인용구 형태로 100% 원문 그대로 노출하십시오.
+16. 💡 **[RAG 검색 한계 인지 및 오판 방지]**: RAG로 인출된 텍스트 조각이 문서의 전체 표나 세부 조항을 완벽히 포함하지 않을 수 있습니다. 텍스트 조각에 특정 수치나 세부 조항이 명시적으로 보이지 않더라도, 섣불리 오답이나 누락이라고 단정짓지 말고 '관련 규정의 전체 원문을 재확인해야 합니다'와 같이 유보적으로 답변하십시오.
+17. **[학생 전용 빠른 답변(Fail-Fast) 의무 (엄격 적용)]**: 질문과 관련된 데이터가 단 한 줄도 존재하지 않을 경우, 억지로 추론하지 말고 "죄송합니다. 해당 질문에 관련된 정보를 찾을 수 없습니다."라고 한 문장으로 답변을 끝내십시오.
+18. 💡 **[비정형 문서 기호/단어 의미 규칙]**: 비정형 문서 표에서 하이픈(`-`) 기호는 '데이터 값이 존재하지 않음(해당 전형으로 모집하지 않음)'을 의미하므로 특별한 지시가 없다면 숫자 `0`과 동일하게 취급하십시오. 또한 모집 인원이 숫자가 아닌 텍스트로 기재되어 있다면 해당 문구의 의미(예: 인원 무제한 등)를 그대로 문맥에 맞게 해석하십시오.
+19. 💡 **[데이터 충돌 시 우선순위 규칙]**: 만약 <판단 기준 1: 시스템 DB 최신 팩트>와 <판단 기준 2: 사내 규정 및 과거 문서>의 내용이 서로 상이하거나 충돌할 경우, 최신 통계 데이터인 **<판단 기준 1: 시스템 DB>의 값을 최우선으로 참고**하여 답변하십시오.
+20. 💡 **[PDF 표 병합(빈칸) 추론 절대 지침]**: <판단 기준 2: 사내 규정(RAG)> 내 문서의 표에 특정 칸이 비어있다면, 무조건 '해당 없음'이나 '모집 안함'으로 단정짓지 마십시오. PDF 변환 특성상 **윗칸의 텍스트가 병합되어 생략(빈칸) 처리된 것일 확률이 99%**입니다. 따라서 <검토 대상 문서(스크랩)>에는 글자가 채워져 있고 PDF 기준 문서에는 빈칸일 경우, "스크랩이 틀렸다"고 절대 오진하지 말고 윗칸 문맥을 이어붙여 정상 병합된 팩트로 인정하십시오.
+21. 🚨 **[특수문자 및 수식 규정(LaTeX 절대 금지)]**: 어떠한 경우에도 LaTeX 수학 기호나 수식 블록(예: `$`, `$$`, `\text{{}}`, `\times`, `\rightarrow`)을 절대로 사용하지 마십시오. (❌ 잘못된 예: `$12,600\text{{원}} \times 12\text{{부}} = 151,200\text{{원}}$` ➡️ 🟢 올바른 예: `12,600원 x 12부 = 151,200원`). 화살표는 반드시 유니코드(→)를 사용하십시오.
 
 <지식 업데이트 반영 내역>
 {k_feedback_msg if k_feedback_msg else "수행된 업데이트 내역 없음"}

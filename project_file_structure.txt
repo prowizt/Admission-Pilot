@@ -1,21 +1,38 @@
 =========================================
  Admission-Pilot Structure Tree
- Generated at: 2026-06-24 10:17:34
+ Generated at: 2026-08-04 16:19:26
 =========================================
 .
+├── .github/
+│   └── workflows/
+│       └── deploy.yml
 ├── .gitignore
+├── 20250728-673442-_wildcard_daedong_ac_kr.pfx/
+│   ├── ChainCA/
+│   │   ├── ChainCA.crt
+│   │   ├── Chain_RootCA_Bundle.crt
+│   │   └── RootCA.crt
+│   ├── _wildcard_daedong_ac_kr.crt
+│   ├── _wildcard_daedong_ac_kr.pfx
+│   ├── _wildcard_daedong_ac_kr_SHA256WITHRSA.key
+│   ├── pfx.txt
+│   └── 체인 인증서 적용(필수) 및 파일 설명 안내.htm
 ├── 2026학년도 모집요강.pdf
+├── 2026학년도 신입생 최종 모집결과(대동대학교)-입력요청.xlsx
 ├── 2026학년도 신입생 최종 모집결과(대동대학교)-입력요청정원외.xlsx
 ├── 2026학년도 입학전형 운영 결과 보고.pdf
 ├── 2027학년도 모집요강.pdf
 ├── AI_GUIDELINES.md
-├── alter_schema.py
-├── alter_schema2.py
+├── Admission-Pilot-Extension.zip
+├── SERVER_SETUP_GUIDE.md
+├── SYSTEM_ARCHITECTURE.md
 ├── backend/
 │   ├── .env
 │   ├── excel_autofill.py
+│   ├── latest_query.sql
 │   ├── main.py  # 메인 서버 및 API 엔드포인트
 │   ├── requirements.txt
+│   ├── run_backend.bat
 │   └── temp/
 │       ├── DEBUG_Autofill_2026학년도 신입생 최종 모집결과(대동대학교)-입력요청.xlsx
 │       ├── DEBUG_Autofill_2026학년도 신입생 최종 모집결과(대동대학교)-입력요청정원외.xlsx
@@ -24,16 +41,12 @@
 │       └── DEBUG_Autofill_모집인원.xlsx
 ├── catalog_cols.txt
 ├── catalog_quota_cols.txt
-├── check_db4.py
-├── check_schema.py
-├── check_sql.py
+├── check_data.py
 ├── chroma_db/
 │   └── chroma.sqlite3
-├── cols_output.txt
-├── create_audit_table.py
 ├── db_schema_full.txt
 ├── extension/
-│   ├── background.js  # 확장 프로그램이 서비스 워커로 인식하게 하기 위한 최소한의 코드입니다.
+│   ├── background.js  # 서비스 워커 설치 시 사이드 패널 동작 강제 설정
 │   ├── icon.png
 │   ├── logo.png
 │   ├── manifest.json
@@ -41,8 +54,10 @@
 │   ├── sidepanel.js  # [웹 호스팅 대응] 크롬 확장 API가 없는 일반 웹 브라우저(iframe) 환경 지원을 위한 Mocking 로직
 │   └── tailwindcss.js
 ├── extract_schema.py  # Admission-Pilot DB 스키마 완벽 추출기
+├── fix_api_urls.py
 ├── frontend/
 │   ├── .gitignore
+│   ├── 2026학년도 신입생 최종 모집결과(대동대학교)-입력요청.xlsx
 │   ├── 2026학년도 입학전형 운영 결과 보고.pdf
 │   ├── 2027학년도 전형별모집인원및전형유형별성적반영비율.pdf
 │   ├── README.md
@@ -98,12 +113,43 @@
 │   ├── vite.config.ts.timestamp-1780290332670-a1b2f6905d0498.mjs
 │   └── vite.config.ts.timestamp-1780290566077-3cfc405e237a38.mjs
 ├── git_push.py  # 한글 깨짐 방지를 위해 인코딩 처리
-├── latency_results.txt
+├── nginx/
+│   ├── nginx.conf
+│   └── ssl/
+│       ├── fullchain.crt
+│       └── private.key
 ├── project_file_structure.txt
-├── recovered_chat.txt
 ├── run_servers.py  # 스레드 안전한 통합 로그 출력을 위한 락 및 마지막 로그 출력 타임스탬프 변수
 ├── scan_project.py  # Admission-Pilot 디렉터리 구조 생성
 ├── scratch/
+│   ├── alter_schema.py
+│   ├── alter_schema2.py
+│   ├── check_db4.py
+│   ├── check_doc_length.py
+│   ├── check_schema.py
+│   ├── check_sql.py
+│   ├── cols_output.txt
+│   ├── create_audit_table.py
+│   ├── latency_results.txt
+│   ├── list_all_models.py
+│   ├── list_models.py
+│   ├── recovered_chat.txt
+│   ├── scratch_analyze_latency.py
+│   ├── scratch_check_cols.py
+│   ├── scratch_check_cols2.py
+│   ├── scratch_check_db_values.py
+│   ├── scratch_check_public.py
+│   ├── scratch_db_depts.txt
+│   ├── scratch_db_values.txt
+│   ├── scratch_indent.py
+│   ├── scratch_query_result.txt
+│   ├── scratch_run_query.py
+│   ├── scratch_test_chroma.py
+│   ├── scratch_test_mapping.py
+│   ├── test.xlsx
+│   ├── test_8b.py
+│   ├── test_lite.py
+│   ├── test_out.txt
 │   ├── test_query_dist_all.py
 │   ├── test_query_page30.py
 │   ├── test_query_page30_matches.py
@@ -111,19 +157,10 @@
 │   ├── test_query_rank.py
 │   ├── test_query_rank2.py
 │   ├── test_query_rank_find30.py
-│   └── test_query_rerank.py
-├── scratch_analyze_latency.py
-├── scratch_check_cols.py
-├── scratch_check_cols2.py
-├── scratch_check_db_values.py
-├── scratch_check_public.py
-├── scratch_db_depts.txt
-├── scratch_db_values.txt
-├── scratch_indent.py
-├── scratch_query_result.txt
-├── scratch_run_query.py
-├── scratch_test_chroma.py
-├── scratch_test_mapping.py
+│   ├── test_query_rerank.py
+│   ├── wipe_db.py
+│   └── 모집인원.xlsx
+├── setup_server.ps1
 ├── student-web/
 │   ├── .gitignore
 │   ├── README.md
@@ -152,7 +189,29 @@
 │   ├── tsconfig.json
 │   ├── tsconfig.node.json
 │   └── vite.config.ts
-├── test.xlsx
-├── test_out.txt
-├── 모집인원.xlsx
+├── temp_db/
+│   └── chroma.sqlite3
+├── temp_db2/
+│   ├── 500a10e4-6393-4d50-976e-be43a98ba94f/
+│   │   ├── data_level0.bin
+│   │   ├── header.bin
+│   │   ├── index_metadata.pickle
+│   │   ├── length.bin
+│   │   └── link_lists.bin
+│   ├── 9968e6ad-a5f3-43c1-b01f-41a492eb5e26/
+│   │   ├── data_level0.bin
+│   │   ├── header.bin
+│   │   ├── length.bin
+│   │   └── link_lists.bin
+│   ├── b8c54a95-157f-4f62-a9ec-a60c07df2c95/
+│   │   ├── data_level0.bin
+│   │   ├── header.bin
+│   │   ├── length.bin
+│   │   └── link_lists.bin
+│   ├── chroma.sqlite3
+│   └── db6941ca-e22e-4bd9-9ef9-3743cb1dedce/
+│       ├── data_level0.bin
+│       ├── header.bin
+│       ├── length.bin
+│       └── link_lists.bin
 └── 붙임1._2026학년도(수시)입학정보_모집자료(대동대학교).pdf

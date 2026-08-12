@@ -17,16 +17,16 @@ interface Message {
 }
 
 const QUICK_REPLIES = [
-  "올해 수시 1차 면접 일정이 언제야?",
-  "간호학과 작년 합격 등급 알려줘",
-  "기숙사 신청은 어떻게 해?",
-  "정원외 특별전형 자격 요건이 뭐야?"
+  "올해 수시 1차 면접 일정이 어떻게 돼?",
+  "간호학부 작년 합격 등급 알려줘",
+  "원서접수 횟수에 제한이 있나요?",
+  "서류 제출 방법이 어떻게 돼?"
 ];
 
 function ActionButtons({ text, isUser }: { text: string, isUser?: boolean }) {
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(null);
-  
+
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(text);
@@ -39,7 +39,7 @@ function ActionButtons({ text, isUser }: { text: string, isUser?: boolean }) {
 
   return (
     <div className={cn("flex items-center gap-1 mt-2", isUser ? "justify-end" : "justify-start")}>
-      <button 
+      <button
         onClick={handleCopy}
         className={cn(
           "p-1.5 rounded-md transition-colors flex items-center justify-center flex-shrink-0 group relative",
@@ -56,7 +56,7 @@ function ActionButtons({ text, isUser }: { text: string, isUser?: boolean }) {
 
       {!isUser && (
         <>
-          <button 
+          <button
             onClick={() => setFeedback('up')}
             className={cn(
               "p-1.5 rounded-md transition-colors flex items-center justify-center flex-shrink-0 group",
@@ -66,7 +66,7 @@ function ActionButtons({ text, isUser }: { text: string, isUser?: boolean }) {
           >
             <ThumbsUp className={cn("w-3.5 h-3.5", feedback === 'up' && "fill-current")} />
           </button>
-          <button 
+          <button
             onClick={() => setFeedback('down')}
             className={cn(
               "p-1.5 rounded-md transition-colors flex items-center justify-center flex-shrink-0 group",
@@ -129,7 +129,7 @@ function App() {
         setMessages(prev => {
           const targetMsg = prev.find(m => m.id === msgId);
           if (!targetMsg) return prev;
-          
+
           if (targetMsg.content.length < text.length) {
             // 한 번에 출력할 글자 수 (속도 조절 가능, 기본 1글자)
             const nextContent = text.substring(0, targetMsg.content.length + 1);
@@ -184,7 +184,7 @@ function App() {
           question: text,
           model_name: "gemini-3.5-flash", // 기본 모델
           user_role: "student", // ✅ 핵심: 학생 권한 강제 주입
-          scraped_context: "", 
+          scraped_context: "",
           scraped_file_name: "",
           history: recentHistory
         }),
@@ -219,10 +219,10 @@ function App() {
             }
             // 청크 디코딩 후 버퍼에 추가
             buffer += decoder.decode(value, { stream: true });
-            
+
             // 줄바꿈 기호(\n\n)를 기준으로 SSE 데이터 분리
             const lines = buffer.split('\n\n');
-            
+
             // 마지막 요소는 아직 완전한 '\n\n'으로 끝나지 않은 조각일 수 있으므로 버퍼에 남김
             buffer = lines.pop() || '';
 
@@ -240,9 +240,9 @@ function App() {
                   } else if (data.status === 'done') {
                     // 완료 (로그 처리 등 필요시 이곳에 작성)
                   } else if (data.error) {
-                     if (typingQueueRef.current) {
-                       typingQueueRef.current.text += '\n\n[오류 발생: ' + data.error + ']';
-                     }
+                    if (typingQueueRef.current) {
+                      typingQueueRef.current.text += '\n\n[오류 발생: ' + data.error + ']';
+                    }
                   }
                 } catch (e) {
                   // JSON 파싱 에러 무시 (잘못 쪼개진 청크)
@@ -256,16 +256,16 @@ function App() {
     } catch (error: any) {
       if (error.name === 'AbortError' || axios.isCancel(error)) {
         if (!botMsgAdded) {
-           setMessages((prev) => [...prev, { id: botMsgId, role: 'assistant', content: '답변 생성이 중단되었습니다.', isError: true }]);
+          setMessages((prev) => [...prev, { id: botMsgId, role: 'assistant', content: '답변 생성이 중단되었습니다.', isError: true }]);
         } else if (typingQueueRef.current) {
-           typingQueueRef.current.text += '\n\n[답변 생성이 중단되었습니다.]';
+          typingQueueRef.current.text += '\n\n[답변 생성이 중단되었습니다.]';
         }
       } else {
         console.error('Chat API Error:', error);
         if (!botMsgAdded) {
-           setMessages((prev) => [...prev, { id: botMsgId, role: 'assistant', content: '죄송합니다. 통신 오류가 발생했습니다. 잠시 후 다시 시도해 주세요. 😥', isError: true }]);
+          setMessages((prev) => [...prev, { id: botMsgId, role: 'assistant', content: '죄송합니다. 통신 오류가 발생했습니다. 잠시 후 다시 시도해 주세요. 😥', isError: true }]);
         } else if (typingQueueRef.current) {
-           typingQueueRef.current.text += '\n\n[죄송합니다. 통신 오류가 발생했습니다. 잠시 후 다시 시도해 주세요. 😥]';
+          typingQueueRef.current.text += '\n\n[죄송합니다. 통신 오류가 발생했습니다. 잠시 후 다시 시도해 주세요. 😥]';
         }
       }
     } finally {
@@ -279,7 +279,7 @@ function App() {
       {/* Header */}
       <header className="flex justify-between items-center py-6 px-5 bg-indigo-900 text-white shadow-md z-10 relative overflow-hidden rounded-br-3xl">
         <div className="absolute inset-0 opacity-10 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-white via-transparent to-transparent"></div>
-        
+
         {/* Left: Logo & Title */}
         <div className="flex items-center z-10">
           <div className="flex-shrink-0 bg-white rounded-full p-1 mr-3 flex items-center justify-center shadow-sm">
@@ -298,8 +298,8 @@ function App() {
           </span>
           <div className={cn(
             "w-2 h-2 rounded-full",
-            isServerOnline 
-              ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)] animate-pulse" 
+            isServerOnline
+              ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)] animate-pulse"
               : "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]"
           )}></div>
         </div>
@@ -320,7 +320,7 @@ function App() {
                 "max-w-[85%] sm:max-w-[70%] rounded-2xl p-4 shadow-sm block flow-root",
                 msg.role === 'user'
                   ? "bg-indigo-900 text-white rounded-tr-none"
-                  : msg.isError 
+                  : msg.isError
                     ? "bg-red-50 text-red-800 border border-red-200 rounded-tl-none"
                     : "bg-white/70 backdrop-blur-md border border-white/40 shadow-lg text-slate-800 rounded-tl-none"
               )}
@@ -339,7 +339,7 @@ function App() {
                   </div>
                 </div>
               )}
-              
+
               <div className="whitespace-pre-wrap leading-relaxed text-[15px]">
                 {msg.content}
               </div>
@@ -355,7 +355,7 @@ function App() {
           <div className="flex w-full justify-start">
             <div className="bg-white/70 backdrop-blur-md border border-white/40 shadow-lg max-w-[85%] rounded-2xl rounded-tl-none p-4 flex gap-3 items-center">
               <div className="w-8 h-8 rounded-full bg-daedong-cyan/20 flex items-center justify-center border border-daedong-cyan/50">
-                 <Loader2 className="w-5 h-5 text-daedong-navy animate-spin" />
+                <Loader2 className="w-5 h-5 text-daedong-navy animate-spin" />
               </div>
               <span className="text-slate-500 text-sm font-medium">대동대 지식창고를 검색하며 답변을 생성 중입니다...</span>
             </div>
