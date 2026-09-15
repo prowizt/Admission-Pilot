@@ -275,9 +275,10 @@ def get_dynamic_db_schema(conn, user_role="staff"):
             SELECT c.table_name, t.description, c.column_name, c.ai_description 
             FROM Sys_ColumnCatalog c
             LEFT JOIN Sys_TableCatalog t ON c.table_name = t.table_name
+            WHERE t.is_active = 'Y'
         """
         if user_role == "student":
-            query += " WHERE c.is_public = 'Y'"
+            query += " AND c.is_public = 'Y'"
             
         cursor.execute(query)
         schema_dict = {}
@@ -300,9 +301,9 @@ def get_dynamic_db_schema(conn, user_role="staff"):
             schema_str += f"- Table: [{t_name}]{t_desc_str} | Columns: {', '.join(cols)}\n"
             
         # 2. 비정형 데이터 (문서 카탈로그)
-        doc_query = "SELECT doc_type, year, title, description FROM Sys_DocumentCatalog"
+        doc_query = "SELECT doc_type, year, title, description FROM Sys_DocumentCatalog WHERE is_active = 'Y'"
         if user_role == "student":
-            doc_query += " WHERE is_public = 'Y'"
+            doc_query += " AND is_public = 'Y'"
             
         cursor.execute(doc_query)
         docs = cursor.fetchall()
@@ -351,8 +352,8 @@ async def upload_knowledge(
     """
     if doc_type not in ["rule", "reference"]:
         raise HTTPException(status_code=400, detail="doc_type은 'rule' 또는 'reference'여야 합니다.")
-    if not (file.filename.lower().endswith('.pdf') or file.filename.lower().endswith('.xlsx')):
-        raise HTTPException(status_code=400, detail="현재는 PDF 및 Excel(.xlsx) 파일만 지원합니다.")
+    if not (file.filename.lower().endswith('.pdf') or file.filename.lower().endswith('.xlsx') or file.filename.lower().endswith('.txt')):
+        raise HTTPException(status_code=400, detail="현재는 PDF, Excel(.xlsx), TXT 파일만 지원합니다.")
 
     # 1. 텍스트 및 표 추출
     try:
@@ -395,9 +396,15 @@ async def upload_knowledge(
                         grid[r][c] = top_left_value
                         
             extracted_text = table_to_markdown(grid)
+        elif filename_lower.endswith('.txt'):
+            try:
+                extracted_text = content.decode('utf-8')
+            except UnicodeDecodeError:
+                extracted_text = content.decode('euc-kr', errors='replace')
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"문서 파싱 오류: {str(e)}")
+
 
     if not extracted_text.strip():
         raise HTTPException(status_code=400, detail="텍스트 추출 불가 (이미지 PDF 등)")
@@ -410,7 +417,7 @@ async def upload_knowledge(
         try:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT doc_id, doc_type FROM Sys_DocumentCatalog WHERE filename = ? OR title = ?",
+                "SELECT doc_id, doc_type FROM Sys_DocumentCatalog WHERE (filename = ? OR title = ?) AND is_active = 'Y'",
                 (file.filename, title)
             )
             existing_docs = cursor.fetchall()
@@ -670,27 +677,93 @@ async def update_document(
     year: str = Form(...),
     title: str = Form(...),
     is_public: str = Form("Y"),
-    description: str = Form(None)
+    description: str = Form(None),
+    is_active: str = Form("Y"),
+    file: UploadFile = File(None)
 ):
-    """비정형 문서 메타데이터 수정 (MS-SQL 및 ChromaDB 동기화)"""
-    # 1. MS-SQL 업데이트
+    """비정형 문서 메타데이터 및 선택적 파일 내용 수정 (MS-SQL 및 ChromaDB 동기화)"""
+    
+    # 1. 파일이 업로드된 경우 텍스트 추출 진행
+    safe_text = None
+    filename_val = None
+    if file and file.filename:
+        filename_val = file.filename
+        try:
+            content = await file.read()
+            extracted_text = ""
+            filename_lower = file.filename.lower()
+            
+            if filename_lower.endswith('.pdf'):
+                with pdfplumber.open(io.BytesIO(content)) as pdf:
+                    for page in pdf.pages:
+                        page_text = page.extract_text()
+                        if page_text: extracted_text += page_text + "\n"
+                        tables = page.extract_tables()
+                        if tables:
+                            for table in tables:
+                                extracted_text += table_to_markdown(table)
+            elif filename_lower.endswith('.xlsx'):
+                import openpyxl
+                wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+                sheet = wb.worksheets[0]
+                
+                max_row = sheet.max_row
+                max_col = sheet.max_column
+                
+                grid = [[None for _ in range(max_col)] for _ in range(max_row)]
+                for row in range(max_row):
+                    for col in range(max_col):
+                        val = sheet.cell(row=row+1, column=col+1).value
+                        if isinstance(val, str):
+                            val = val.replace('\n', ' ').strip()
+                        grid[row][col] = val
+                        
+                for merged_range in sheet.merged_cells.ranges:
+                    min_col, min_row, max_col_merged, max_row_merged = merged_range.bounds
+                    top_left_value = grid[min_row-1][min_col-1]
+                    for r in range(min_row-1, max_row_merged):
+                        for c in range(min_col-1, max_col_merged):
+                            grid[r][c] = top_left_value
+                            
+                extracted_text = table_to_markdown(grid)
+            elif filename_lower.endswith('.txt'):
+                try:
+                    extracted_text = content.decode('utf-8')
+                except UnicodeDecodeError:
+                    extracted_text = content.decode('euc-kr', errors='replace')
+                
+            if not extracted_text.strip():
+                raise HTTPException(status_code=400, detail="텍스트 추출 불가 (이미지 PDF 등)")
+            
+            safe_text = mask_personal_info(extracted_text)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"문서 파싱 오류: {str(e)}")
+
+    # 2. MS-SQL 업데이트
     conn = get_mssql_connection()
     if conn:
         try:
             cursor = conn.cursor()
             desc_val = description if description else ""
-            cursor.execute("""
-                UPDATE Sys_DocumentCatalog 
-                SET year=?, title=?, description=?, is_public=? 
-                WHERE doc_id=?
-            """, (year, title, desc_val, is_public, doc_id))
+            if filename_val:
+                cursor.execute("""
+                    UPDATE Sys_DocumentCatalog 
+                    SET year=?, title=?, description=?, is_public=?, is_active=?, filename=?
+                    WHERE doc_id=?
+                """, (year, title, desc_val, is_public, is_active, filename_val, doc_id))
+            else:
+                cursor.execute("""
+                    UPDATE Sys_DocumentCatalog 
+                    SET year=?, title=?, description=?, is_public=?, is_active=?
+                    WHERE doc_id=?
+                """, (year, title, desc_val, is_public, is_active, doc_id))
             conn.commit()
             cursor.close()
             conn.close()
         except Exception as e:
             print(f"카탈로그 수정 에러: {e}")
 
-    # 2. ChromaDB 메타데이터 업데이트
+    # 3. ChromaDB 메타데이터 및 문서 내용 업데이트
     target_db = rule_db if doc_type == "rule" else reference_db
     try:
         res = target_db.get(ids=[doc_id])
@@ -698,7 +771,14 @@ async def update_document(
             meta = res["metadatas"][0]
             meta["year"] = year
             meta["title"] = title
-            target_db.update(ids=[doc_id], metadatas=[meta])
+            if filename_val:
+                meta["filename"] = filename_val
+            
+            update_kwargs = {"ids": [doc_id], "metadatas": [meta]}
+            if safe_text is not None:
+                update_kwargs["documents"] = [safe_text]
+                
+            target_db.update(**update_kwargs)
     except Exception as e:
         print(f"ChromaDB 메타데이터 수정 에러: {e}")
 
@@ -792,7 +872,34 @@ async def upload_dynamic_statistics(
         table_exists = cursor.fetchone()[0] > 0
         
         if not table_exists:
-            cols_def = ", ".join([f"[{h}] NVARCHAR(255)" for h in headers])
+            col_types = []
+            sample_rows = list(sheet.iter_rows(min_row=2, max_row=11, values_only=True))
+            for i, h in enumerate(headers):
+                is_int = True
+                is_float = True
+                has_value = False
+                for row in sample_rows:
+                    if i < len(row) and row[i] is not None:
+                        val_str = str(row[i]).strip()
+                        if val_str != "":
+                            has_value = True
+                            try:
+                                int(val_str)
+                            except ValueError:
+                                is_int = False
+                            try:
+                                float(val_str)
+                            except ValueError:
+                                is_float = False
+                
+                if has_value and is_int:
+                    col_types.append("INT")
+                elif has_value and is_float:
+                    col_types.append("FLOAT")
+                else:
+                    col_types.append("NVARCHAR(255)")
+                    
+            cols_def = ", ".join([f"[{h}] {col_types[i]}" for i, h in enumerate(headers)])
             cursor.execute(f"CREATE TABLE [{table_name}] (id INT IDENTITY(1,1) PRIMARY KEY, {cols_def}, created_at DATETIME DEFAULT GETDATE())")
             print(f"[OK] 테이블 [{table_name}] 생성 완료")
             
@@ -1099,6 +1206,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
            - 전문대졸이상자, 기회균형 등 **'정원외 전형'**은 관계법령 및 학칙에 따라 입학정원 제한을 받지 않고 초과등록이 법적으로 허용됩니다.
            - 따라서 DB 최종등록자 수와 학칙상 입학정원을 비교·대조할 때는 반드시 `[정원내외명] = '정원내'`(혹은 `LIKE '%정원내%'`) 조건의 등록자 수만 직접 대조해야 합니다.
            - 정원외 등록자는 입학정원 대비 초과/미달 판단에서 제외하고 별도의 단독 수치(예: '정원외 등록자 O명')로만 나타내어야 하므로, 이를 분석할 수 있도록 T-SQL 작성 시 `[정원내외명]`을 GROUP BY 하거나 SELECT 절에서 조건별 분리 집계(CASE WHEN 등) 및 조건절로 구분하여 조회하게 만드십시오.
+        5. [동적 엑셀 데이터 테이블 연산 규칙]: 동적으로 업로드된 엑셀 데이터 테이블(`EXCEL_...` 등)을 조회할 때, `SUM`, `AVG` 등 수학적 연산을 수행해야 한다면 쿼리 실행 전 반드시 `CAST([컬럼명] AS FLOAT)` 또는 `CAST([컬럼명] AS INT)`를 사용하여 숫자형으로 형변환을 적용하십시오. (예: `SUM(CAST([입학정원] AS INT))`)
         
         [가장 중요한 SQL 작성 규칙]
         1. 컬럼명이 한글일 수 있으므로 대괄호 []를 반드시 사용해.
@@ -1106,7 +1214,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         3. **[ai_description 준수]** 컬럼 설명(`ai_description`)에 가능한 코드값이나 텍스트 형태(예: '합격자(최종아님),최종등록자(최종합격자)')가 콤마로 나열되어 있다면, 이를 실제 DB에 저장된 데이터 명칭으로 인지하십시오. 문자열 비교 조건절(WHERE)을 작성할 때 텍스트를 자의적으로 단축하거나 가공(예: 괄호 제거 등)하지 말고 카탈로그에 명시된 문자열 그대로(예: `[최종입시결과] = '최종등록자(최종합격자)'`, `[정원내외명] = '정원외'`) 매칭하여 쿼리를 작성하십시오.
         4. 문자열 조건은 무조건 `=` 대신 `LIKE`를 사용하되, 사용자의 단어에서 핵심 형태소만 짧게 잘라서 검색해! (단, 3번 규칙에 따라 콤마로 나열된 고유값이 확실하고 정밀 비교가 필요한 경우는 `=`로 완전히 일치시키세요. **또한 LIKE '%...%' 구문 안에 절대로 띄어쓰기나 공백을 자의적으로 넣지 마세요.** 예: '%경 남%' 불가, '%경남%' 정상)
         5. 통계나 숫자를 물어보면 무조건 `COUNT()`, `SUM()` 같은 집계 함수를 사용해!
-        6. 목록을 물어볼 때는 데이터 폭발 방지를 위해 `SELECT TOP 300 * FROM ...` 처럼 TOP 제한을 걸어!
+        6. 목록을 물어볼 때는 데이터 폭발 방지를 위해 기본적으로 `SELECT TOP 300 * FROM ...` 처럼 300건 제한을 걸되, 사용자가 명시적으로 '전체 데이터', '전체 다운로드', '제한 없이' 등을 요구한 경우에 한해 최대 `SELECT TOP 10000 * FROM ...` 처럼 1만건까지 허용해!
         7. **[학년도 강제]** 질문에 특정 연도/학년도가 포함되어 있다면 반드시 `WHERE [입시학년도] = '2026'` 과 같이 학년도 조건을 추가해!
         8. **[스크랩/첨부 문서 데이터 구조 분석 및 범용 쿼리 매핑 규칙]**:
            - 사용자가 제시한 `[질문]`과 하단의 스크랩/첨부 문서를 종합적으로 분석하여 사용자의 명확한 의도를 파악하십시오.
@@ -1116,6 +1224,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
            - 사용자의 [질문]이나 스크랩된 문서 내용(제목 등)에 '원인기안', '제작 계획', '구입', '품의', '지출', '계약' 등의 실무 행정/예산 집행 키워드가 감지될 경우, 명시적으로 '구매'나 '예산'이라는 단어가 없더라도 이는 100% 구매 및 예산 관련 기안문으로 간주해야 합니다.
            - 이 경우 AI는 행정 결재선뿐만 아니라 금액 및 예산 한도의 적정성을 필수적으로 검토해야 하므로, **반드시 `rag_search_query`에 '구매 규정, 예산ㆍ회계 규정, 본예산' 등 사내 예산/구매 관련 핵심 규정 문서 명칭을 강제로 추가**하여 RAG 검색 풀에 포함시키십시오.
         10. **[지역명 약어 자동 변환 규칙]**: 사용자가 질문에 '부울경'이라고 입력하면 반드시 `[출신고교시도] LIKE '%부산%' OR [출신고교시도] LIKE '%울산%' OR [출신고교시도] LIKE '%경상남도%'` 형태로 3개의 조건을 OR로 묶어서 풀어 검색하십시오. '경남', '전북', '충남' 등의 다른 지역 약어가 사용된 경우에도 DB에는 '경상남도', '전라북도', '충청남도' 등으로 정식 명칭이 저장되어 있으므로, 반드시 정식 명칭으로 변환하여 `LIKE '%경상남도%'` 형태로 검색하십시오.
+        11. **[숫자형 컬럼 비교 절대 규칙]**: 학점, 평점, 점수, 인원수, 금액 등 숫자형(Numeric/Float/Int) 데이터를 담고 있는 컬럼의 값이 존재하는지 검사할 때는 절대 빈 문자열(`''`)과 비교하지 마십시오. (예: `[대졸평균평점] <> ''` 불가) 반드시 `IS NOT NULL AND [컬럼명] > 0` 형태로만 작성하십시오.
 
 
         {dynamic_schema}
@@ -1179,10 +1288,10 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 
                 # [연도 자동 보정] 라우터 AI 지정 연도 + 텍스트 감지 연도를 모두 통합하여 N+1 자동 확장을 적용합니다.
                 ai_years = []
-                if isinstance(rag_year_filter, str) and rag_year_filter != "ALL":
-                    ai_years.append(rag_year_filter)
+                if isinstance(rag_year_filter, str) and rag_year_filter.strip() not in ["ALL", ""]:
+                    ai_years.append(rag_year_filter.strip())
                 elif isinstance(rag_year_filter, list):
-                    ai_years.extend(rag_year_filter)
+                    ai_years.extend([str(y).strip() for y in rag_year_filter if str(y).strip() not in ["ALL", ""]])
 
                 all_text = (request.question or "") + " " + (request.scraped_context or "") + " " + (rag_query or "")
                 # 단순히 202x 형태가 아닌 '202x년', '202x학년도' 와 같이 명확한 연도 지칭 및 '202x-MM-DD' 형태의 기안/결재일자 연도 감지 (Copyright 등 풋터 오염 방지)
@@ -1193,6 +1302,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 # [NEW] 입시 도메인 특화 연도 자동 확장(+1): N년도 이벤트는 N+1학년도 규정을 적용받으므로 감지/지정된 연도의 +1 연도도 필터에 허용
                 expanded_years = set()
                 for dy in combined_base_years:
+                    if not dy or not dy.strip():
+                        continue
                     expanded_years.add(dy)
                     # [이중 확장 방지] 바로 앞 연도(Y-1)가 이미 감지되었다면, 현재 연도(Y)는 이미 앞 연도의 N+1 결과물이므로 추가 확장을 스킵합니다.
                     if str(int(dy) - 1) not in combined_base_years:
@@ -1313,6 +1424,9 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             print(f"[MAIN-CHAT] latest_query.sql 저장 실패: {f_err}")
             
         sql_context = ""
+        full_data_rows = None
+        total_sql_count = None
+        fetched_sql_count = 0
         if (sql_query.upper().startswith("SELECT") or sql_query.upper().startswith("WITH")) and conn:
             try:
                 # [최적화] AI가 추출된 데이터의 출처와 필터링 조건을 확신할 수 있도록 사용된 쿼리 원문을 증거로 덧붙입니다.
@@ -1330,6 +1444,19 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                         if rows:
                             columns = [column[0] for column in cursor.description]
                             columns_used_set.update(columns)
+                            
+                            if full_data_rows is None:
+                                full_data_rows = []
+                            # Decimal 등 JSON 직렬화 불가 객체 처리 (문자열 변환)
+                            def sanitize_val(val):
+                                from decimal import Decimal
+                                import datetime
+                                if isinstance(val, Decimal): return float(val)
+                                if isinstance(val, (datetime.datetime, datetime.date)): return val.isoformat()
+                                return val
+                                
+                            full_data_rows.extend([dict(zip(columns, [sanitize_val(v) for v in r])) for r in rows])
+                            
                             for idx, row in enumerate(rows):
                                 # [보안/안정성] 최대 50건까지만 컨텍스트에 포함시켜 토큰 폭발(429 에러) 완벽 차단
                                 if idx >= 50:
@@ -1348,6 +1475,27 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     if not more_results:
                         break
                     result_idx += 1
+                    
+                if full_data_rows:
+                    fetched_sql_count = len(full_data_rows)
+                    match = re.search(r'SELECT\s+TOP\s+(\d+)', sql_query, re.IGNORECASE)
+                    if match:
+                        top_limit = int(match.group(1))
+                        if fetched_sql_count >= top_limit:
+                            try:
+                                count_query = re.sub(r'SELECT\s+TOP\s+\d+\s+(.*?)\s+FROM', 'SELECT COUNT(*) FROM', sql_query, count=1, flags=re.IGNORECASE)
+                                count_query = re.sub(r'ORDER\s+BY\s+.*$', '', count_query, flags=re.IGNORECASE | re.DOTALL)
+                                c_cursor = conn.cursor()
+                                c_cursor.execute(count_query)
+                                total_sql_count = c_cursor.fetchone()[0]
+                                c_cursor.close()
+                            except Exception as count_err:
+                                print(f"총 개수 계산 오류: {count_err}")
+                                total_sql_count = fetched_sql_count
+                        else:
+                            total_sql_count = fetched_sql_count
+                    else:
+                        total_sql_count = fetched_sql_count
                 
                 # [NEW] 조회된 컬럼에 대한 관리자 힌트를 sql_context에 추가
                 if columns_used_set:
@@ -1368,7 +1516,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 # [NEW] 쿼리에 사용된 테이블 힌트를 sql_context에 추가
                 try:
                     t_hint_cursor = conn.cursor()
-                    t_hint_cursor.execute("SELECT table_name, description FROM Sys_TableCatalog WHERE description IS NOT NULL AND description != ''")
+                    t_hint_cursor.execute("SELECT table_name, description FROM Sys_TableCatalog WHERE description IS NOT NULL AND description != '' AND is_active = 'Y'")
                     table_hints = t_hint_cursor.fetchall()
                     added_table_hints = False
                     for t_name, t_desc in table_hints:
@@ -1455,7 +1603,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     if conn:
                         try:
                             h_cursor = conn.cursor()
-                            h_cursor.execute("SELECT filename FROM Sys_DocumentCatalog WHERE is_public = 'Y'")
+                            h_cursor.execute("SELECT filename FROM Sys_DocumentCatalog WHERE is_public = 'Y' AND is_active = 'Y'")
                             public_filenames = [row.filename for row in h_cursor.fetchall()]
                         except Exception as h_err:
                             print(f"공개 문서 조회 오류: {h_err}")
@@ -1590,7 +1738,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                         try:
                             h_cursor = conn.cursor()
                             placeholders = ",".join(["?"] * len(all_raw_files_list))
-                            h_cursor.execute(f"SELECT filename, description, is_public FROM Sys_DocumentCatalog WHERE filename IN ({placeholders})", all_raw_files_list)
+                            h_cursor.execute(f"SELECT filename, description, is_public FROM Sys_DocumentCatalog WHERE filename IN ({placeholders}) AND is_active = 'Y'", all_raw_files_list)
                             for r in h_cursor.fetchall():
                                 if r[1] and r[1].strip():
                                     doc_hints[r[0]] = r[1]
@@ -1601,13 +1749,14 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 time_db_end = time.time()
                 print(f"⏱️ DB 검색 및 전처리 소요 시간: {time_db_end - time_router_end:.2f}초")
 
-                # [보안 통제] 학생 권한 필터링 - 비공개 문서를 RAG 컨텍스트에서 제외
+                # [보안 통제 및 카탈로그 필터링] 비활성화 문서 제외 (공통), 비공개 문서 제외 (학생)
+                for q_idx in range(len(queries)):
+                    docs_per_query[q_idx] = {
+                        fname: doc for fname, doc in docs_per_query[q_idx].items()
+                        if fname in public_status # is_active='Y' 인 문서만 public_status에 존재함
+                        and (request.user_role != "student" or public_status.get(fname, "N") == "Y")
+                    }
                 if request.user_role == "student":
-                    for q_idx in range(len(queries)):
-                        docs_per_query[q_idx] = {
-                            fname: doc for fname, doc in docs_per_query[q_idx].items()
-                            if public_status.get(fname, "N") == "Y"
-                        }
                     print("[보안 통제] 학생 권한 필터링 - 비공개 문서를 RAG 컨텍스트에서 제외합니다.")
 
                 # [개선] 라운드 로빈(Round-Robin) 방식으로 각 쿼리별 1등 문서를 공평하게 선발
@@ -1712,11 +1861,12 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         else:
             print("[BACKEND] === [스크랩 컨텍스트 없음] ===")
 
-        # [NEW] 이전 대화 기록 가공 (긴 메시지 잘라내기 방어 로직 추가)
+        # [NEW] 이전 대화 기록 가공 (권한별 유지 길이 차등 적용)
         history_context = ""
         if request.history:
-            # 최근 10개의 대화만 유지 (너무 오래된 대화는 버림)
-            recent_history = request.history[-10:] if len(request.history) > 10 else request.history
+            # 학생은 40개(문답 20쌍), 교직원은 10개(문답 5쌍) 유지
+            history_limit = 40 if request.user_role == "student" else 10
+            recent_history = request.history[-history_limit:] if len(request.history) > history_limit else request.history
             for msg in recent_history:
                 role = "사용자" if msg.get("isUser", False) else "AI"
                 msg_text = msg.get('text', '')
@@ -1804,32 +1954,35 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
     - 시스템 DB 최종등록자 수와 입학정원을 대조할 때, **정원내 전형 최종등록자만 입학정원과 비교**해야 합니다. 정원외 전형은 초과등록이 가능하므로 "입학정원 초과 학칙 위반"이라고 오판하지 마십시오.
     - 대조 시 **[정원내 최종등록자 수]**와 **[정원외 최종등록자 수]**를 명확하게 구분하여 기재하십시오.
 11. **[신입생 및 편입생 동시 분석]:** 신입생 모집 결과 뿐만 아니라 편입생 모집 결과도 정형 DB를 참고하여 양쪽 모두 누락 없이 분석하십시오.
-12. **[답변 구성 최우선순위 지침]**:
+12. 🚨 **[관리자 힌트 절대 우선 적용]**: <판단 기준 2>의 문서 내용 중에 `(관리자 힌트: ...)`가 적혀 있다면, 이는 일반적인 상식이나 당신의 자체적인 회계/판단 기준보다 무조건 앞서는 최우선 절대 규칙입니다. 사용자가 올린 문서의 데이터를 검토할 때, 당신의 기준에 비추어 오류처럼 보이더라도 관리자 힌트의 지시사항(예: "예산금액에는 편성예산이 아닌 신청금액을 기재하라")과 부합한다면 절대 오류로 지적하지 말고 정상으로 처리하십시오.
+13. **[답변 구성 최우선순위 지침]**:
     - 문서에 통계 수치가 기재되어 있어 통계 대조를 수행한 경우, **통계 일치 여부 판별 결과를 가장 먼저(최상단에) 상세히 노출**한 뒤 규정 검토 의견을 서술하십시오.
     - 품의서 등 통계가 없는 일반 행정 문서인 경우, 억지로 통계를 대조하지 말고 즉시 **규정 검토(결재선, 보존기간 등)를 최상단에 배치**하십시오.
-13. **[통계 대조 성립 시 1:1 일치여부 표기 강제]**:
+14. **[통계 대조 성립 시 1:1 일치여부 표기 강제]**:
     - 통계 대조를 수행할 경우에 한하여, 학과별 통계 대조 시 개별 라인마다 `[일치]`, `[불일치 - 서류: O명, DB: O명]`, `[불일치 - 서류 미기재]` 와 같이 상태를 1:1로 정밀하게 명시하십시오.
     - `[일치]` 판정을 받은 학과라도 절대 임의로 요약하거나 일부 전형만 예시로 출력하지 마십시오. 괄호 `()` 안에 해당 학과에 배정된 모든 개별 전형명과 그 데이터(숫자 또는 문자 등 형태 무관)를 하나도 빠짐없이 100% 나열하여, 관리자가 모든 컬럼이 누락 없이 대조되었음을 시각적으로 확인할 수 있게 하십시오.
     - 서류 데이터가 존재하지 않는 학과는 `[불일치 - 서류 미기재]`로 표시하되, 최상단에 거창한 경고 안내문을 띄우지 마십시오.
-14. **[실시간 보완 지식 한정 변호 금지 및 상세 분석 조절]**:
+15. **[실시간 보완 지식 한정 변호 금지 및 상세 분석 조절]**:
     - <판단 기준 3>에 등재된 예외 정책에 의하여 참작된 건에 대해서만 구구절절한 변호 문구를 서술하지 말고 생략하십시오.
     - 사용자가 "상세히", "빠짐없이" 분석해 달라고 요청한 경우에만 문서를 처음부터 끝까지 생략 없이 구체적으로 리포트하십시오.
-15. **[실시간 지식 업데이트 성공 시 피드백 알림 강제]**: <지식 업데이트 반영 내역>에 저장/삭제 완료 알림 메시지가 있다면 답변 최상단에 마크다운 인용구 형태로 100% 원문 그대로 노출하십시오.
-16. 💡 **[RAG 검색 한계 인지 및 오판 방지]**: RAG로 인출된 텍스트 조각이 문서의 전체 표나 세부 조항을 완벽히 포함하지 않을 수 있습니다. 텍스트 조각에 특정 수치나 세부 조항이 명시적으로 보이지 않더라도, 섣불리 오답이나 누락이라고 단정짓지 말고 '관련 규정의 전체 원문을 재확인해야 합니다'와 같이 유보적으로 답변하십시오.
-17. **[학생 전용 빠른 답변(Fail-Fast) 의무 (엄격 적용)]**: 질문과 관련된 데이터가 단 한 줄도 존재하지 않을 경우, 억지로 추론하지 말고 "죄송합니다. 해당 질문에 관련된 정보를 찾을 수 없습니다."라고 한 문장으로 답변을 끝내십시오.
-18. 💡 **[비정형 문서 기호/단어 의미 규칙]**: 비정형 문서 표에서 하이픈(`-`) 기호는 '데이터 값이 존재하지 않음(해당 전형으로 모집하지 않음)'을 의미하므로 특별한 지시가 없다면 숫자 `0`과 동일하게 취급하십시오. 또한 모집 인원이 숫자가 아닌 텍스트로 기재되어 있다면 해당 문구의 의미(예: 인원 무제한 등)를 그대로 문맥에 맞게 해석하십시오.
-19. 💡 **[데이터 충돌 시 우선순위 규칙]**: 만약 <판단 기준 1: 시스템 DB 최신 팩트>와 <판단 기준 2: 사내 규정 및 과거 문서>의 내용이 서로 상이하거나 충돌할 경우, 최신 통계 데이터인 **<판단 기준 1: 시스템 DB>의 값을 최우선으로 참고**하여 답변하십시오.
-20. 💡 **[PDF 표 병합(빈칸) 추론 절대 지침]**: <판단 기준 2: 사내 규정(RAG)> 내 문서의 표에 특정 칸이 비어있다면, 무조건 '해당 없음'이나 '모집 안함'으로 단정짓지 마십시오. PDF 변환 특성상 **윗칸의 텍스트가 병합되어 생략(빈칸) 처리된 것일 확률이 99%**입니다. 따라서 <검토 대상 문서(스크랩)>에는 글자가 채워져 있고 PDF 기준 문서에는 빈칸일 경우, "스크랩이 틀렸다"고 절대 오진하지 말고 윗칸 문맥을 이어붙여 정상 병합된 팩트로 인정하십시오.
-21. 🚨 **[특수문자 및 수식 규정(LaTeX 절대 금지)]**: 어떠한 경우에도 LaTeX 수학 기호나 수식 블록(예: `$`, `$$`, `\text{{}}`, `\times`, `\rightarrow`)을 절대로 사용하지 마십시오. (❌ 잘못된 예: `$12,600\text{{원}} \times 12\text{{부}} = 151,200\text{{원}}$` ➡️ 🟢 올바른 예: `12,600원 x 12부 = 151,200원`). 화살표는 반드시 유니코드(→)를 사용하십시오.
+16. **[실시간 지식 업데이트 성공 시 피드백 알림 강제]**: <지식 업데이트 반영 내역>에 저장/삭제 완료 알림 메시지가 있다면 답변 최상단에 마크다운 인용구 형태로 100% 원문 그대로 노출하십시오.
+17. 💡 **[RAG 검색 한계 인지 및 오판 방지]**: RAG로 인출된 텍스트 조각이 문서의 전체 표나 세부 조항을 완벽히 포함하지 않을 수 있습니다. 텍스트 조각에 특정 수치나 세부 조항이 명시적으로 보이지 않더라도, 섣불리 오답이나 누락이라고 단정짓지 말고 '관련 규정의 전체 원문을 재확인해야 합니다'와 같이 유보적으로 답변하십시오.
+18. **[학생 전용 빠른 답변(Fail-Fast) 의무 (엄격 적용)]**: 질문과 관련된 데이터가 단 한 줄도 존재하지 않을 경우, 억지로 추론하지 말고 "죄송합니다. 해당 질문에 관련된 정보를 찾을 수 없습니다."라고 한 문장으로 답변을 끝내십시오.
+19. 💡 **[비정형 문서 기호/단어 의미 규칙]**: 비정형 문서 표에서 하이픈(`-`) 기호는 '데이터 값이 존재하지 않음(해당 전형으로 모집하지 않음)'을 의미하므로 특별한 지시가 없다면 숫자 `0`과 동일하게 취급하십시오. 또한 모집 인원이 숫자가 아닌 텍스트로 기재되어 있다면 해당 문구의 의미(예: 인원 무제한 등)를 그대로 문맥에 맞게 해석하십시오.
+20. 💡 **[데이터 충돌 시 우선순위 규칙]**: 만약 <판단 기준 1: 시스템 DB 최신 팩트>와 <판단 기준 2: 사내 규정 및 과거 문서>의 내용이 서로 상이하거나 충돌할 경우, 최신 통계 데이터인 **<판단 기준 1: 시스템 DB>의 값을 최우선으로 참고**하여 답변하십시오.
+21. 💡 **[PDF 표 병합(빈칸) 추론 절대 지침]**: <판단 기준 2: 사내 규정(RAG)> 내 문서의 표에 특정 칸이 비어있다면, 무조건 '해당 없음'이나 '모집 안함'으로 단정짓지 마십시오. PDF 변환 특성상 **윗칸의 텍스트가 병합되어 생략(빈칸) 처리된 것일 확률이 99%**입니다. 따라서 <검토 대상 문서(스크랩)>에는 글자가 채워져 있고 PDF 기준 문서에는 빈칸일 경우, "스크랩이 틀렸다"고 절대 오진하지 말고 윗칸 문맥을 이어붙여 정상 병합된 팩트로 인정하십시오.
+22. 🚨 **[특수문자 및 수식 규정(LaTeX 절대 금지)]**: 어떠한 경우에도 LaTeX 수학 기호나 수식 블록(예: `$`, `$$`, `\text{{}}`, `\times`, `\rightarrow`)을 절대로 사용하지 마십시오. (❌ 잘못된 예: `$12,600\text{{원}} \times 12\text{{부}} = 151,200\text{{원}}$` ➡️ 🟢 올바른 예: `12,600원 x 12부 = 151,200원`). 화살표는 반드시 유니코드(→)를 사용하십시오.
 
 <지식 업데이트 반영 내역>
 {k_feedback_msg if k_feedback_msg else "수행된 업데이트 내역 없음"}
 </지식 업데이트 반영 내역>
 """
-        def print_token_receipt(prompt_text, answer_text, chat_model_name, r_model, r_in, r_out):
+        def print_token_receipt(prompt_text, answer_text, chat_model_name, r_model, r_in, r_out, skip_api=False):
             try:
-                c_in = final_model.count_tokens(prompt_text).total_tokens
-                c_out = final_model.count_tokens(answer_text).total_tokens
+                c_in, c_out = 0, 0
+                if not skip_api:
+                    c_in = final_model.count_tokens(prompt_text).total_tokens
+                    c_out = final_model.count_tokens(answer_text).total_tokens
                 
                 doc_texts_len = {}
                 for d in final_rules + final_refs:
@@ -1888,6 +2041,11 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 print(f"[토큰 계산 오류] {token_err}")
                 return (r_model, r_in, r_out, 0, 0, 0, 0.0, None)
 
+        # [NEW] 단축 종료(Short-circuit) 로직 추가
+        short_circuit_text = None
+        if k_feedback_msg and sql_query == "NONE" and not need_rag:
+            short_circuit_text = f"> {k_feedback_msg}\n\n네, 지시하신 내용을 시스템 사전지식 베이스에 정상적으로 반영(등록/삭제) 완료했습니다.\n앞으로 AI는 질문에 답변할 때 이 규칙을 최우선으로 참고하게 됩니다."
+
         # 학생 권한은 60초, 교직원은 복잡한 표 분석을 위해 기존대로 600초(10분) 유지
         timeout_sec = 60 if request.user_role == "student" else 600
         
@@ -1897,12 +2055,18 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             from fastapi.responses import StreamingResponse
             import json
             
-            # [NEW] 학생용 분기 - 실시간 스트리밍 모드
-            response = final_model.generate_content(
-                prompt, 
-                request_options={"timeout": timeout_sec, "retry": no_retry},
-                stream=True
-            )
+            if short_circuit_text:
+                class MockChunk:
+                    def __init__(self, text):
+                        self.text = text
+                response = [MockChunk(short_circuit_text)]
+            else:
+                # [NEW] 학생용 분기 - 실시간 스트리밍 모드
+                response = final_model.generate_content(
+                    prompt, 
+                    request_options={"timeout": timeout_sec, "retry": no_retry},
+                    stream=True
+                )
             
             # finally 블록에서 conn 닫히는 것을 방지하기 위해 얕은 복사본을 유지하고 원본 초기화
             conn_for_stream = conn
@@ -1932,7 +2096,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     log_id = None
                     try:
                         # [NEW] 영수증 출력 및 토큰 데이터 확보
-                        t_data = print_token_receipt(prompt, full_text, request.model_name, used_router_model, router_in_tokens, router_out_tokens)
+                        is_short = bool(short_circuit_text)
+                        t_data = print_token_receipt(prompt, full_text, request.model_name, used_router_model, router_in_tokens, router_out_tokens, skip_api=is_short)
                         
                         if conn_for_stream:
                             cursor = conn_for_stream.cursor()
@@ -1985,14 +2150,21 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             
         else:
             # [기존 교직원용 분기] - 전체 문장이 한 번에 나올 때까지 기다렸다가 JSON 리턴
-            response = final_model.generate_content(prompt, request_options={"timeout": timeout_sec, "retry": no_retry})
+            if short_circuit_text:
+                class MockResponse:
+                    def __init__(self, text):
+                        self.text = text
+                response = MockResponse(short_circuit_text)
+            else:
+                response = final_model.generate_content(prompt, request_options={"timeout": timeout_sec, "retry": no_retry})
             
             # [NEW] Audit Log 기록
             time_final_end = time.time()
             print(f"⏱️ 최종 AI 답변 소요 시간: {time_final_end - time_db_end:.2f}초")
             
             # [NEW] 영수증 출력 및 토큰 데이터 확보
-            t_data = print_token_receipt(prompt, response.text, request.model_name, used_router_model, router_in_tokens, router_out_tokens)
+            is_short = bool(short_circuit_text)
+            t_data = print_token_receipt(prompt, response.text, request.model_name, used_router_model, router_in_tokens, router_out_tokens, skip_api=is_short)
             
             latency_ms = int((time.time() - start_time) * 1000)
             router_lat = int((time_router_end - start_time) * 1000)
@@ -2046,7 +2218,10 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 "log_id": log_id,
                 "answer": response.text,
                 "references": results_metadatas,
-                "latency_ms": latency_ms
+                "latency_ms": latency_ms,
+                "full_data": full_data_rows,
+                "total_sql_count": total_sql_count,
+                "fetched_sql_count": fetched_sql_count
             }
 
     except Exception as e:
@@ -2173,7 +2348,7 @@ async def get_table_catalog():
     try:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT table_name, db_source, description, 
+            SELECT table_name, db_source, description, is_active,
                    CONVERT(VARCHAR(10), created_at, 120) AS created_at, 
                    table_name_kr 
             FROM Sys_TableCatalog
@@ -2213,14 +2388,14 @@ async def get_table_catalog():
 
 
 @app.put("/tables/{table_name}")
-async def update_table(table_name: str, table_name_kr: str = Form(...), description: str = Form(None)):
+async def update_table(table_name: str, table_name_kr: str = Form(...), description: str = Form(None), is_active: str = Form("Y")):
     """정형 데이터(테이블/뷰) 메타데이터 수정"""
     conn = get_mssql_connection()
     if not conn: raise HTTPException(status_code=500, detail="MS-SQL 연결 실패")
     try:
         cursor = conn.cursor()
         desc_val = description if description else ""
-        cursor.execute("UPDATE Sys_TableCatalog SET table_name_kr=?, description=? WHERE table_name=?", (table_name_kr, desc_val, table_name))
+        cursor.execute("UPDATE Sys_TableCatalog SET table_name_kr=?, description=?, is_active=? WHERE table_name=?", (table_name_kr, desc_val, is_active, table_name))
         conn.commit()
         return {"status": "success", "message": "데이터 카탈로그 정보가 수정되었습니다."}
     except Exception as e:
@@ -2272,7 +2447,7 @@ async def get_document_catalog():
         cursor.execute("""
             SELECT doc_id, filename, doc_type, year, title, is_public, 
                    CONVERT(VARCHAR(10), uploaded_at, 120) AS uploaded_at, 
-                   description 
+                   description, is_active 
             FROM Sys_DocumentCatalog
             ORDER BY uploaded_at DESC
         """)
@@ -2296,6 +2471,7 @@ class SupplementalKnowledgePayload(BaseModel):
     category: str
     content: str
     author: Optional[str] = "staff"
+    is_active: Optional[str] = "Y"
 
 
 @app.get("/catalog/supplemental-knowledge")
@@ -2311,7 +2487,6 @@ async def get_supplemental_knowledge_catalog():
                    CONVERT(VARCHAR(10), created_at, 120) AS created_at, 
                    author 
             FROM Sys_SupplementalKnowledge
-            WHERE is_active = 'Y'
             ORDER BY id DESC
         """)
         columns = [column[0] for column in cursor.description]
@@ -2359,9 +2534,9 @@ async def update_supplemental_knowledge(knowledge_id: int, payload: Supplemental
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE Sys_SupplementalKnowledge
-            SET category = ?, content = ?
+            SET category = ?, content = ?, is_active = ?
             WHERE id = ?
-        """, (payload.category, payload.content, knowledge_id))
+        """, (payload.category, payload.content, payload.is_active, knowledge_id))
         conn.commit()
         return {"status": "success", "message": "사전지식이 성공적으로 수정되었습니다."}
     except Exception as e:
@@ -2380,8 +2555,7 @@ async def delete_supplemental_knowledge(knowledge_id: int):
     try:
         cursor = conn.cursor()
         cursor.execute("""
-            UPDATE Sys_SupplementalKnowledge
-            SET is_active = 'N'
+            DELETE FROM Sys_SupplementalKnowledge
             WHERE id = ?
         """, (knowledge_id,))
         conn.commit()

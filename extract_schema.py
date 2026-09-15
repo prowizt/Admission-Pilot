@@ -84,13 +84,17 @@ def get_schema():
              WHERE ic.object_id = c.object_id AND ic.column_id = c.column_id AND i.is_primary_key = 1) AS IsPK,
             (SELECT TOP 1 OBJECT_NAME(fkc.referenced_object_id) 
              FROM sys.foreign_key_columns fkc 
-             WHERE fkc.parent_object_id = c.object_id AND fkc.parent_column_id = c.column_id) AS RefTable
+             WHERE fkc.parent_object_id = c.object_id AND fkc.parent_column_id = c.column_id) AS RefTable,
+            c.is_identity AS IsIdentity,
+            dc.definition AS DefaultValue
         FROM sys.columns c
         INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
         LEFT JOIN sys.extended_properties ep 
             ON ep.major_id = c.object_id 
             AND ep.minor_id = c.column_id 
             AND ep.name = 'MS_Description'
+        LEFT JOIN sys.default_constraints dc
+            ON c.default_object_id = dc.object_id
         WHERE c.object_id = OBJECT_ID('{table}')
         ORDER BY c.column_id
         """
@@ -99,16 +103,18 @@ def get_schema():
         
         schema_text += "Columns:\n"
         for col in columns:
-            col_name, data_type, max_length, is_nullable, description, is_pk, ref_table = col
+            col_name, data_type, max_length, is_nullable, description, is_pk, ref_table, is_identity, default_val = col
             
             nullable = "NULL" if is_nullable else "NOT NULL"
             length = f"({max_length})" if max_length != -1 else ""
             
             pk_label = "[PK] " if is_pk > 0 else ""
             fk_label = f"[FK: {ref_table}] " if ref_table else ""
+            identity_str = " IDENTITY(1,1)" if is_identity else ""
+            default_str = f" DEFAULT {default_val.strip()}" if default_val else ""
             desc = f" -- {description}" if description else "" 
             
-            schema_text += f" - {pk_label}{fk_label}{col_name} ({data_type}{length}) {nullable}{desc}\n"
+            schema_text += f" - {pk_label}{fk_label}{col_name} ({data_type}{length}){identity_str} {nullable}{default_str}{desc}\n"
             
         schema_text += "\n"
 

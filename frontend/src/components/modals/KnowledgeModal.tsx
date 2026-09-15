@@ -16,7 +16,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
   const [formData, setFormData] = useState({
     doc_type: 'rule', year: new Date().getFullYear().toString(), title: '',
     is_public: 'Y', db_source: 'INTERNAL', table_name: '', description: '',
-    category: '인사/조직', content: ''
+    category: '인사/조직', content: '', is_active: 'Y'
   });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
@@ -46,14 +46,15 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
           table_name: editData.table_name || '',
           description: editData.description || '',
           category: editData.category || '인사/조직',
-          content: editData.content || ''
+          content: editData.content || '',
+          is_active: editData.is_active || 'Y'
         });
         if (activeTab === 'tables') fetchColumns(editData.table_name);
       } else {
         setFormData({
           doc_type: 'rule', year: new Date().getFullYear().toString(), title: '',
           is_public: 'Y', db_source: 'INTERNAL', table_name: '', description: '',
-          category: '인사/조직', content: ''
+          category: '인사/조직', content: '', is_active: 'Y'
         });
         setColumns([]);
       }
@@ -78,10 +79,10 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
   const processFile = (file: File) => {
     if (activeTab === 'documents') {
       const fileExt = file.name.toLowerCase();
-      if (file.type === "application/pdf" || fileExt.endsWith('.pdf') || fileExt.endsWith('.xlsx') || fileExt.endsWith('.xls') || file.type.includes('spreadsheetml') || file.type.includes('excel')) {
+      if (file.type === "application/pdf" || fileExt.endsWith('.pdf') || fileExt.endsWith('.xlsx') || fileExt.endsWith('.xls') || fileExt.endsWith('.txt') || file.type === 'text/plain' || file.type.includes('spreadsheetml') || file.type.includes('excel')) {
         setSelectedFile(file);
       } else {
-        CustomSwal.fire({ icon: 'error', title: '형식 오류', text: 'PDF 또는 엑셀(.xlsx) 파일만 첨부 가능합니다.' });
+        CustomSwal.fire({ icon: 'error', title: '형식 오류', text: 'PDF, 엑셀(.xlsx), 또는 TXT 파일만 첨부 가능합니다.' });
       }
     } else {
       if (file.name.toLowerCase().match(/\.(xlsx|xls)$/)) {
@@ -176,12 +177,14 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
       payload.append('year', formData.year);
       payload.append('title', formData.title);
       payload.append('is_public', formData.is_public);
+      payload.append('is_active', formData.is_active);
       if (formData.description) payload.append('description', formData.description);
 
       try {
         setIsLoading(true);
         if (isEditMode) {
-          const res = await axios.put(`/api/documents/${editData.doc_id}`, payload);
+          if (selectedFile) payload.append('file', selectedFile as Blob);
+          const res = await axios.put(`/api/documents/${editData.doc_id}`, payload, { headers: { 'Content-Type': 'multipart/form-data' } });
           if (res.data.status === 'success') {
             CustomSwal.fire({ icon: 'success', title: '성공', text: '문서 정보가 수정되었습니다.', timer: 1500, showConfirmButton: false });
             if (onSuccess) onSuccess();
@@ -206,7 +209,8 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
         const payload = {
           category: formData.category,
           content: formData.content,
-          author: 'staff'
+          author: 'staff',
+          is_active: formData.is_active
         };
 
         if (isEditMode) {
@@ -232,6 +236,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
       const payload = new FormData();
       payload.append('table_name', formData.table_name);
       payload.append('table_name_kr', formData.title);
+      payload.append('is_active', formData.is_active);
       if (formData.description) payload.append('description', formData.description);
 
       try {
@@ -307,7 +312,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
           <h3 className="font-bold text-sm tracking-wide flex items-center gap-1.5">
             {activeTab === 'documents' ? <FileText size={18} /> : (activeTab === 'knowledge' ? <ShieldHalf size={18} /> : <Database size={18} />)}
             {activeTab === 'documents' 
-              ? `지식 문서(PDF/Excel) ${isEditMode ? '수정' : '등록'}` 
+              ? `지식 문서(PDF/Excel/TXT) ${isEditMode ? '수정' : '등록'}` 
               : activeTab === 'knowledge'
                 ? `실시간 보완 지식 ${isEditMode ? '수정' : '등록'}`
                 : `정형 데이터 ${isEditMode ? '상세설정' : '연동'}`
@@ -358,20 +363,20 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
                     </div>
                   </div>
                   <div>
-                    <label className={labelClass}>파일 첨부 (PDF, Excel) *</label>
-                    {isEditMode ? (
-                      <div className="w-full border border-gray-200 bg-gray-50 rounded-lg p-3 text-center">
-                        <FileText size={20} className="mx-auto mb-2 text-gray-400" />
-                        <p className="text-xs font-bold text-gray-700">{editData.filename}</p>
-                        <p className="text-[10px] text-gray-400 mt-1">무결성을 위해 파일은 수정할 수 없습니다.</p>
-                      </div>
-                    ) : (
+                    <label className={labelClass}>파일 첨부 (PDF, Excel, TXT) *</label>
                       <div onClick={() => fileInputRef.current?.click()} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop} className={`w-full border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${selectedFile || isDragging ? 'border-indigo-400 bg-indigo-50' : 'border-gray-300 hover:bg-gray-50'}`}>
-                        <input type="file" accept=".pdf,.xlsx" className="hidden" ref={fileInputRef} onChange={handleFileChange} />
+                        <input type="file" accept=".pdf,.xlsx,.txt" className="hidden" ref={fileInputRef} onChange={handleFileChange} />
                         <Upload size={20} className={`mx-auto mb-2 ${selectedFile ? 'text-indigo-600' : 'text-gray-400'}`} />
-                        {selectedFile ? <p className="text-xs font-bold text-indigo-700 truncate">{selectedFile.name}</p> : <p className="text-xs text-gray-500 font-medium">여기를 클릭하거나 PDF, 엑셀(.xlsx) 파일을 끌어다 놓으세요.</p>}
+                        {selectedFile ? <p className="text-xs font-bold text-indigo-700 truncate">{selectedFile.name}</p> : 
+                          isEditMode ? (
+                            <>
+                              <p className="text-xs font-bold text-gray-700">현재 파일: {editData.filename}</p>
+                              <p className="text-[10px] text-gray-500 mt-1">여기를 클릭하여 새 파일로 교체할 수 있습니다. (PDF, Excel, TXT)</p>
+                            </>
+                          ) : (
+                            <p className="text-xs text-gray-500 font-medium">여기를 클릭하거나 PDF, 엑셀(.xlsx), TXT 파일을 끌어다 놓으세요.</p>
+                          )}
                       </div>
-                    )}
                   </div>
                 </>
               ) : activeTab === 'knowledge' ? (
@@ -474,6 +479,20 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
                   <textarea rows={4} value={formData.description} onChange={e => setFormData({ ...formData, description: e.target.value })} className={`${inputClass} resize-none`} placeholder="AI가 문맥을 파악할 수 있는 설명을 적어주세요." />
                 </div>
               )}
+
+              <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 mt-4">
+                <div>
+                  <h4 className="text-sm font-bold text-gray-800">지식 사용 여부 (활성 상태)</h4>
+                  <p className="text-[11px] text-gray-500 mt-0.5">사용 안 함(비활성)으로 설정 시 AI가 참조하지 않습니다.</p>
+                </div>
+                <button 
+                  type="button"
+                  onClick={() => setFormData({ ...formData, is_active: formData.is_active === 'Y' ? 'N' : 'Y' })}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${formData.is_active === 'Y' ? 'bg-indigo-600' : 'bg-gray-300'}`}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${formData.is_active === 'Y' ? 'translate-x-6' : 'translate-x-1'}`} />
+                </button>
+              </div>
 
               {/* [NEW] 컬럼 카탈로그 편집기 (수정 모드일 때만 표시) */}
               {isEditMode && activeTab === 'tables' && (

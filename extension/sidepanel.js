@@ -324,6 +324,50 @@ function formatChatText(rawText) {
   html = html.replace(/\[(불일치[^\]]*)\]/g, '<span class="bg-rose-100 text-rose-700 font-bold px-1.5 py-0.5 rounded-md inline-block my-0.5 shadow-sm">[$1]</span>');
   html = html.replace(/\[(일치[^\]]*)\]/g, '<span class="bg-emerald-50 text-emerald-600 font-bold px-1.5 py-0.5 rounded-md inline-block my-0.5 border border-emerald-200">[$1]</span>');
 
+  // 4. Markdown Table Parsing
+  const tableRegex = /(?:\|.*\|\n?)+/g;
+  html = html.replace(tableRegex, (match) => {
+    const lines = match.trim().split('\n');
+    if (lines.length < 2) return match;
+    
+    // 두 번째 줄이 구분선(|---|---|)인지 확인
+    const separatorLine = lines[1];
+    if (!separatorLine.match(/\|[-:\s|]+\|/)) return match;
+    
+    const tableId = 'table-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+    let tableHtml = `<div class="overflow-x-auto my-3 relative"><table id="${tableId}" class="min-w-full text-xs text-left border-collapse border border-gray-300 chat-table whitespace-nowrap shadow-sm">`;
+    
+    let isHeader = true;
+    for (let i = 0; i < lines.length; i++) {
+      if (i === 1) continue; // 구분선 줄 건너뛰기
+      
+      const line = lines[i].trim();
+      if (!line) continue;
+      
+      // | 셀1 | 셀2 | -> 양끝 파이프 제거 후 분리
+      const cells = line.replace(/^\||\|$/g, '').split('|');
+      
+      tableHtml += '<tr>';
+      cells.forEach(cell => {
+        const cellText = cell.trim();
+        if (isHeader) {
+          tableHtml += `<th class="px-3 py-2 bg-indigo-50 border border-gray-300 font-bold text-indigo-900">${cellText}</th>`;
+        } else {
+          tableHtml += `<td class="px-3 py-2 border border-gray-300 bg-white text-gray-700">${cellText}</td>`;
+        }
+      });
+      tableHtml += '</tr>';
+      
+      if (isHeader) isHeader = false;
+    }
+    tableHtml += `</table></div>`;
+    
+    // 테이블 하단에 엑셀 다운로드 버튼 추가
+    tableHtml += `<div class="flex justify-end mt-1 mb-4"><button type="button" data-table-id="${tableId}" class="btn-download-excel flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold rounded shadow-sm transition-colors active:scale-95"><svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>엑셀로 다운로드 (CSV)</button></div>`;
+    
+    return tableHtml;
+  });
+
   return html;
 }
 
@@ -583,6 +627,27 @@ async function sendMessage() {
     if (data.status === 'success') {
       const finalAnswer = data.answer ? data.answer.replace(/\$\\rightarrow\$/g, '→').replace(/\\rightarrow/g, '→') : '';
       addMessage(finalAnswer, false, true, data.log_id, null, data.latency_ms);
+      
+      // [NEW] 원본 데이터(full_data)가 존재하면 다운로드 버튼 생성
+      if (data.full_data && data.full_data.length > 0) {
+        if (!window.sqlFullDataCache) window.sqlFullDataCache = {};
+        window.sqlFullDataCache[data.log_id] = data.full_data;
+        
+        const lastBubble = chatContainer.lastElementChild.querySelector('.bg-indigo-50, .bg-gray-100');
+        if (lastBubble) {
+          let btnText = `원본 엑셀 다운로드 (${data.full_data.length}건)`;
+          if (data.total_sql_count && data.fetched_sql_count && data.total_sql_count > data.fetched_sql_count) {
+            btnText = `원본 엑셀 다운로드 (${data.fetched_sql_count.toLocaleString()}건 / 총 ${data.total_sql_count.toLocaleString()}건)`;
+          }
+          const btnHtml = `<div class="mt-2 pt-2 border-t border-indigo-100 flex justify-end">
+            <button type="button" data-log-id="${data.log_id}" class="btn-download-full-excel flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold rounded shadow-sm transition-colors active:scale-95">
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+              ${btnText}
+            </button>
+          </div>`;
+          lastBubble.insertAdjacentHTML('beforeend', btnHtml);
+        }
+      }
       
       // 엑셀 생성 결과가 있으면 다운로드 실행
       if (data.excel_base64) {
@@ -981,3 +1046,79 @@ function checkServerStatus() {
 
 checkServerStatus();
 setInterval(checkServerStatus, 3000);
+
+
+document.addEventListener('click', function(e) {
+  const btnTable = e.target.closest('.btn-download-excel');
+  if (btnTable) {
+    const tableId = btnTable.getAttribute('data-table-id');
+    const table = document.getElementById(tableId);
+    if (!table) return;
+    
+    let csvContent = "";
+    const rows = table.querySelectorAll('tr');
+    
+    rows.forEach(row => {
+      const cols = row.querySelectorAll('th, td');
+      const rowData = [];
+      cols.forEach(col => {
+        let text = col.innerText.replace(/"/g, '""');
+        rowData.push(`"${text}"`);
+      });
+      csvContent += rowData.join(',') + "\n";
+    });
+    
+    downloadCsv(csvContent, "추출데이터");
+    return;
+  }
+
+  const btnFull = e.target.closest('.btn-download-full-excel');
+  if (btnFull) {
+    const logId = btnFull.getAttribute('data-log-id');
+    const fullData = window.sqlFullDataCache ? window.sqlFullDataCache[logId] : null;
+    
+    if (!fullData || fullData.length === 0) {
+      alert("원본 데이터를 찾을 수 없습니다.");
+      return;
+    }
+    
+    let csvContent = "";
+    const headers = Object.keys(fullData[0]);
+    csvContent += headers.map(h => `"${h.replace(/"/g, '""')}"`).join(',') + "\n";
+    
+    fullData.forEach(row => {
+      const rowData = headers.map(h => {
+        let val = row[h];
+        if (val === null || val === undefined) val = "";
+        return `"${String(val).replace(/"/g, '""')}"`;
+      });
+      csvContent += rowData.join(',') + "\n";
+    });
+    
+    downloadCsv(csvContent, "원본전체데이터");
+    return;
+  }
+});
+
+function downloadCsv(csvContent, prefix) {
+  const now = new Date();
+  const dateStr = now.getFullYear().toString() + 
+                  (now.getMonth() + 1).toString().padStart(2, '0') + 
+                  now.getDate().toString().padStart(2, '0') + '_' +
+                  now.getHours().toString().padStart(2, '0') +
+                  now.getMinutes().toString().padStart(2, '0') +
+                  now.getSeconds().toString().padStart(2, '0');
+                  
+  const filename = `대동대챗봇_${prefix}_${dateStr}.csv`;
+  
+  const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
+  
+  const link = document.createElement("a");
+  const url = URL.createObjectURL(blob);
+  link.setAttribute("href", url);
+  link.setAttribute("download", filename);
+  link.style.visibility = 'hidden';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}

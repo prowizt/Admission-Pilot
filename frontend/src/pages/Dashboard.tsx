@@ -72,6 +72,39 @@ export default function Dashboard() {
     }
   };
 
+  const handleToggleActive = async (e: any, item: any, type: string) => {
+    e.stopPropagation();
+    try {
+      if (type === 'documents') {
+        const payload = new FormData();
+        payload.append('doc_type', item.doc_type);
+        payload.append('year', item.year);
+        payload.append('title', item.title);
+        payload.append('is_public', item.is_public);
+        payload.append('description', item.description || '');
+        payload.append('is_active', item.is_active === 'Y' ? 'N' : 'Y');
+        await axios.put(`/api/documents/${item.doc_id}`, payload);
+      } else if (type === 'tables') {
+        const payload = new FormData();
+        payload.append('table_name_kr', item.table_name_kr || '');
+        payload.append('description', item.description || '');
+        payload.append('is_active', item.is_active === 'Y' ? 'N' : 'Y');
+        await axios.put(`/api/tables/${item.table_name}`, payload);
+      } else if (type === 'knowledge') {
+        const payload = {
+          category: item.category,
+          content: item.content,
+          author: item.author || 'staff',
+          is_active: item.is_active === 'Y' ? 'N' : 'Y'
+        };
+        await axios.put(`/api/catalog/supplemental-knowledge/${item.id}`, payload);
+      }
+      fetchCatalogs();
+    } catch (error: any) {
+      CustomSwal.fire({ icon: 'error', title: '변경 실패', text: error.message });
+    }
+  };
+
   useEffect(() => {
     fetchCatalogs();
   }, [activeTab]);
@@ -85,6 +118,10 @@ export default function Dashboard() {
     const matchType = docFilter === 'all' || doc.doc_type === docFilter;
     const matchPublic = publicFilter === 'all' || doc.is_public === publicFilter;
     return matchSearch && matchType && matchPublic;
+  }).sort((a, b) => {
+    const dateA = a.uploaded_at ? new Date(a.uploaded_at).getTime() : 0;
+    const dateB = b.uploaded_at ? new Date(b.uploaded_at).getTime() : 0;
+    return dateB - dateA; // 최신등록일이 제일 위에 오도록 내림차순 정렬
   });
 
   const filteredTables = tables.filter(table => {
@@ -294,6 +331,7 @@ export default function Dashboard() {
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-20 text-center">연도</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700">문서 제목</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">등록일</th>
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-20 text-center">활성</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -318,15 +356,26 @@ export default function Dashboard() {
                               <span className="text-xs font-bold text-gray-500">{doc.year}</span>
                             </td>
                             <td className="px-4 py-4 min-w-0">
-                              <div className="flex items-center gap-2">
-                                <div className={`font-bold text-sm truncate ${doc.is_public === 'Y' ? 'text-emerald-700' : 'text-gray-800'}`}>{doc.title}</div>
-                                <button onClick={(e) => { e.stopPropagation(); handlePreview(doc.doc_type, doc.doc_id, doc.title); }} className="px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded text-[10px] font-bold hover:bg-indigo-100 flex items-center gap-1 whitespace-nowrap shrink-0">
-                                  <Eye size={10} /> 본문
-                                </button>
+                              <div className="flex flex-col gap-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-gray-800 truncate" title={doc.title}>{doc.title || '제목 없음'}</span>
+                                  <button onClick={(e) => { e.stopPropagation(); handlePreview(doc.doc_type, doc.doc_id, doc.title); }} className="px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded text-[10px] font-bold hover:bg-indigo-100 flex items-center gap-1 whitespace-nowrap shrink-0">
+                                    <Eye size={10} /> 본문
+                                  </button>
+                                </div>
+                                <span className="text-xs text-gray-400 truncate" title={doc.filename}>{doc.filename}</span>
                               </div>
                             </td>
-                            <td className="px-4 py-4 text-center text-[11px] text-gray-500 font-mono whitespace-nowrap">
-                              {doc.uploaded_at}
+                            <td className="px-4 py-4 min-w-0 text-center whitespace-nowrap">
+                              <span className="text-[11px] font-medium text-gray-500">{doc.uploaded_at?.substring(0, 10)}</span>
+                            </td>
+                            <td className="px-4 py-4 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                              <button 
+                                onClick={(e) => handleToggleActive(e, doc, 'documents')}
+                                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${doc.is_active === 'Y' ? 'bg-indigo-600' : 'bg-gray-300'}`}
+                              >
+                                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${doc.is_active === 'Y' ? 'translate-x-4' : 'translate-x-1'}`} />
+                              </button>
                             </td>
                           </tr>
                         ))
@@ -366,7 +415,10 @@ export default function Dashboard() {
                           <span className="font-bold">[{doc.year}]</span>
                           <span className="truncate">{doc.filename}</span>
                         </div>
-                        <span className="shrink-0 font-bold">{doc.is_public === 'Y' ? '🟢 공개' : '🔴 보안'}</span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span>{doc.uploaded_at?.substring(0, 10)}</span>
+                          <span className="font-bold">{doc.is_public === 'Y' ? '🟢 공개' : '🔴 보안'}</span>
+                        </div>
                       </div>
                     </div>
                   ))
@@ -392,11 +444,12 @@ export default function Dashboard() {
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-1/3">데이터명 (View/Table 명)</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700">AI 참조 설명 (Hint)</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">연동일</th>
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-20 text-center">활성</th>
                       </tr>
                     </thead>
                     <tbody>
                       {paginatedTables.length === 0 ? (
-                        <tr><td colSpan={5} className="py-12 text-center text-slate-400 font-medium">조건에 맞는 데이터 뷰가 없습니다.</td></tr>
+                        <tr><td colSpan={6} className="py-12 text-center text-slate-400 font-medium">조건에 맞는 데이터 뷰가 없습니다.</td></tr>
                       ) : (
                         paginatedTables.map(table => (
                           <tr key={table.table_name} onClick={() => { setSelectedDoc(table); setIsModalOpen(true); }} className="border-b border-gray-100 hover:bg-indigo-50/30 transition-colors cursor-pointer group">
@@ -420,6 +473,14 @@ export default function Dashboard() {
                             <td className="px-4 py-3 text-center text-[11px] text-gray-500 font-mono whitespace-nowrap">
                               {table.created_at}
                             </td>
+                            <td className="px-4 py-3 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                              <button 
+                                onClick={(e) => handleToggleActive(e, table, 'tables')}
+                                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${table.is_active === 'Y' ? 'bg-indigo-600' : 'bg-gray-300'}`}
+                              >
+                                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${table.is_active === 'Y' ? 'translate-x-4' : 'translate-x-1'}`} />
+                              </button>
+                            </td>
                           </tr>
                         ))
                       )}
@@ -427,7 +488,7 @@ export default function Dashboard() {
                     {filteredTables.length > 0 && (
                       <tfoot className="bg-slate-100 border-t border-slate-300">
                         <tr>
-                          <td colSpan={5} className="py-1 px-4">
+                          <td colSpan={6} className="py-1 px-4">
                             {renderPagination(tablePage, tableTotalPages, setTablePage, filteredTables.length)}
                           </td>
                         </tr>
@@ -484,11 +545,12 @@ export default function Dashboard() {
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700">보완 지식 내용</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">등록자</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">등록일</th>
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-20 text-center">활성</th>
                       </tr>
                     </thead>
                     <tbody>
                       {paginatedSupplemental.length === 0 ? (
-                        <tr><td colSpan={4} className="py-12 text-center text-slate-400 font-medium">등록된 사전지식이 없습니다.</td></tr>
+                        <tr><td colSpan={5} className="py-12 text-center text-slate-400 font-medium">등록된 사전지식이 없습니다.</td></tr>
                       ) : (
                         paginatedSupplemental.map(item => (
                           <tr key={item.id} onClick={() => { setSelectedDoc(item); setIsModalOpen(true); }} className="border-b border-gray-100 hover:bg-indigo-50/30 transition-colors cursor-pointer group">
@@ -502,16 +564,22 @@ export default function Dashboard() {
                                 {item.category === '예외규정' ? '사전지식' : item.category}
                               </span>
                             </td>
-                            <td className="px-4 py-3 min-w-0">
-                              <p className="text-sm text-gray-800 font-medium whitespace-pre-line leading-relaxed truncate max-w-xl" title={item.content}>
-                                {item.content}
-                              </p>
+                            <td className="px-4 py-4 min-w-0">
+                              <div className="text-sm text-gray-700 whitespace-pre-wrap">{item.content}</div>
                             </td>
                             <td className="px-4 py-3 text-center text-sm font-semibold text-gray-600 whitespace-nowrap">
                               {item.author || '시스템'}
                             </td>
                             <td className="px-4 py-3 text-center text-[11px] text-gray-500 font-mono whitespace-nowrap">
                               {item.created_at || '-'}
+                            </td>
+                            <td className="px-4 py-4 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                              <button 
+                                onClick={(e) => handleToggleActive(e, item, 'knowledge')}
+                                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${item.is_active === 'Y' ? 'bg-indigo-600' : 'bg-gray-300'}`}
+                              >
+                                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${item.is_active === 'Y' ? 'translate-x-4' : 'translate-x-1'}`} />
+                              </button>
                             </td>
                           </tr>
                         ))
@@ -520,7 +588,7 @@ export default function Dashboard() {
                     {filteredSupplemental.length > 0 && (
                       <tfoot className="bg-slate-100 border-t border-slate-300">
                         <tr>
-                          <td colSpan={4} className="py-1 px-4">
+                          <td colSpan={5} className="py-1 px-4">
                             {renderPagination(knowledgePage, knowledgeTotalPages, setKnowledgePage, filteredSupplemental.length)}
                           </td>
                         </tr>
