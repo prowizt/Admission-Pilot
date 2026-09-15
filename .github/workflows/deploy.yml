@@ -64,9 +64,20 @@ jobs:
               Write-Host "Found nginx.conf in repo and Nginx is installed. Updating configuration..."
               Copy-Item -Path $repoNginx -Destination $serverNginx -Force
               
-              Write-Host "Reloading Nginx..."
               cd $nginxDir
-              .\nginx.exe -s reload
+              Write-Host "Reloading Nginx..."
+              try {
+                  $reloadProc = Start-Process -FilePath ".\nginx.exe" -ArgumentList "-s reload" -Wait -PassThru -NoNewWindow
+                  if ($reloadProc.ExitCode -ne 0) {
+                      throw "Nginx reload failed with exit code $($reloadProc.ExitCode)"
+                  }
+                  Write-Host "Nginx reloaded successfully."
+              } catch {
+                  Write-Host "Reload failed (Access is denied or not running). Attempting hard restart..."
+                  try { taskkill /f /im nginx.exe } catch {}
+                  Start-Process -FilePath ".\nginx.exe" -WindowStyle Hidden
+                  Write-Host "Nginx hard restarted successfully."
+              }
           } else {
               Write-Host "Nginx is not installed at $nginxDir or repo config is missing. Skipping Nginx update."
           }
