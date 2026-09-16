@@ -87,7 +87,7 @@ function App() {
     {
       id: 'init',
       role: 'assistant',
-      content: '안녕하세요! 대동대학교 입학처 AI 챗봇입니다. 🎓\n입시 요강, 학과 정보, 전형 일정 등 궁금한 점을 편하게 물어보세요!'
+      content: '안녕하세요! 대동대학교 입학상담 AI 챗봇입니다. 🎓\n입시 요강, 학과 정보, 전형 일정 등 궁금한 점을 편하게 물어보세요!'
     }
   ]);
   const [input, setInput] = useState('');
@@ -286,7 +286,7 @@ function App() {
             <img src="/logo.png" alt="대동대학교 로고" className="w-7 h-7 object-contain" />
           </div>
           <div>
-            <h1 className="text-lg sm:text-xl font-bold tracking-wide">대동대 입시 AI 도우미</h1>
+            <h1 className="text-lg sm:text-xl font-bold tracking-wide">대동대학교 입학상담 AI 챗봇</h1>
             <p className="text-[10px] sm:text-xs text-indigo-200 font-medium mt-0.5">Student Mode</p>
           </div>
         </div>

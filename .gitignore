@@ -60,3 +60,6 @@ Thumbs.db
 *.crt
 *.key
 nginx/ssl/*
+
+# Google Drive Sync
+.tmp.driveupload/

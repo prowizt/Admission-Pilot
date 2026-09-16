@@ -1662,7 +1662,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                                 fname = meta.get("filename", "이름없음")
                                 
                                 # [NEW] 타겟 문서 지정 (Target Document Enforcement)
-                                if target_documents:
+                                # [UPDATE] 학생용 챗봇은 문서 풀이 작고 AI가 타겟을 과도하게 제한할 우려가 있으므로 타겟 문서 엄격 필터링을 예외 처리합니다 (업무용 챗봇만 적용)
+                                if target_documents and request.user_role != "student":
                                     fname_lower = fname.lower()
                                     target_clean = [re.sub(r'[^a-zA-Z0-9가-힣]', '', re.sub(r'\.[a-zA-Z0-9]+$', '', t)).lower() for t in target_documents]
                                     fname_only_clean = re.sub(r'[^a-zA-Z0-9가-힣]', '', re.sub(r'\.[a-zA-Z0-9]+$', '', fname)).lower()
