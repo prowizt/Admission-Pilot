@@ -254,6 +254,8 @@ async def chat_excel_autofill(
             # [2차 절대 방어선] 정규식을 이용해 대괄호 [ ] 내부의 모든 종류의 공백(띄어쓰기, 줄바꿈, 탭, 눈에 보이지 않는 유니코드 공백 등) 강제 삭제
             # 예: [수험 번호] 또는 [ 수험번호] -> [수험번호]
             if sql_query and sql_query != "NONE":
+                original_sql_query = sql_query  # [수정] 오타 교정 전의 진짜 원본 쿼리 보존
+                
                 # [1.5차 절대 방어선] 따옴표('') 내부의 줄바꿈(\n) 강제 제거 (문자열 중간 엔터 에러 방지)
                 sql_query = re.sub(r"'[^']*'", lambda m: m.group(0).replace('\n', '').replace('\r', ''), sql_query)
 
@@ -273,7 +275,7 @@ async def chat_excel_autofill(
                     
                     if valid_columns:
                         # CTE 등에서 자주 쓰이는 가상 컬럼명/별칭 강제 추가 (오타 교정 대상에서 제외)
-                        valid_columns.extend(["상세전형명", "지원인원", "등록인원", "학과명", "모집인원", "전형명", "지원율", "등록율", "합계", "Q", "A", "QUOTA", "APPLICANT", "APPLICANT_BASE", "EXCEL_ADMISSIONQUOTA"])
+                        valid_columns.extend(["상세전형명", "지원인원", "등록인원", "학과명", "모집인원", "전형명", "지원율", "등록율", "합계", "Q", "A", "QUOTA", "APPLICANT", "APPLICANT_BASE", "EXCEL_ADMISSIONQUOTA", "가공전형명", "가공연령대", "가공학년도", "가공구분"])
                         
                         # 2. AS 별칭 부분 보호 (AS [별칭] 부분을 임시 문자열로 치환하여 교정에서 제외)
                         # 공백이 없거나(AS[별칭]) 테이블명.컬럼명([A].[컬럼명]) 등 보호
@@ -288,9 +290,9 @@ async def chat_excel_autofill(
                         # 3. 남은 쿼리 내의 모든 [컬럼명] 추출 및 유사도 대조
                         def column_healer(match):
                             col_name = match.group(1)
-                            # 실제 컬럼 목록에 없으면 가장 유사한 컬럼으로 교정 (정확도 75% 이상)
+                            # 실제 컬럼 목록에 없으면 가장 유사한 컬럼으로 교정 (정확도 85% 이상으로 상향하여 과도한 교정 방지)
                             if col_name not in valid_columns:
-                                matches = difflib.get_close_matches(col_name, valid_columns, n=1, cutoff=0.75)
+                                matches = difflib.get_close_matches(col_name, valid_columns, n=1, cutoff=0.85)
                                 if matches:
                                     print(f"[동적 교정 완료] AI 오타 감지 및 수정: {col_name} -> {matches[0]}")
                                     return f"[{matches[0]}]"
@@ -310,8 +312,7 @@ async def chat_excel_autofill(
         except Exception as e:
             print(f"[EXCEL-AUTOFILL] SQL JSON 파싱 오류: {e}")
             sql_query = "NONE"
-            
-        original_sql_query = sql_query
+            original_sql_query = "NONE"
             
         # 8127 구문 에러 원천 차단을 위해 ORDER BY 절 강제 제거
         raw_sql_query = re.sub(r'(?i)\s*ORDER\s+BY\s+.*', '', sql_query).strip()
