@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>가상 입학처 홈페이지 (테스트용)</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            font-family: 'Malgun Gothic', sans-serif;
+            background-color: #f3f4f6;
+        }
+        .dummy-header {
+            background-color: #ffffff;
+            border-bottom: 2px solid #e5e7eb;
+            padding: 20px 40px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .dummy-header h1 {
+            margin: 0;
+            color: #111827;
+            font-size: 24px;
+        }
+        .dummy-nav {
+            display: flex;
+            gap: 20px;
+            color: #4b5563;
+            font-weight: bold;
+        }
+        .dummy-hero {
+            background-image: linear-gradient(to right, #312e81, #4338ca);
+            color: white;
+            text-align: center;
+            padding: 100px 20px;
+        }
+        .dummy-hero h2 {
+            font-size: 48px;
+            margin: 0 0 20px 0;
+        }
+        .dummy-hero p {
+            font-size: 20px;
+            margin: 0;
+            opacity: 0.9;
+        }
+        .dummy-content {
+            padding: 60px 40px;
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 30px;
+        }
+        .dummy-card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            height: 200px;
+        }
+        .dummy-footer {
+            background-color: #1f2937;
+            color: #9ca3af;
+            padding: 40px;
+            text-align: center;
+            margin-top: auto;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="dummy-header">
+        <h1>대동대학교 입학안내</h1>
+        <div class="dummy-nav">
+            <span>수시모집</span>
+            <span>정시모집</span>
+            <span>입시결과</span>
+            <span>공지사항</span>
+        </div>
+    </div>
+
+    <div class="dummy-hero">
+        <h2>미래를 여는 대동대학교</h2>
+        <p>2026학년도 신입생 모집 요강 안내</p>
+    </div>
+
+    <div class="dummy-content">
+        <div class="dummy-card">
+            <h3 style="margin-top:0">수시 1차 원서접수</h3>
+            <p>자세한 일정을 확인하세요.</p>
+        </div>
+        <div class="dummy-card">
+            <h3 style="margin-top:0">전년도 입시결과</h3>
+            <p>작년도 합격 등급 컷을 조회합니다.</p>
+        </div>
+        <div class="dummy-card">
+            <h3 style="margin-top:0">장학 제도</h3>
+            <p>다양한 장학 혜택을 확인하세요.</p>
+        </div>
+    </div>
+
+    <div class="dummy-footer">
+        <p>부산광역시 금정구 동부곡로 27번길 88 (부곡동) 대동대학교</p>
+        <p>Copyright © 2026 DAEDONG COLLEGE. All rights reserved.</p>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- ⬇️ 여기에 챗봇 위젯 스크립트가 들어갑니다! ⬇️ -->
+    <!-- ========================================== -->
+    <script src="http://localhost:5176/widget.js"></script>
+    
+</body>
+</html>

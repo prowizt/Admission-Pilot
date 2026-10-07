@@ -1141,6 +1141,22 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         if request.scraped_context:
             sql_search_text += "\n[참고 문서 내용]\n" + request.scraped_context
 
+        # [NEW] 이전 대화 기록 가공 (권한별 유지 길이 차등 적용)
+        history_context = ""
+        if request.history:
+            # 학생은 40개(문답 20쌍), 교직원은 10개(문답 5쌍) 유지
+            history_limit = 40 if request.user_role == "student" else 10
+            recent_history = request.history[-history_limit:] if len(request.history) > history_limit else request.history
+            for msg in recent_history:
+                role = "사용자" if msg.get("isUser", False) else "AI"
+                msg_text = msg.get('text', '')
+                # 이전 엑셀 매핑 JSON 등 비정상적으로 긴 메시지는 1000자로 자름
+                if len(msg_text) > 1000:
+                    msg_text = msg_text[:1000] + "\n...[내용이 너무 길어 시스템에 의해 생략됨]..."
+                history_context += f"{role}: {msg_text}\n"
+        else:
+            history_context = "이전 대화 내역 없음"
+
         import json
         
         # [NEW] 학생용 고속화: 현재 공개된 DB 테이블이 단 하나도 없다면, 라우터를 스킵하고 즉시 문서 검색으로 직행!
@@ -1197,6 +1213,10 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         - 질문 속 단어가 **MS-SQL 테이블 구조의 테이블명이나 용도**와 의미상/텍스트상 일치한다면 (예: "입학정원만 보고" -> 'ADMISSIONQUOTA' 테이블 존재 확인), `need_rag`는 `false`로 설정하고 해당 테이블을 조회하는 T-SQL을 작성하십시오.
         - 명시적 대조가 없거나 두 영역 모두 검색이 필요한 일반적인 경우: 질문에 따라 `sql_query` 작성 여부와 `need_rag`를 유연하게 결정하십시오.
 
+        [대화 문맥 유지 규칙]
+        - 사용자의 [질문]이 "수정할 곳 알려줘", "이것도 해줘" 처럼 대명사를 포함하거나 단답형인 경우, 반드시 아래 [이전 대화 맥락]을 읽고 사용자가 어떤 문서를 검토 중이었는지, 혹은 어떤 통계를 질문 중이었는지 의도를 추론하십시오.
+        - [이전 대화 맥락]에 특정 규정 문서나 예산안에 대한 논의가 있었다면, 이번 턴의 `rag_search_query`나 `target_documents`에도 해당 문서가 연속적으로 포함되도록 반영하십시오.
+
         [기본 사전 지식 주입]
         1. [입시 학년도 정의]: 대학교 입시에서 'N학년도 전형문서'는 'N-1년도'에 모집을 실시하는 전형을 뜻합니다. (예: 2027학년도 전형문서 = 2026년 가을/겨울에 모집 실시). 사용자가 질문한 연도가 '실시 연도'인지 '입학 학년도'인지 문맥을 파악하여 SQL과 문서 검색 타겟을 정확히 일치시키세요.
         2. [일반 학년도 정의]: 학년도(예: 2026학년도)는 3월 1일부터 다음 해 2월 말일까지를 의미합니다. (예: 2026학년도 = 2026.03 ~ 2027.02).
@@ -1228,6 +1248,9 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 
 
         {dynamic_schema}
+
+        [이전 대화 맥락]
+        {history_context}
 
         [질문]
         {sql_search_text}
@@ -1862,21 +1885,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         else:
             print("[BACKEND] === [스크랩 컨텍스트 없음] ===")
 
-        # [NEW] 이전 대화 기록 가공 (권한별 유지 길이 차등 적용)
-        history_context = ""
-        if request.history:
-            # 학생은 40개(문답 20쌍), 교직원은 10개(문답 5쌍) 유지
-            history_limit = 40 if request.user_role == "student" else 10
-            recent_history = request.history[-history_limit:] if len(request.history) > history_limit else request.history
-            for msg in recent_history:
-                role = "사용자" if msg.get("isUser", False) else "AI"
-                msg_text = msg.get('text', '')
-                # 이전 엑셀 매핑 JSON 등 비정상적으로 긴 메시지는 1000자로 자름
-                if len(msg_text) > 1000:
-                    msg_text = msg_text[:1000] + "\n...[내용이 너무 길어 시스템에 의해 생략됨]..."
-                history_context += f"{role}: {msg_text}\n"
-        else:
-            history_context = "이전 대화 내역 없음"
+
 
         if request.user_role == "student":
             prompt = f"""

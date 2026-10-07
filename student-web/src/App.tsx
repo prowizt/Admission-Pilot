@@ -29,11 +29,29 @@ function ActionButtons({ text, isUser }: { text: string, isUser?: boolean }) {
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(text);
+      // 보안 컨텍스트(https, localhost)에서는 clipboard API 사용
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // file:// 이나 http:// (IP 접속) 에서는 구형 방식(execCommand) 폴백 사용
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-999999px";
+        textArea.style.top = "-999999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        document.execCommand('copy');
+        textArea.remove();
+      }
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
       console.error("복사 실패:", err);
+      // 권한 등의 문제로 실패해도 일단 UI 피드백은 주도록 처리 (선택사항)
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
     }
   };
 
@@ -87,7 +105,7 @@ function App() {
     {
       id: 'init',
       role: 'assistant',
-      content: '안녕하세요! 대동대학교 입학상담 AI 챗봇입니다. 🎓\n입시 요강, 학과 정보, 전형 일정 등 궁금한 점을 편하게 물어보세요!'
+      content: ''
     }
   ]);
   const [input, setInput] = useState('');
@@ -118,6 +136,9 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
+  // 위젯 모드 여부 파악
+  const isWidgetMode = new URLSearchParams(window.location.search).get('mode') === 'widget';
+
   // [NEW] 타자 효과를 위한 프론트엔드 큐
   const typingQueueRef = useRef<{ text: string, msgId: string } | null>(null);
 
@@ -141,6 +162,30 @@ function App() {
     }, 30); // 30ms 간격 (초당 33글자)
     return () => clearInterval(timer);
   }, []);
+
+  // [NEW] 첫 인사말 타자 효과 트리거
+  useEffect(() => {
+    const fullText = '안녕하세요! 대동대학교 입학상담 AI 챗봇입니다. 궁금한 점을 편하게 물어보세요 🎓';
+
+    if (isWidgetMode) {
+      // 위젯 모드일 때는 위젯 스크립트(부모 창)에서 열림 신호가 오면 타이핑 시작
+      const handleMessage = (e: MessageEvent) => {
+        if (e.data?.type === 'WIDGET_OPENED') {
+          // 약간의 딜레이 후 자연스럽게 시작
+          setTimeout(() => {
+            typingQueueRef.current = { text: fullText, msgId: 'init' };
+          }, 300);
+        }
+      };
+      window.addEventListener('message', handleMessage);
+      return () => window.removeEventListener('message', handleMessage);
+    } else {
+      // 일반 모드일 때는 화면 렌더링 직후 타이핑 시작
+      setTimeout(() => {
+        typingQueueRef.current = { text: fullText, msgId: 'init' };
+      }, 500);
+    }
+  }, [isWidgetMode]);
 
   // 자동 스크롤
   const scrollToBottom = () => {
@@ -275,19 +320,25 @@ function App() {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-slate-50 font-sans">
+    <div className={cn("flex flex-col h-screen font-sans", isWidgetMode ? "bg-transparent overflow-hidden rounded-2xl" : "bg-slate-50")}>
       {/* Header */}
-      <header className="flex justify-between items-center py-6 px-5 bg-indigo-900 text-white shadow-md z-10 relative overflow-hidden rounded-br-3xl">
+      <header className={cn(
+        "flex justify-between items-center text-white shadow-md z-10 relative overflow-hidden",
+        isWidgetMode ? "py-8 px-4 bg-indigo-900/95 backdrop-blur" : "py-8 px-5 bg-indigo-900 rounded-br-3xl"
+      )}>
         <div className="absolute inset-0 opacity-10 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-white via-transparent to-transparent"></div>
 
         {/* Left: Logo & Title */}
         <div className="flex items-center z-10">
-          <div className="flex-shrink-0 bg-white rounded-full p-1 mr-3 flex items-center justify-center shadow-sm">
-            <img src="/logo.png" alt="대동대학교 로고" className="w-7 h-7 object-contain" />
+          <div className={cn(
+            "flex-shrink-0 bg-white rounded-full flex items-center justify-center shadow-sm",
+            isWidgetMode ? "p-0.5 mr-2" : "p-1 mr-3"
+          )}>
+            <img src="/logo.png" alt="대동대학교 로고" className={cn("object-contain", isWidgetMode ? "w-6 h-6" : "w-7 h-7")} />
           </div>
           <div>
-            <h1 className="text-lg sm:text-xl font-bold tracking-wide">대동대학교 입학상담 AI 챗봇</h1>
-            <p className="text-[10px] sm:text-xs text-indigo-200 font-medium mt-0.5">Student Mode</p>
+            <h1 className={cn("font-bold tracking-wide", isWidgetMode ? "text-[15px] sm:text-base" : "text-lg sm:text-xl")}>대동대학교 입학상담 AI 챗봇</h1>
+            {!isWidgetMode && <p className="text-[10px] sm:text-xs text-indigo-200 font-medium mt-0.5">Student Mode</p>}
           </div>
         </div>
 
@@ -306,7 +357,7 @@ function App() {
       </header>
 
       {/* Chat Container */}
-      <main className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 scroll-smooth">
+      <main className={cn("flex-1 overflow-y-auto space-y-6 scroll-smooth", isWidgetMode ? "p-4 bg-slate-50/95 backdrop-blur-sm" : "p-4 sm:p-6 bg-transparent")}>
         {messages.map((msg) => (
           <div
             key={msg.id}
@@ -347,7 +398,7 @@ function App() {
               <div className="clear-both"></div>
 
               {/* Action Buttons Area */}
-              <ActionButtons text={msg.content} isUser={msg.role === 'user'} />
+              {msg.id !== 'init' && <ActionButtons text={msg.content} isUser={msg.role === 'user'} />}
             </div>
           </div>
         ))}
@@ -381,7 +432,7 @@ function App() {
       )}
 
       {/* Input Area */}
-      <footer className="p-4 sm:p-6 bg-white border-t border-slate-100 shadow-[0_-4px_20px_-10px_rgba(0,0,0,0.05)] z-10">
+      <footer className={cn("bg-white border-t border-slate-100 shadow-[0_-4px_20px_-10px_rgba(0,0,0,0.05)] z-10", isWidgetMode ? "p-3 sm:p-4" : "p-4 sm:p-6")}>
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -428,9 +479,6 @@ function App() {
             </button>
           )}
         </form>
-        <p className="text-center text-xs text-slate-400 mt-3 font-medium">
-          이 챗봇은 AI 모델에 의해 응답하므로, 중요 안내는 반드시 모집요강 원본을 확인해주세요.
-        </p>
       </footer>
     </div>
   );
