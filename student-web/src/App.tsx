@@ -320,7 +320,7 @@ function App() {
   };
 
   return (
-    <div className={cn("flex flex-col h-screen font-sans", isWidgetMode ? "bg-transparent overflow-hidden rounded-2xl" : "bg-slate-50")}>
+    <div className={cn("flex flex-col h-screen font-sans", isWidgetMode ? "bg-transparent overflow-hidden" : "bg-slate-50")}>
       {/* Header */}
       <header className={cn(
         "flex justify-between items-center text-white shadow-md z-10 relative overflow-hidden",

@@ -29,7 +29,7 @@
     iframeWrapper.style.backgroundColor = 'rgba(255, 255, 255, 0.70)';
     iframeWrapper.style.backdropFilter = 'blur(16px)';
     iframeWrapper.style.WebkitBackdropFilter = 'blur(16px)';
-    iframeWrapper.style.borderRadius = '20px';
+    iframeWrapper.style.borderRadius = '12px';
     iframeWrapper.style.boxShadow = '0 15px 50px rgba(0,0,0,0.25), 0 5px 15px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.05)';
     iframeWrapper.style.overflow = 'hidden';
     iframeWrapper.style.marginBottom = '15px';
