@@ -12,6 +12,9 @@ def run_command(command):
         return False
 
 def main():
+    # Windows Git 무한 y/n 프롬프트 방지
+    os.environ['GIT_ASK_YESNO'] = 'false'
+    
     # 실행되는 CWD가 꼬이지 않도록 스크립트 파일이 존재하는 물리 폴더로 무조건 작업 디렉터리를 변경합니다.
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
