@@ -324,7 +324,7 @@ function App() {
       {/* Header */}
       <header className={cn(
         "flex justify-between items-center text-white shadow-md z-10 relative overflow-hidden",
-        isWidgetMode ? "py-8 px-4 bg-indigo-900" : "py-8 px-5 bg-indigo-900 rounded-br-3xl"
+        isWidgetMode ? "py-9 px-4 bg-indigo-900" : "py-8 px-5 bg-indigo-900 rounded-br-3xl"
       )}>
         <div className="absolute inset-0 opacity-10 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-white via-transparent to-transparent"></div>
 

@@ -30,7 +30,7 @@
     iframeWrapper.style.backdropFilter = 'blur(16px)';
     iframeWrapper.style.WebkitBackdropFilter = 'blur(16px)';
     iframeWrapper.style.borderRadius = '20px';
-    iframeWrapper.style.boxShadow = '0 10px 40px -10px rgba(0,0,0,0.3)';
+    iframeWrapper.style.boxShadow = '0 15px 50px rgba(0,0,0,0.25), 0 5px 15px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.05)';
     iframeWrapper.style.overflow = 'hidden';
     iframeWrapper.style.marginBottom = '15px';
     iframeWrapper.style.display = 'none'; // 기본은 숨김 상태
@@ -45,6 +45,7 @@
     iframe.style.width = '100%';
     iframe.style.height = '100%';
     iframe.style.border = 'none';
+    iframe.style.display = 'block';
     iframe.setAttribute('allowtransparency', 'true');
     
     iframeWrapper.appendChild(iframe);
