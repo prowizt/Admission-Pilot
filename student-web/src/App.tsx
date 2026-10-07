@@ -324,7 +324,7 @@ function App() {
       {/* Header */}
       <header className={cn(
         "flex justify-between items-center text-white shadow-md z-10 relative overflow-hidden",
-        isWidgetMode ? "py-8 px-4 bg-indigo-900/95 backdrop-blur" : "py-8 px-5 bg-indigo-900 rounded-br-3xl"
+        isWidgetMode ? "py-8 px-4 bg-indigo-900" : "py-8 px-5 bg-indigo-900 rounded-br-3xl"
       )}>
         <div className="absolute inset-0 opacity-10 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-white via-transparent to-transparent"></div>
 
@@ -357,18 +357,18 @@ function App() {
       </header>
 
       {/* Chat Container */}
-      <main className={cn("flex-1 overflow-y-auto space-y-6 scroll-smooth", isWidgetMode ? "p-4 bg-slate-50/95 backdrop-blur-sm" : "p-4 sm:p-6 bg-transparent")}>
+      <main className={cn("flex-1 overflow-y-auto space-y-6 scroll-smooth", isWidgetMode ? "p-4 bg-transparent" : "p-4 sm:p-6 bg-transparent")}>
         {messages.map((msg) => (
           <div
             key={msg.id}
             className={cn(
-              "flex w-full",
+              "flex w-full relative mt-6",
               msg.role === 'user' ? "justify-end" : "justify-start"
             )}
           >
             <div
               className={cn(
-                "max-w-[85%] sm:max-w-[70%] rounded-2xl p-4 shadow-sm block flow-root",
+                "max-w-[85%] sm:max-w-[70%] rounded-2xl p-4 pt-7 shadow-sm block flow-root relative",
                 msg.role === 'user'
                   ? "bg-indigo-900 text-white rounded-tr-none"
                   : msg.isError
@@ -377,16 +377,16 @@ function App() {
               )}
             >
               {msg.role === 'assistant' && (
-                <div className="mb-2">
-                  <div className="w-8 h-8 rounded-full bg-daedong-cyan/20 flex items-center justify-center border border-daedong-cyan/50">
-                    <Bot className="w-5 h-5 text-daedong-navy" />
+                <div className="absolute -top-5 left-3 flex items-center gap-1.5 z-10">
+                  <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center border border-slate-200 shadow-sm">
+                    <Bot className="w-6 h-6 text-daedong-navy" />
                   </div>
                 </div>
               )}
               {msg.role === 'user' && (
-                <div className="float-right ml-3 mt-1">
-                  <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
-                    <User className="w-5 h-5 text-white" />
+                <div className="absolute -top-5 right-3 flex items-center flex-row-reverse gap-1.5 z-10">
+                  <div className="w-10 h-10 rounded-full bg-indigo-800 flex items-center justify-center border border-indigo-700 shadow-sm">
+                    <User className="w-6 h-6 text-indigo-100" />
                   </div>
                 </div>
               )}
@@ -403,12 +403,17 @@ function App() {
           </div>
         ))}
         {isLoading && (
-          <div className="flex w-full justify-start">
-            <div className="bg-white/70 backdrop-blur-md border border-white/40 shadow-lg max-w-[85%] rounded-2xl rounded-tl-none p-4 flex gap-3 items-center">
-              <div className="w-8 h-8 rounded-full bg-daedong-cyan/20 flex items-center justify-center border border-daedong-cyan/50">
-                <Loader2 className="w-5 h-5 text-daedong-navy animate-spin" />
+          <div className="flex w-full justify-start mt-6 relative">
+            <div className="bg-white/70 backdrop-blur-md border border-white/40 shadow-lg max-w-[85%] rounded-2xl rounded-tl-none p-4 pt-7 flex flex-col gap-3 relative">
+              <div className="absolute -top-5 left-3 flex items-center gap-1.5 z-10">
+                <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center border border-slate-200 shadow-sm">
+                  <Bot className="w-6 h-6 text-daedong-navy" />
+                </div>
               </div>
-              <span className="text-slate-500 text-sm font-medium">대동대 지식창고를 검색하며 답변을 생성 중입니다...</span>
+              <div className="flex items-center gap-3">
+                <Loader2 className="w-5 h-5 text-indigo-500 animate-spin" />
+                <span className="text-slate-500 text-sm font-medium">대동대 지식창고를 검색하며 답변을 생성 중입니다...</span>
+              </div>
             </div>
           </div>
         )}
@@ -438,7 +443,7 @@ function App() {
             e.preventDefault();
             sendMessage(input);
           }}
-          className="flex max-w-4xl mx-auto relative bg-slate-50 border border-slate-200 rounded-2xl focus-within:ring-2 focus-within:ring-indigo-900/50 focus-within:bg-white transition-all shadow-sm"
+          className="flex max-w-4xl mx-auto relative bg-slate-50 border border-slate-200 rounded-lg focus-within:ring-2 focus-within:ring-indigo-900/50 focus-within:bg-white transition-all shadow-sm"
         >
           <textarea
             ref={textareaRef}
@@ -475,7 +480,7 @@ function App() {
               disabled={!input.trim()}
               className="absolute right-2 bottom-2 w-10 h-10 rounded-full bg-indigo-900 hover:bg-indigo-950 text-white flex items-center justify-center disabled:opacity-50 transition-colors shadow-md flex-shrink-0"
             >
-              <Send className="w-4 h-4 ml-1" />
+              <Send className="w-4 h-4" />
             </button>
           )}
         </form>

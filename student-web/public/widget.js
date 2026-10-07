@@ -26,7 +26,9 @@
     iframeWrapper.style.width = isMobile ? 'calc(100vw - 40px)' : '380px';
     iframeWrapper.style.height = isMobile ? 'calc(100vh - 120px)' : '650px';
     iframeWrapper.style.maxHeight = 'calc(100vh - 100px)';
-    iframeWrapper.style.backgroundColor = 'transparent';
+    iframeWrapper.style.backgroundColor = 'rgba(255, 255, 255, 0.70)';
+    iframeWrapper.style.backdropFilter = 'blur(16px)';
+    iframeWrapper.style.WebkitBackdropFilter = 'blur(16px)';
     iframeWrapper.style.borderRadius = '20px';
     iframeWrapper.style.boxShadow = '0 10px 40px -10px rgba(0,0,0,0.3)';
     iframeWrapper.style.overflow = 'hidden';
@@ -62,8 +64,11 @@
     fab.style.justifyContent = 'center';
     fab.style.transition = 'transform 0.2s ease, background-color 0.2s ease';
     
-    // 아이콘 SVG 데이터
-    const chatIcon = '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>';
+    // 아이콘 SVG 및 텍스트 데이터 (챗봇 아이콘 + '상담' 텍스트)
+    const chatIcon = `<div style="display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: -2px;">
+        <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 3px;"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
+        <span style="font-size: 12px; font-weight: bold; font-family: 'Pretendard', sans-serif; line-height: 1; letter-spacing: -0.5px;">상담</span>
+    </div>`;
     const closeIcon = '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
     
     fab.innerHTML = chatIcon;
