@@ -1063,9 +1063,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             if not x_gemini_key:
                 raise HTTPException(status_code=401, detail="학생 전용 API 키(STUDENT_API_KEY)가 서버에 설정되어 있지 않습니다.")
         
-        student_model = os.getenv("STUDENT_MODEL", "")
-        if not student_model:
-            raise HTTPException(status_code=500, detail="학생 전용 모델(STUDENT_MODEL)이 서버에 설정되어 있지 않습니다.")
+        student_model = os.getenv("STUDENT_MODEL", "gemini-2.5-flash")
         request.model_name = student_model
 
     if not x_gemini_key:
