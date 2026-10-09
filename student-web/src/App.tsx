@@ -18,9 +18,9 @@ interface Message {
 
 const QUICK_REPLIES = [
   "올해 수시 1차 면접 일정이 어떻게 돼?",
-  "간호학부 작년 합격 등급 알려줘",
-  "원서접수 횟수에 제한이 있나요?",
-  "서류 제출 방법이 어떻게 돼?"
+  "간호학부 수시 1차 작년 합격 등급 알려줘",
+  "독자전형에 필요한 서류제출은 어떻게 하면 돼?",
+  "수시 원서접수 횟수에 제한이 있나요?"
 ];
 
 function ActionButtons({ text, isUser }: { text: string, isUser?: boolean }) {
@@ -404,15 +404,16 @@ function App() {
         ))}
         {isLoading && (
           <div className="flex w-full justify-start mt-6 relative">
-            <div className="bg-white/70 backdrop-blur-md border border-white/40 shadow-lg max-w-[85%] rounded-2xl rounded-tl-none p-4 pt-7 flex flex-col gap-3 relative">
+            <div className="bg-white/70 backdrop-blur-md border border-white/40 shadow-lg rounded-2xl rounded-tl-none p-4 pt-7 relative min-w-[80px]">
               <div className="absolute -top-5 left-3 flex items-center gap-1.5 z-10">
                 <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center border border-slate-200 shadow-sm">
                   <Bot className="w-6 h-6 text-daedong-navy" />
                 </div>
               </div>
-              <div className="flex items-center gap-3">
-                <Loader2 className="w-5 h-5 text-indigo-500 animate-spin" />
-                <span className="text-slate-500 text-sm font-medium">대동대 지식창고를 검색하며 답변을 생성 중입니다...</span>
+              <div className="flex items-center justify-center gap-1.5 h-4 px-2">
+                <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
               </div>
             </div>
           </div>

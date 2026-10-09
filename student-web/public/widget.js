@@ -36,8 +36,8 @@
     iframeWrapper.style.display = 'none'; // 기본은 숨김 상태
     iframeWrapper.style.transition = 'opacity 0.4s ease, transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275)';
     iframeWrapper.style.opacity = '0';
-    iframeWrapper.style.transformOrigin = 'bottom right';
-    iframeWrapper.style.transform = 'scale(0) translate(20%, 20%)';
+    iframeWrapper.style.transformOrigin = 'calc(100% - 32px) calc(100% + 47px)';
+    iframeWrapper.style.transform = 'scale(0)';
 
     // 실제 챗봇 Iframe
     const iframe = document.createElement('iframe');
@@ -83,7 +83,7 @@
             // 약간의 지연 후 애니메이션 적용 (렌더링 틱 확보)
             setTimeout(() => {
                 iframeWrapper.style.opacity = '1';
-                iframeWrapper.style.transform = 'scale(1) translate(0, 0)';
+                iframeWrapper.style.transform = 'scale(1)';
                 // 리액트 앱(Iframe 내부)에 위젯이 열렸다는 신호 전송
                 if (iframe.contentWindow) {
                     iframe.contentWindow.postMessage({ type: 'WIDGET_OPENED' }, '*');
@@ -94,7 +94,7 @@
             fab.style.transform = 'rotate(90deg)';
         } else {
             iframeWrapper.style.opacity = '0';
-            iframeWrapper.style.transform = 'scale(0) translate(20%, 20%)';
+            iframeWrapper.style.transform = 'scale(0)';
             fab.innerHTML = chatIcon;
             fab.style.backgroundColor = '#312e81'; 
             fab.style.transform = 'rotate(0deg)';
