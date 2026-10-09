@@ -71,7 +71,19 @@ def main():
         return
 
     print("\n✅ Admission-Pilot 코드가 성공적으로 백업되었습니다!")
-    input("\n💡 엔터키를 누르면 백업 창이 닫힙니다...")
+    import socket
+    def is_port_in_use(port):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(('127.0.0.1', port)) == 0
+
+    if is_port_in_use(8000) or is_port_in_use(5175) or is_port_in_use(5176):
+        print("💡 이미 다른 창에서 서버가 실행 중이므로 자동 재시작을 생략합니다.")
+    else:
+        print("🚀 1초 후 통합 개발 서버(run_servers.py)를 자동으로 재시작합니다...\n")
+        import time
+        time.sleep(1)
+        import sys
+        subprocess.run([sys.executable, "run_servers.py"])
 
 if __name__ == "__main__":
     main()
