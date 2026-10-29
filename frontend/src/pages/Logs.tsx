@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import axios from 'axios';
 import { format } from 'sql-formatter';
-import { Activity, BrainCircuit, MessageSquare, Database, Sparkles, AlertTriangle, Clock, RefreshCw, ChevronRight, X, TerminalSquare, BookOpen, Key, ChevronLeft, ThumbsUp, ThumbsDown, Copy, Check } from 'lucide-react';
+import { Activity, BrainCircuit, MessageSquare, Database, Sparkles, AlertTriangle, Clock, RefreshCw, ChevronRight, X, TerminalSquare, BookOpen, Key, ChevronLeft, ThumbsUp, ThumbsDown, Copy, Check, Download, ChevronDown, ChevronUp } from 'lucide-react';
 
 const formatLatency = (ms: number | undefined) => {
   if (!ms) return '-';
@@ -25,6 +25,7 @@ export default function Logs() {
   const [copiedScrap, setCopiedScrap] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
+  const [isExpandedScrap, setIsExpandedScrap] = useState(false);
 
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
@@ -522,7 +523,9 @@ ${selectedLog.rag_documents || 'NONE'}
 Scraped Context:
 ${selectedLog.scraped_context || 'NONE'}`;
                     
-                    navigator.clipboard.writeText(text);
+                    // [널 바이트 제거] 윈도우 클립보드 복사 시 문자열 종단(Null-Terminator) 잘림 방지
+                    const cleanText = text.replace(/\0/g, '');
+                    navigator.clipboard.writeText(cleanText);
                     setCopiedAll(true);
                     setTimeout(() => setCopiedAll(false), 2000);
                   }}
@@ -629,23 +632,58 @@ ${selectedLog.scraped_context || 'NONE'}`;
                 </h4>
                 <p className="text-slate-800 whitespace-pre-wrap text-sm leading-relaxed font-medium">{selectedLog.question}</p>
                 {selectedLog.scraped_context && (
-                  <div className="mt-4 p-3 bg-slate-50 rounded-lg text-xs border border-slate-100 group relative">
-                    <div className="flex justify-between items-center mb-1">
-                      <div className="font-bold text-slate-500">참고용 스크랩 원문</div>
-                      <button 
-                        onClick={() => { 
-                          navigator.clipboard.writeText(selectedLog.scraped_context); 
-                          setCopiedScrap(true); 
-                          setTimeout(() => setCopiedScrap(false), 2000); 
-                        }} 
-                        className="text-slate-500 hover:text-indigo-600 transition-colors p-1 bg-white rounded shadow-sm border border-slate-200 flex items-center gap-1"
-                        title="원문 복사하기"
-                      >
-                        {copiedScrap ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
-                        <span className="text-[10px] font-bold">{copiedScrap ? '복사됨' : '복사'}</span>
-                      </button>
+                  <div className="mt-4 p-3 bg-slate-50 rounded-lg text-xs border border-slate-200 group relative">
+                    <div className="flex justify-between items-center mb-1.5 flex-wrap gap-2">
+                      <div className="font-bold text-slate-700 flex items-center gap-1.5">
+                        <span>참고용 스크랩 원문</span>
+                        <span className="text-[10px] text-slate-400 font-normal">({selectedLog.scraped_context.length.toLocaleString()}자)</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button 
+                          onClick={() => setIsExpandedScrap(!isExpandedScrap)}
+                          className="text-slate-600 hover:text-indigo-600 transition-colors px-2 py-1 bg-white rounded shadow-sm border border-slate-200 flex items-center gap-1 text-[10px] font-bold"
+                          title={isExpandedScrap ? "접기" : "전체 펼쳐보기"}
+                        >
+                          {isExpandedScrap ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                          <span>{isExpandedScrap ? '접기' : '전체보기'}</span>
+                        </button>
+                        <button 
+                          onClick={() => { 
+                            const cleanText = (selectedLog.scraped_context || '').replace(/\0/g, '');
+                            const blob = new Blob([cleanText], { type: 'text/plain;charset=utf-8' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = `Log_${selectedLog.id}_스크랩원문.txt`;
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            URL.revokeObjectURL(url);
+                          }} 
+                          className="text-slate-600 hover:text-indigo-600 transition-colors px-2 py-1 bg-white rounded shadow-sm border border-slate-200 flex items-center gap-1 text-[10px] font-bold"
+                          title="스크랩 원문 전체를 .txt 파일로 다운로드합니다"
+                        >
+                          <Download size={12} className="text-indigo-500" />
+                          <span>TXT 다운로드</span>
+                        </button>
+                        <button 
+                          onClick={() => { 
+                            const cleanText = (selectedLog.scraped_context || '').replace(/\0/g, '');
+                            navigator.clipboard.writeText(cleanText); 
+                            setCopiedScrap(true); 
+                            setTimeout(() => setCopiedScrap(false), 2000); 
+                          }} 
+                          className="text-slate-600 hover:text-indigo-600 transition-colors px-2 py-1 bg-white rounded shadow-sm border border-slate-200 flex items-center gap-1 text-[10px] font-bold"
+                          title="원문 전체 복사하기"
+                        >
+                          {copiedScrap ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+                          <span>{copiedScrap ? '복사됨' : '복사'}</span>
+                        </button>
+                      </div>
                     </div>
-                    <p className="text-slate-600 line-clamp-3 leading-relaxed" title={selectedLog.scraped_context}>{selectedLog.scraped_context}</p>
+                    <div className={`text-slate-600 leading-relaxed font-mono text-[11px] bg-white p-2.5 rounded border border-slate-100 ${isExpandedScrap ? 'max-h-96 overflow-y-auto whitespace-pre-wrap' : 'line-clamp-3'}`} title={selectedLog.scraped_context}>
+                      {selectedLog.scraped_context}
+                    </div>
                   </div>
                 )}
               </div>

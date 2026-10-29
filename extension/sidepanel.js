@@ -68,11 +68,8 @@ const btnClearChat = document.getElementById('btn-clear-chat'); // 대화 비우
 
 const btnUpload = document.getElementById('btn-upload');
 const fileUploadInput = document.getElementById('file-upload-input');
-const btnAutofillExcel = document.getElementById('btn-autofill-excel');
-const autofillExcelInput = document.getElementById('autofill-excel-input');
-const uploadStatus = document.getElementById('upload-status');
-const uploadFilename = document.getElementById('upload-filename');
-const btnClearUpload = document.getElementById('btn-clear-upload');
+const uploadStatusContainer = document.getElementById('upload-status-container');
+const uploadWarningMsg = document.getElementById('upload-warning-msg');
 // 설정 DOM 요소
 const btnToggleSettings = document.getElementById('btn-toggle-settings');
 const settingsBody = document.getElementById('settings-body');
@@ -92,9 +89,8 @@ const newModelApiKey = document.getElementById('new-model-apikey');
 const btnAddModel = document.getElementById('btn-add-model');
 
 let scrapedWebContext = "";
-let scrapedFileContext = "";
-let scrapedFileName = ""; // [NEW] 첨부 파일명 기록용 변수
-let attachedExcelFile = null; // [NEW] 엑셀 템플릿 파일 보관용 변수
+// [NEW] 다중 첨부 파일 관리 배열: [{ name, context, size, rawFile, isLarge }] (최대 2개)
+let attachedFiles = [];
 let chatHistory = []; // 대화 기록 저장용 전역 배열
 
 // 기본 제공되는 모델 세트 (요청에 따라 비움)
@@ -582,15 +578,20 @@ async function sendMessage() {
   if (scrapedWebContext) {
     combinedScrapedContext += "### [웹 화면 텍스트 스크랩]\n\n" + scrapedWebContext + "\n\n";
   }
-  if (scrapedFileContext) {
-    const fn = scrapedFileName || "첨부파일";
-    combinedScrapedContext += "### [첨부 파일 스크랩] 파일명: " + fn + "\n\n" + scrapedFileContext;
+  if (attachedFiles.length > 0) {
+    attachedFiles.forEach((f, idx) => {
+      combinedScrapedContext += `### [첨부 파일 ${idx + 1}] 파일명: ${f.name}\n\n${f.context}\n\n`;
+    });
   }
+  const combinedFileName = attachedFiles.map(f => f.name).join(', ');
 
-  if (attachedExcelFile && isAutofillIntent) {
+  // [규칙] 파일 채우기(Autofill)는 파일이 정확히 1개이고 엑셀일 때만 수행 (2개 이상은 순수 비교분석 모드로 안전 동작)
+  const canAutofill = (attachedFiles.length === 1 && attachedFiles[0].name.toLowerCase().endsWith('.xlsx') && isAutofillIntent);
+
+  if (canAutofill) {
     endpoint = `${BASE_URL}/chat-excel-autofill`;
     const formData = new FormData();
-    formData.append('file', attachedExcelFile);
+    formData.append('file', attachedFiles[0].rawFile);
     formData.append('question', text);
     formData.append('user_role', 'staff');
     formData.append('model_name', currentActiveModel.modelName);
@@ -600,7 +601,7 @@ async function sendMessage() {
     formData.append('history', JSON.stringify(chatHistory.slice(-6)));
     
     if (combinedScrapedContext) formData.append('scraped_context', combinedScrapedContext);
-    if (scrapedFileName) formData.append('scraped_file_name', scrapedFileName);
+    if (combinedFileName) formData.append('scraped_file_name', combinedFileName);
     
     bodyData = formData;
   } else {
@@ -617,8 +618,8 @@ async function sendMessage() {
 
     if (combinedScrapedContext) {
       payload.scraped_context = combinedScrapedContext;
-      if (scrapedFileName) {
-        payload.scraped_file_name = scrapedFileName;
+      if (combinedFileName) {
+        payload.scraped_file_name = combinedFileName;
       }
     }
     bodyData = JSON.stringify(payload);
@@ -769,36 +770,96 @@ function resetWebScrapState() {
   updatePlaceholder();
 }
 
-// 파일 첨부 초기화 함수
-function resetFileUploadState() {
-  scrapedFileContext = "";
-  scrapedFileName = "";
-  attachedExcelFile = null;
-  btnUpload.innerHTML = "📎 파일 첨부";
-  btnUpload.className = "text-[11px] font-bold px-2.5 py-1.5 bg-indigo-100 text-indigo-700 hover:bg-indigo-200 rounded-md border border-indigo-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
-  uploadStatus.classList.add('hidden');
-  uploadFilename.innerText = "";
-  fileUploadInput.value = "";
+// [NEW] 다중 첨부 파일 칩 렌더링 함수
+function renderFileChips() {
+  if (!uploadStatusContainer) return;
+  uploadStatusContainer.innerHTML = "";
+
+  let hasLargeFile = false;
+
+  attachedFiles.forEach((fileItem, index) => {
+    if (fileItem.isLarge) hasLargeFile = true;
+
+    const chip = document.createElement('span');
+    chip.className = "text-[11px] text-lime-900 font-extrabold bg-lime-100 px-2 py-1 rounded-md border border-lime-300 flex items-center gap-1.5 shadow-sm";
+    
+    const nameSpan = document.createElement('span');
+    nameSpan.className = "truncate max-w-[110px]";
+    nameSpan.innerText = fileItem.name;
+    nameSpan.title = fileItem.name;
+    chip.appendChild(nameSpan);
+
+    if (fileItem.isLarge) {
+      const warnBadge = document.createElement('span');
+      warnBadge.className = "text-[9px] bg-amber-200 text-amber-900 px-1 py-0.2 rounded font-bold";
+      warnBadge.innerText = "대용량";
+      warnBadge.title = `파일 크기: 약 ${(fileItem.size / (1024 * 1024)).toFixed(1)}MB`;
+      chip.appendChild(warnBadge);
+    }
+
+    const delBtn = document.createElement('button');
+    delBtn.className = "hover:text-rose-600 font-extrabold px-0.5 cursor-pointer text-slate-400 hover:scale-110 transition-all";
+    delBtn.innerText = "✕";
+    delBtn.title = `'${fileItem.name}' 제거`;
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeFile(index);
+    });
+    chip.appendChild(delBtn);
+
+    uploadStatusContainer.appendChild(chip);
+  });
+
+  // 대용량 경고 메시지 토글
+  if (uploadWarningMsg) {
+    if (hasLargeFile) {
+      uploadWarningMsg.classList.remove('hidden');
+    } else {
+      uploadWarningMsg.classList.add('hidden');
+    }
+  }
+
+  // 업로드 버튼 문구 및 스타일 업데이트
+  if (attachedFiles.length === 0) {
+    btnUpload.innerHTML = "📎 파일 첨부";
+    btnUpload.className = "text-[11px] font-bold px-2.5 py-1.5 bg-indigo-100 text-indigo-700 hover:bg-indigo-200 rounded-md border border-indigo-300 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
+  } else if (attachedFiles.length === 1) {
+    btnUpload.innerHTML = "📎 파일 1개 (+추가)";
+    btnUpload.className = "text-[11px] font-extrabold px-2.5 py-1.5 bg-lime-400 text-lime-950 hover:bg-lime-500 rounded-md border border-lime-500 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
+  } else {
+    btnUpload.innerHTML = "📎 파일 2개 (최대)";
+    btnUpload.className = "text-[11px] font-extrabold px-2.5 py-1.5 bg-lime-400 text-lime-950 hover:bg-lime-500 rounded-md border border-lime-500 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
+  }
+
   updatePlaceholder();
 }
 
+function removeFile(index) {
+  attachedFiles.splice(index, 1);
+  fileUploadInput.value = "";
+  renderFileChips();
+}
+
+// 파일 첨부 초기화 함수
+function resetFileUploadState() {
+  attachedFiles = [];
+  fileUploadInput.value = "";
+  renderFileChips();
+}
+
 function updatePlaceholder() {
-  if (scrapedFileContext && scrapedWebContext) {
+  if (attachedFiles.length === 2) {
+    chatInput.placeholder = `첨부된 2개 파일('${attachedFiles[0].name}', '${attachedFiles[1].name}')을 비교 분석해보세요!`;
+  } else if (attachedFiles.length === 1 && scrapedWebContext) {
     chatInput.placeholder = "첨부된 파일과 스크랩된 화면을 비교 분석해보세요!";
-  } else if (scrapedFileContext) {
-    chatInput.placeholder = "첨부된 파일 내용에 대해 무엇이든 물어보세요!";
+  } else if (attachedFiles.length === 1) {
+    chatInput.placeholder = `'${attachedFiles[0].name}' 파일 내용에 대해 무엇이든 물어보세요!`;
   } else if (scrapedWebContext) {
     chatInput.placeholder = "스크랩된 현재 화면에 대해 무엇이든 물어보세요!";
   } else {
     chatInput.placeholder = "질문을 입력하세요... (Shift+Enter로 줄바꿈)";
   }
 }
-
-// 파일 첨부 취소 버튼 동작
-btnClearUpload.addEventListener('click', (e) => {
-  e.stopPropagation();
-  resetFileUploadState();
-});
 
 // 탭 활성화 감지하여 스크랩 상태 초기화
 if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.onActivated && chrome.tabs.onUpdated) {
@@ -957,22 +1018,33 @@ btnUpload.addEventListener('click', () => {
 // btn-autofill-excel 삭제됨에 따라 관련 로직 완전히 제거
 
 // 파일 업로드 처리 공통 함수
+// 파일 업로드 처리 공통 함수
 async function processFile(file) {
   if (!file) return;
+
+  if (attachedFiles.length >= 2) {
+    alert("⚠️ 파일은 최대 2개까지만 첨부할 수 있습니다.\n새 파일을 첨부하려면 기존 파일의 ✕ 버튼을 눌러 제거해 주세요.");
+    fileUploadInput.value = "";
+    return;
+  }
+
+  // 중복 파일 체크
+  if (attachedFiles.some(f => f.name === file.name && f.size === file.size)) {
+    alert(`'${file.name}' 파일은 이미 첨부되어 있습니다.`);
+    fileUploadInput.value = "";
+    return;
+  }
 
   // 드래그 앤 드롭 시 확장자 필터링 안전 검증
   const filename = file.name.toLowerCase();
   if (!(filename.endsWith('.pdf') || filename.endsWith('.txt') || filename.endsWith('.csv') || filename.endsWith('.xlsx'))) {
     alert("현재는 PDF, TXT, CSV, XLSX 파일만 지원합니다.");
-    fileUploadInput.value = ""; // 먹통 방지: 얼리 리턴 전에도 파일 선택 초기화
+    fileUploadInput.value = "";
     return;
   }
 
-  // 로딩 상태 표시
-  uploadStatus.classList.remove('hidden');
-  uploadFilename.innerText = "파싱 중...";
   chatInput.disabled = true;
-  chatInput.placeholder = "파일에서 텍스트 및 표를 추출 중입니다...";
+  chatInput.placeholder = `'${file.name}' 파일에서 텍스트 및 표를 추출 중입니다...`;
 
   const formData = new FormData();
   formData.append('file', file);
@@ -986,29 +1058,22 @@ async function processFile(file) {
     const data = await response.json();
 
     if (data.status === 'success') {
-      resetFileUploadState(); // 기존 파일 상태만 초기화
+      const parsedText = data.text.substring(0, 50000); // 파싱된 텍스트 저장 (최대 50000자)
+      const isLarge = (file.size >= 2 * 1024 * 1024) || (parsedText.length >= 30000);
 
-      scrapedFileContext = data.text.substring(0, 50000); // 파싱된 텍스트 저장 (최대 50000자)
-      scrapedFileName = file.name; // [NEW] 파일명 저장
-      uploadFilename.innerText = file.name;
-      uploadFilename.title = file.name;
-      uploadStatus.classList.remove('hidden');
+      attachedFiles.push({
+        name: file.name,
+        context: parsedText,
+        size: file.size,
+        rawFile: file,
+        isLarge: isLarge
+      });
 
-      // 파일명 확장자에 따라 분기 처리
-      if (file.name.toLowerCase().endsWith('.xlsx')) {
-        attachedExcelFile = file; // 엑셀 파일 보관
-      }
-
-      // 파일 첨부 완료 시 눈에 띄는 형광색(lime)으로 버튼 스타일 변경
-      btnUpload.innerHTML = "📎 파일 첨부 완료";
-      btnUpload.className = "text-[11px] font-extrabold px-2.5 py-1.5 bg-lime-400 text-lime-950 hover:bg-lime-500 rounded-md border border-lime-500 transition-colors flex items-center gap-1 shadow-sm active:scale-95";
-      updatePlaceholder();
+      renderFileChips();
     } else {
-      resetFileUploadState();
       addMessage("⚠️ 파일 첨부 실패: " + data.detail + "\n(혹시 옛날 .xls 파일을 이름만 .xlsx로 바꾸셨다면 엑셀에서 '다른 이름으로 저장'을 해주세요!)", false, true);
     }
   } catch (error) {
-    resetFileUploadState();
     addMessage("⚠️ 파일 파싱 서버 연결 실패: 파이썬 백엔드가 켜져 있는지 확인하세요.", false, true);
   } finally {
     chatInput.disabled = false;
@@ -1044,7 +1109,9 @@ chatInput.addEventListener('drop', async (e) => {
 
   const files = e.dataTransfer.files;
   if (files && files.length > 0) {
-    await processFile(files[0]);
+    for (let i = 0; i < files.length && attachedFiles.length < 2; i++) {
+      await processFile(files[i]);
+    }
   }
 });
 

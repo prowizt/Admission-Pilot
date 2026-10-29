@@ -119,11 +119,13 @@
         📎 파일 첨부
       </button>
       <input type="file" id="file-upload-input" accept=".pdf,.txt,.csv,.xlsx" class="hidden" />
-      <span id="upload-status"
-        class="text-[11px] text-lime-900 font-extrabold hidden bg-lime-100 px-2.5 py-1.5 rounded-md border border-lime-300 flex items-center gap-1.5 shadow-sm">
-        <span id="upload-filename" class="truncate max-w-[120px]">filename.pdf</span>
-        <button id="btn-clear-upload" class="hover:text-lime-950 font-extrabold px-1 cursor-pointer">✕</button>
-      </span>
+      <!-- 다중 첨부 파일 칩 렌더링 컨테이너 (최대 2개) -->
+      <div id="upload-status-container" class="flex flex-wrap items-center gap-1.5"></div>
+    </div>
+
+    <!-- 대용량 파일 경고 메시지 영역 -->
+    <div id="upload-warning-msg" class="hidden text-[10px] text-amber-800 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-md flex items-center gap-1.5 shadow-sm">
+      <span class="font-bold">⚠️ 대용량 파일 감지:</span> 답변 생성 및 분석에 시간이 조금 더 소요될 수 있습니다.
     </div>
 
     <div class="relative">

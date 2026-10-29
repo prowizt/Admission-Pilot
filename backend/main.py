@@ -552,8 +552,12 @@ async def parse_file(file: UploadFile = File(...)):
         # [PDF 파싱 버그 방지] PDF fake-bold(글자 겹쳐찍기)나 워터마크로 인해 동일 문자가 5번 이상 비정상 반복되는 현상 제거 (숫자 및 특수기호 제외)
         import re
         extracted_text = re.sub(r'([^\s\.\-_=\*~0-9])\1{4,}', r'\1', extracted_text)
+        
+        # [널 바이트 제거] PDF 폰트 인코딩에 의해 유입되는 \x00(Null 문자)를 제거하여 윈도우 클립보드 및 DB 잘림 현상 원천 차단
+        extracted_text = extracted_text.replace('\x00', '')
             
         safe_text = mask_personal_info(extracted_text)
+        print(f"[FILE-PARSE] 📎 파일 파싱 완료: {file.filename} (크기: {len(content):,} bytes ➔ 추출: {len(safe_text):,}자)")
         
         return {
             "status": "success",
@@ -1037,24 +1041,19 @@ def mask_pii(text: str) -> str:
 def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
     start_time = time.time()
     
-    # [NEW] 터미널에 사용자 권한(학생/직원) 로깅
-    role_str = "학생용(student)" if request.user_role == "student" else "교직원용(staff)"
+    # [NEW] 터미널에 요청 수신 헤더 및 사용자 질문 로깅
+    role_str = "학생용 (student)" if request.user_role == "student" else "교직원용 (staff)"
     import datetime
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"\n[BACKEND] ===============================================")
-    print(f"[BACKEND] 🚀 [{current_time}] 신규 채팅 요청 수신 - 접속 권한: {role_str}")
-    print(f"[BACKEND] ===============================================")
     
     # [보안 통제] 사용자의 질문(question) 내에 포함된 민감한 개인정보(주민번호, 휴대전화번호)를 백엔드 초입에서 원천 마스킹
     if request.question:
         request.question = mask_pii(request.question)
 
-    print(f"[MAIN-CHAT] === [사용자 질문] ===")
-    print(f"[MAIN-CHAT] 💬 질문: {request.question if request.question else '(질문 없음)'}")
-    if request.scraped_context:
-        scraped_preview = request.scraped_context.replace('\n', ' ')
-        print(f"[MAIN-CHAT] 📄 스크랩 일부: {scraped_preview[:150]}...")
-    print(f"[MAIN-CHAT] =======================\n", flush=True)
+    print("\n" + "=" * 70)
+    print(f"🚀 [{current_time}] 신규 채팅 요청 수신 [{role_str}]")
+    print(f"💬 사용자 질문: {request.question if request.question else '(질문 없음)'}")
+    print("=" * 70)
         
     # [NEW] 학생용 웹 챗봇은 서버 환경변수(STUDENT_API_KEY)를 전용으로 사용하며 누락 시 오류를 발생시킵니다.
     if request.user_role == "student":
@@ -1079,11 +1078,13 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         dynamic_schema = get_dynamic_db_schema(conn, request.user_role) if conn else "DB 연결 불가"
         
         # =======================================================
-        # [Step 1-0] 스크랩 데이터 클렌징 (그룹웨어 메뉴, 결재선 등 불필요한 텍스트 제거)
+        # [Step 1] 스크랩 데이터 클렌징 및 감지 확인
         # =======================================================
         if request.scraped_context:
             def clean_scraped_context(text: str) -> str:
                 if not text: return ""
+                # [널 바이트 제거] 윈도우 클립보드 복사 시 문자열 종단(Null Terminator) 버그 원천 방지
+                text = text.replace('\x00', '')
                 lines = text.split('\n')
                 cleaned = []
                 junk_keywords = {
@@ -1114,12 +1115,23 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             else:
                 prefix = f"### [웹 화면 텍스트 스크랩]\n\n"
             
-            # 이미 prefix가 붙어있지 않은 경우에만 추가 (중복 방지)
-            if not request.scraped_context.startswith("### [첨부 파일 스크랩]") and not request.scraped_context.startswith("### [웹 화면 텍스트 스크랩]"):
+            # 이미 prefix나 개별 파일 태그가 붙어있지 않은 경우에만 추가 (다중 파일 지원)
+            if not request.scraped_context.startswith("### [첨부 파일") and not request.scraped_context.startswith("### [웹 화면"):
                 request.scraped_context = prefix + request.scraped_context
-                print(f"\n[BACKEND] === [스크랩 원문 감지] ===")
-                print(f"[BACKEND] 출처: {prefix.strip()}")
-                print(f"[BACKEND] ===============================\n")
+
+            # [Step 1] 터미널에 스크랩/첨부파일 요약 표시 (도배 방지 및 가독성 최적화)
+            valid_lines = [line.strip() for line in request.scraped_context.split('\n') if line.strip()]
+            preview_snippet = " ".join(valid_lines[:3])[:120].strip()
+            source_desc = f"[첨부 파일] {request.scraped_file_name}" if request.scraped_file_name else "[웹 화면 스크랩]"
+            
+            print(f"\n[Step 1] 📎 스크랩 및 첨부파일 확인")
+            print(f" ├─ 출처: {source_desc}")
+            print(f" ├─ 분량: 총 {len(request.scraped_context):,}자 (유효 텍스트 {len(valid_lines)}줄)")
+            print(f" └─ 미리보기: \"{preview_snippet}...\"")
+            if len(request.scraped_context) > 120:
+                print(f"    ... (외 {len(request.scraped_context) - len(preview_snippet):,}자 본문 안전하게 로드됨)")
+        else:
+            print(f"\n[Step 1] 📎 스크랩 및 첨부파일: 없음 (단순 텍스트 질의)")
         # =======================================================
         # [Step 1] NL2SQL: 사용자 질문 -> T-SQL 생성
         # =======================================================
@@ -1185,12 +1197,12 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             years = re.findall(r"\b(202\d)\s*(?:학년도|년도|년)", all_text)
             if years:
                 rag_year_filter = years[0]
-                print(f"[연도 보정] 질문/스크랩 내에서 {rag_year_filter}학년도를 감지하여 필터를 적용합니다.")
                 
             time_router_end = time.time()
             time_db_end = time_router_end
-            print(f"[MAIN-CHAT] ⚡ Fast-Track 발동: 공개 DB 테이블이 없으므로 라우터 AI를 생략하고 즉시 문서 검색으로 직행합니다.")
-            print(f"[BACKEND] ⏱️ 라우터 AI 소요 시간: {time_router_end - start_time:.2f}초 (건너뜀)")
+            print(f"\n[Step 2] 🧠 라우터 AI 분석: Fast-Track 발동 (공개 DB 없으므로 라우터 생략하고 문서 검색 직행)")
+            print(f" ├─ 타깃 연도: [{rag_year_filter}]")
+            print(f" └─ ⏱️ 소요 시간: {time_router_end - start_time:.2f}초 (건너뜀)")
         else:
             sql_router_prompt = f"""
         너는 대동대학교 입시처의 수석 데이터 아키텍트이자 실시간 입시 사전지식 관리자야. 
@@ -1247,6 +1259,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
            - 이 경우 AI는 행정 결재선뿐만 아니라 금액 및 예산 한도의 적정성을 필수적으로 검토해야 하므로, **반드시 `rag_search_query`에 '구매 규정, 예산ㆍ회계 규정, 본예산' 등 사내 예산/구매 관련 핵심 규정 문서 명칭을 강제로 추가**하여 RAG 검색 풀에 포함시키십시오.
         10. **[지역명 약어 자동 변환 규칙]**: 사용자가 질문에 '부울경'이라고 입력하면 반드시 `[출신고교시도] LIKE '%부산%' OR [출신고교시도] LIKE '%울산%' OR [출신고교시도] LIKE '%경상남도%'` 형태로 3개의 조건을 OR로 묶어서 풀어 검색하십시오. '경남', '전북', '충남' 등의 다른 지역 약어가 사용된 경우에도 DB에는 '경상남도', '전라북도', '충청남도' 등으로 정식 명칭이 저장되어 있으므로, 반드시 정식 명칭으로 변환하여 `LIKE '%경상남도%'` 형태로 검색하십시오.
         11. **[숫자형 컬럼 비교 절대 규칙]**: 학점, 평점, 점수, 인원수, 금액 등 숫자형(Numeric/Float/Int) 데이터를 담고 있는 컬럼의 값이 존재하는지 검사할 때는 절대 빈 문자열(`''`)과 비교하지 마십시오. (예: `[대졸평균평점] <> ''` 불가) 반드시 `IS NOT NULL AND [컬럼명] > 0` 형태로만 작성하십시오.
+        12. **[학생부 성적 산출 및 출신고교구분 감지 RAG 확장 규칙]**: 사용자의 [질문]이나 첨부 문서에 '학생부', '성적 산출', '환산점수', '석차등급', 또는 출신고교 유형('일반고', '특성화고', '검정고시', '특목고', '공고2+1', '일반고위탁', '외국고' 등)이 감지될 경우, 반드시 `need_rag`를 `true`로 설정하고 `rag_search_query`에 '모집요강 학생부 성적 반영방법, 출신고교구분 성적반영비율, 학생부 등급비율 및 환산점수표, 검정고시 성적 환산점수표'를 핵심 검색어로 포함시키십시오.
 
 
         {dynamic_schema}
@@ -1276,8 +1289,21 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             sql_model = genai.GenerativeModel(router_model_to_use)
                 
             no_retry = retry.Retry(initial=0, maximum=0, multiplier=0, deadline=0)
-            print(f"[MAIN-CHAT] 🧠 SQL 라우터 분석 중... (사용 모델: {router_model_to_use})")
-            sql_response = sql_model.generate_content(sql_router_prompt, request_options={"retry": no_retry})
+            print(f"\n[Step 2] 🧠 라우터 AI 분석 중... (사용 모델: {router_model_to_use})")
+            max_retries = 3
+            sql_response = None
+            for attempt in range(max_retries):
+                try:
+                    sql_response = sql_model.generate_content(sql_router_prompt, request_options={"retry": no_retry})
+                    break
+                except Exception as e:
+                    err_msg = str(e)
+                    if ("503" in err_msg or "429" in err_msg) and attempt < max_retries - 1:
+                        reason = "구글 서버 일시적 과부하(503)" if "503" in err_msg else "API 호출 제한(429)"
+                        print(f"[MAIN-CHAT] ⚠️ SQL 라우터 {reason} 감지 ({attempt+1}/{max_retries}). 5초 후 자동으로 재시도합니다...")
+                        time.sleep(5)
+                        continue
+                    raise e
             
             # JSON 파싱
             try:
@@ -1301,9 +1327,6 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 rag_query = parsed_json.get("rag_search_query", request.question)
                 rag_year_filter = parsed_json.get("rag_year_filter", "ALL")
                 target_documents = parsed_json.get("target_documents", [])
-                
-                if target_documents:
-                    print(f"[타겟 문서 지정] 사용자가 다음 문서만 검토하도록 지시했습니다: {target_documents}")
                 
                 # [실시간 지식 보완 액션 추출]
                 k_action_data = parsed_json.get("knowledge_action", {})
@@ -1336,7 +1359,6 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 
                 if expanded_years:
                     rag_year_filter = sorted(list(expanded_years))
-                    print(f"[연도 보정] 질문/스크랩 및 AI 지정 연도를 통합/확장하여 {rag_year_filter} 학년도를 감지하여 필터를 적용합니다.")
                 else:
                     rag_year_filter = "ALL"
             except Exception as json_err:
@@ -1423,30 +1445,37 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 supplemental_context = "보완 지식 데이터 로딩 오류"
         
         formatted_sql = format_sql_query(sql_query)
-        print(f"=== [AI 라우팅 결과] ===")
-        print(f"※ 설명: 사용자의 자연어 질문을 바탕으로 AI가 데이터 사전 카탈로그를 분석하여 자동으로 설계한 T-SQL 쿼리문입니다.")
-        print(f"SQL 쿼리:")
-        print("--- T-SQL START ---")
-        print(formatted_sql)
-        print("--- T-SQL END ---")
-        print(f"문서 검색 필요 여부(RAG): {need_rag}")
-        print(f"RAG 쿼리: {rag_query}")
-        print(f"메타데이터 필터(Year): {rag_year_filter}")
-        print(f"===========================")
-        
         time_router_end = time.time()
         time_db_end = time_router_end
-        print(f"⏱️ 라우터 AI 소요 시간: {time_router_end - start_time:.2f}초")
+        
+        has_sql = sql_query and sql_query.upper().strip() != "NONE"
+        print(f"\n[Step 2 결과] 🧠 라우터 판단 완료")
+        print(f" ├─ DB 쿼리(SQL): {'필요 (' + sql_query.split()[0] + '...)' if has_sql else 'NONE (정형 데이터 조회 불필요)'}")
+        if has_sql:
+            sql_summary = " ".join(formatted_sql.split())
+            if len(sql_summary) > 80:
+                sql_summary = sql_summary[:80] + "..."
+            print(f" │  └─ 쿼리 요약: {sql_summary}")
+        print(f" ├─ 문서 검색(RAG): {'필요 (TRUE)' if need_rag else '불필요 (FALSE)'}")
+        if need_rag:
+            print(f" │  ├─ 검색 키워드: {rag_query}")
+            print(f" │  └─ 타깃 연도: {rag_year_filter}")
+        if target_documents:
+            print(f" ├─ 지정 문서: {target_documents}")
+        if k_feedback_msg:
+            print(f" ├─ 사전지식 반영: {k_feedback_msg}")
+        print(f" └─ ⏱️ 라우터 소요: {time_router_end - start_time:.2f}초")
 
         # =======================================================
-        # [Step 2] 생성된 쿼리 실행
+        # [Step 3] 데이터 수집 (MS-SQL DB & ChromaDB RAG)
         # =======================================================
+        print(f"\n[Step 3] 🔍 데이터 수집 (DB / RAG)")
         # SSMS 검증용 쿼리 자동 저장 (가독성을 위해 포맷팅 적용)
         try:
             with open('latest_query.sql', 'w', encoding='utf-8') as f:
                 f.write(formatted_sql)
         except Exception as f_err:
-            print(f"[MAIN-CHAT] latest_query.sql 저장 실패: {f_err}")
+            pass
             
         sql_context = ""
         full_data_rows = None
@@ -1555,24 +1584,17 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 except Exception as t_hint_err:
                     print(f"테이블 힌트 조회 오류: {t_hint_err}")
                 
-                # [디버그 추가] MS-SQL에서 실제 가져온 데이터 확인용
-                print(f"=== [SQL 실제 실행 결과] ===")
-                print(f"※ 설명: 위에서 AI가 설계한 T-SQL 쿼리를 실제 MS-SQL DB(입시마스타)에 전달하여 실시간으로 실행 및 수집해온 데이터 팩트입니다.")
-                print("--- T-SQL START ---")
-                print(formatted_sql)
-                print("--- T-SQL END ---")
-                
-                print(f"\n[수집된 DB 레코드]")
+                # [Step 3 MS-SQL 실행 결과]
                 data_lines = [line for line in sql_context.split('\n') if "추출 데이터" in line or "데이터가 너무 많아" in line]
-                print("\n".join(data_lines) if data_lines else "데이터 없음 (0건 검색됨)")
-                print(f"===========================")
-                
+                match_cnt = total_sql_count if total_sql_count is not None else len(data_lines)
+                print(f" ├─ MS-SQL: 쿼리 실행 완료 (총 {match_cnt:,}건 레코드 매칭)")
             except Exception as db_err:
-                print(f"SQL 실행 오류: {db_err}")
-
+                print(f" ├─ MS-SQL: 쿼리 실행 오류 ({db_err})")
+        else:
+            print(f" ├─ MS-SQL: 쿼리 없음 (건너뜀)")
 
         # =======================================================
-        # [Step 3] 비정형 DB (ChromaDB) 검색 (Rule + Ref 모두 탐색)
+        # [Step 3-2] 비정형 DB (ChromaDB) 검색 (Rule + Ref 모두 탐색)
         # =======================================================
         chroma_context = ""
         results_metadatas = []
@@ -1581,9 +1603,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         final_refs = []
 
         # [AI 기반 스마트 라우팅 적용]
-        # 스크랩 문서가 없고, AI가 카탈로그를 분석한 결과 문서 검색(RAG)이 불필요하다고 판단했다면 생략합니다.
         if not request.scraped_context and not need_rag:
-            print("=== [스마트 라우팅] AI 판단 결과, 비정형 문서(RAG) 검색이 불필요하여 생략합니다 ===")
+            print(f" ├─ ChromaDB RAG: 검색 생략 (스마트 라우팅에 의해 불필요 판단)")
         else:
             # [최적화] CSV 등 텍스트 더미가 쿼리에 섞여 코사인 유사도를 망치지 않도록,
             # RAG 임베딩 검색 시에는 scraped_context를 생략하고 오직 자연어 질문(rag_query)만 쿼리로 사용합니다.
@@ -1772,9 +1793,6 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                         except Exception as h_err:
                             print(f"문서 정보 조회 오류: {h_err}")
 
-                time_db_end = time.time()
-                print(f"⏱️ DB 검색 및 전처리 소요 시간: {time_db_end - time_router_end:.2f}초")
-
                 # [보안 통제 및 카탈로그 필터링] 비활성화 문서 제외 (공통), 비공개 문서 제외 (학생)
                 for q_idx in range(len(queries)):
                     docs_per_query[q_idx] = {
@@ -1816,15 +1834,14 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 final_rules = [d for d in all_matched if d["source"] == "rule"]
                 final_refs = [d for d in all_matched if d["source"] == "ref"]
 
-                # [터미널 검색 현황 출력 - cp949 인코딩 에러 방지를 위해 이모지 제거]
                 matched_rule_files = [d["meta"].get("filename", "이름없음") for d in final_rules]
                 matched_ref_files = [d["meta"].get("filename", "이름없음") for d in final_refs]
-                print(f"[RAG 검색 성공] Rule DB 매칭 문서 ({len(matched_rule_files)}건):")
-                if matched_rule_files:
-                    print("  - " + "\n  - ".join(matched_rule_files))
-                print(f"[RAG 검색 성공] Reference DB 매칭 문서 ({len(matched_ref_files)}건):")
-                if matched_ref_files:
-                    print("  - " + "\n  - ".join(matched_ref_files))
+                total_docs = len(matched_rule_files) + len(matched_ref_files)
+                print(f" ├─ ChromaDB RAG: 규정/참조 문서 총 {total_docs}건 매칭 완료")
+                for rf in matched_rule_files:
+                    print(f" │   ├─ [Rule] {rf}")
+                for rf in matched_ref_files:
+                    print(f" │   ├─ [Ref] {rf}")
 
                 if final_rules:
                     formatted_docs = []
@@ -1847,45 +1864,16 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     results_metadatas.extend([d["meta"] for d in final_refs])
 
             except Exception as chroma_err:
-                print(f"ChromaDB 검색 오류: {chroma_err}")
+                print(f" ├─ ChromaDB 검색 오류: {chroma_err}")
 
+        time_db_end = time.time()
+        print(f" └─ ⏱️ 수집 소요: {time_db_end - time_router_end:.2f}초")
 
         # =======================================================
-        # [Step 4] 최종 하이브리드 답변 생성
+        # [Step 4] 최종 AI 답변 생성
         # =======================================================
-        
-        print(f"[MAIN-CHAT] 🧠 최종 하이브리드 답변 생성 중... (사용 모델: {request.model_name})")
+        print(f"\n[Step 4] 🤖 최종 AI 답변 생성 중... (사용 모델: {request.model_name})")
         final_model = genai.GenerativeModel(model_name=request.model_name, system_instruction=get_system_prompt(request.user_role))
-        
-        # [디버그] 프론트엔드에서 스크랩 컨텍스트가 분리되어 제대로 넘어왔는지 확인
-        if request.scraped_context:
-            if request.scraped_file_name:
-                print(f"[BACKEND] === [수신된 스크랩 컨텍스트 (미리보기: {request.scraped_file_name})] ===")
-            else:
-                print(f"[BACKEND] === [수신된 스크랩 컨텍스트 (미리보기)] ===")
-            
-            # 빈 줄을 제외하고 유효한 텍스트 라인만 추출
-            valid_lines = [line.strip() for line in request.scraped_context.split('\n') if line.strip()]
-            
-            # 처음 15줄 (제목/결재선 등)
-            for line in valid_lines[:15]:
-                print(f"[BACKEND] {line}")
-                
-            if len(valid_lines) > 30:
-                print("[BACKEND] ... [중간 생략] ...")
-                # 정중앙 부근의 15줄 (실제 본문/알맹이가 위치할 확률이 높음)
-                mid = len(valid_lines) // 2
-                for line in valid_lines[mid:mid+15]:
-                    print(f"[BACKEND] {line}")
-                print("[BACKEND] ... [하단 생략] ...")
-            else:
-                for line in valid_lines[15:]:
-                    print(f"[BACKEND] {line}")
-                    
-            print(f"[BACKEND] (총 {len(request.scraped_context)}자, 유효 텍스트 {len(valid_lines)}줄 정상 수신됨)")
-            print("[BACKEND] ===========================")
-        else:
-            print("[BACKEND] === [스크랩 컨텍스트 없음] ===")
 
 
 
@@ -1915,8 +1903,28 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 5. **[개인정보 보호 안내 의무]**: 만약 사용자의 질문에 마스킹 처리된 개인정보(예: `010-****-7001`, `900101-1******` 등)가 포함되어 있다면, 답변의 최상단에 **'⚠️ 개인정보 보호를 위해 입력하신 정보는 시스템에 의해 안전하게 마스킹 처리되었습니다. 추가적인 개인정보 입력은 자제해 주시기 바랍니다.'** 라는 안내 문구를 반드시 포함하여 답변해.
 6. **[정보 임의 생성 엄격 금지]**: <시스템 DB 및 규정 문서 팩트>에 명시적으로 기재되어 있지 않은 대동대학교 입학처 전화번호, 홈페이지 링크, 부서명 등을 절대로 임의로 지어내서 안내하지 마. 모르는 연락처는 아예 적지 마.
 7. 💡 **[비정형 문서 기호/단어 의미 규칙]**: 문서 표에서 하이픈(`-`) 기호는 '데이터 값이 존재하지 않음(해당 전형으로 모집하지 않음)'을 의미하여 숫자 0과 같고, 그 외 텍스트로 모집 인원이 기재되어 있다면 해당 문구의 문맥(예: 무제한 모집 등)을 그대로 반영해.
-8. 💡 **[PDF 표 병합(빈칸) 추론 지침]**: <시스템 DB 및 규정 문서 팩트>의 표에 특정 칸이 비어있다면, 절대 '0명'이나 '해당 없음'으로 단정짓지 마. PDF 문서 구조상 윗칸의 텍스트가 병합되어 생략(빈칸) 처리된 것일 확률이 매우 높으므로, 빈칸을 보면 반드시 바로 윗칸의 데이터를 그대로 상속받아 이어붙인 뒤 정확하게 답변해.
 9. 🚨 **[특수문자 및 수식 규정(LaTeX 절대 금지)]**: 어떠한 경우에도 LaTeX 수학 기호나 수식 블록(예: `$`, `$$`, `\text{{}}`, `\times`, `\rightarrow`)을 절대로 사용하지 마. (❌ 잘못된 예: `$12,600\text{{원}} \times 12\text{{부}} = 151,200\text{{원}}$` ➡️ 🟢 올바른 예: `12,600원 x 12부 = 151,200원`). 화살표는 반드시 유니코드(→)를 사용해.
+10. 🧮 **[정밀 수치 연산 및 누적 덧셈 절대 규칙 (CoT 강제)]**:
+    - 학생부 성적, 이수단위, 환산값, 점수 합계 등 다항목의 곱셈 및 누적 덧셈을 수행할 때, 절대 중간 과정 없이 최종 합계 수치만 단답형으로 작성하지 마.
+    - 과목별 환산값(단위 x 등급)을 모두 나열한 후, 학기별 총 환산값을 산출할 때는 반드시 `24 + 28 + 28 + 12 + 8 + 28 + 2 + 12 = 142`와 같이 **모든 과목의 값을 빠짐없이 덧셈 기호(+)로 1:1 연결한 전체 산식을 먼저 노출**해.
+    - 동일한 숫자(예: 28, 28 등)가 여러 번 반복 등장할 경우, 수식에 포함된 항의 개수가 실제 과목 수와 일치하는지 자체 대조(Cross-Check)하여 토큰 누락을 원천 차단해.
+11. 🎯 **[성적 환산점수 산출 절대 규칙 (환산표 체계 준수)]**:
+    - 교과성적, 출석성적, 검정고시 성적의 환산점수를 계산할 때는 **임의로 비례식을 사용하거나 백분율을 곱해서 계산하는 것을 절대 금지**해.
+    - 반드시 모집요강에 명시된 **[학생부 등급비율 및 환산점수표]**, **[학생부 출석성적 환산점수표]**, **[검정고시 합격자 성적 환산점수표]**의 기준과 등급 간 차감 점수(급간) 체계에 철저히 의거하여 점수를 도출해.
+12. 📐 **[총 석차등급 단계별 반올림(소수점 5째 자리) 강제 규칙]**:
+    - 교과성적 총 석차등급을 산출할 때는 한 번에 수식을 계산한 뒤 마지막에만 반올림하는 방식을 절대 금지해. 반드시 아래의 **[단계별 반올림 프로세스]**를 순서대로 엄격히 수행하여 매 단계마다 확정된(반올림된) 숫자로 다음 계산을 이어가:
+      * **1단계 (학기별 석차등급)**: `과목별 환산값의 합 ÷ 총 이수단위` ➔ **소수점 6째 자리에서 반올림하여 소수점 5째 자리까지 확정** (예: `5.43478`)
+      * **2단계 (학년별 석차등급)**: `(1학기 석차등급 + 2학기 석차등급) ÷ 2` ➔ **소수점 6째 자리에서 반올림하여 소수점 5째 자리까지 확정** (예: `5.19643`)
+      * **3단계 (총 석차등급)**: 학년별 반영비율(예: 1학년 40% + 2학년 60%)을 각각 곱하여 합산 ➔ **소수점 6째 자리에서 반올림하여 소수점 5째 자리까지 확정**
+      * **4단계 (환산점수 도출)**: 3단계에서 확정된 총 석차등급(소수점 5째 자리)이 속한 등급 구간(예: 4.00000 ~ 4.99999 등)을 판별한 후, 모집요강 환산점수표의 해당 등급 점수를 1:1로 정확히 적용해.
+13. 🏫 **[출신고교구분(고교 유형)별 맞춤 성적 반영비율 적용 절대 규칙]**:
+    - **고교 유형 7대 코드 식별**: `1: 일반고`, `2: 특성화고`, `3: 검정고시`, `4: 특수목적고`, `5: 공고2+1`, `6: 일반고위탁`, `7: 외국고`
+    - **지원자 고교 유형 우선 탐색**: 성적 산출 전, 첨부된 서류(학생부, 원서 등)나 학생의 질문에서 지원자의 출신고교 유형(예: 일반고위탁, 공고2+1, 특성화고, 검정고시 등)이 명시되어 있는지 가장 먼저 확인해.
+    - **고교 유형별 모집요강 예외 규정 100% 준수**:
+      * **일반고위탁 / 공고2+1**: 직업과정 위탁생이나 현장실습생의 경우, 3학년 성적을 제외하고 1~2학년 성적만 반영하거나 특정 학기를 제외하는 등 모집요강의 고교유형별 특수 반영 규정을 찾아 정확히 적용해.
+      * **검정고시 합격자**: 학생부 석차등급 계산을 생략하고, 전 과목 평균 점수를 모집요강의 [검정고시 합격자 성적 환산점수표]에 1:1 대조하여 환산점수를 산출해.
+      * **외국고 출신자**: 국내 학생부 체계가 없으므로 모집요강의 외국고 성적 처리 기준(최저점 부여 또는 면접 점수 환산 등)을 적용해.
+    - **고교 유형 미특정 시 표준 적용 및 조건부 안내**: 만약 첨부 서류나 질문에 고교 유형이 특정되지 않은 일반 학생부인 경우, '일반고' 기준을 기본값으로 산출하되, **"※ 본 산출 결과는 일반고 기준이며, 지원자가 특성화고, 일반고위탁, 공고2+1, 검정고시 등 다른 출신고교 유형일 경우 반영 학기 및 비율이 달라질 수 있습니다."**라는 안내 문구를 반드시 명시해.
 """
         else:
             prompt = f"""
@@ -1984,6 +1992,27 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 20. 💡 **[데이터 충돌 시 우선순위 규칙]**: 만약 <판단 기준 1: 시스템 DB 최신 팩트>와 <판단 기준 2: 사내 규정 및 과거 문서>의 내용이 서로 상이하거나 충돌할 경우, 최신 통계 데이터인 **<판단 기준 1: 시스템 DB>의 값을 최우선으로 참고**하여 답변하십시오.
 21. 💡 **[PDF 표 병합(빈칸) 추론 절대 지침]**: <판단 기준 2: 사내 규정(RAG)> 내 문서의 표에 특정 칸이 비어있다면, 무조건 '해당 없음'이나 '모집 안함'으로 단정짓지 마십시오. PDF 변환 특성상 **윗칸의 텍스트가 병합되어 생략(빈칸) 처리된 것일 확률이 99%**입니다. 따라서 <검토 대상 문서(스크랩)>에는 글자가 채워져 있고 PDF 기준 문서에는 빈칸일 경우, "스크랩이 틀렸다"고 절대 오진하지 말고 윗칸 문맥을 이어붙여 정상 병합된 팩트로 인정하십시오.
 22. 🚨 **[특수문자 및 수식 규정(LaTeX 절대 금지)]**: 어떠한 경우에도 LaTeX 수학 기호나 수식 블록(예: `$`, `$$`, `\text{{}}`, `\times`, `\rightarrow`)을 절대로 사용하지 마십시오. (❌ 잘못된 예: `$12,600\text{{원}} \times 12\text{{부}} = 151,200\text{{원}}$` ➡️ 🟢 올바른 예: `12,600원 x 12부 = 151,200원`). 화살표는 반드시 유니코드(→)를 사용하십시오.
+23. 🧮 **[정밀 수치 연산 및 누적 덧셈 절대 규칙 (CoT 강제)]**:
+    - 학생부 성적, 이수단위, 환산값, 예산안 등 다항목의 곱셈 및 누적 덧셈을 수행할 때, 절대 중간 과정 없이 최종 합계 수치만 단답형으로 작성하지 마십시오.
+    - 과목별 환산값(단위 x 등급)을 모두 나열한 후, 학기별 총 환산값을 산출할 때는 반드시 `24 + 28 + 28 + 12 + 8 + 28 + 2 + 12 = 142`와 같이 **모든 과목의 값을 빠짐없이 덧셈 기호(+)로 1:1 연결한 전체 산식을 먼저 노출**하십시오.
+    - 동일한 숫자(예: 28, 28 등)가 여러 번 반복 등장할 경우, 수식에 포함된 항의 개수가 실제 과목 수와 일치하는지 반드시 자체 대조(Cross-Check)하여 토큰 누락을 원천 차단하십시오.
+24. 🎯 **[성적 환산점수 산출 절대 규칙 (환산표 체계 준수)]**:
+    - 교과성적, 출석성적, 검정고시 성적의 환산점수를 계산할 때는 **임의로 비례식을 사용하거나 백분율을 곱해서 계산하는 것을 절대 금지**합니다.
+    - 반드시 모집요강에 명시된 **[학생부 등급비율 및 환산점수표]**, **[학생부 출석성적 환산점수표]**, **[검정고시 합격자 성적 환산점수표]**의 기준과 등급 간 차감 점수(급간) 체계에 철저히 의거하여 점수를 도출하십시오.
+25. 📐 **[총 석차등급 단계별 반올림(소수점 5째 자리) 강제 규칙]**:
+    - 교과성적 총 석차등급을 산출할 때는 한 번에 수식을 계산한 뒤 마지막에만 반올림하는 방식을 절대 금지합니다. 반드시 아래의 **[단계별 반올림 프로세스]**를 순서대로 엄격히 수행하여 매 단계마다 확정된(반올림된) 숫자로 다음 계산을 이어가십시오:
+      * **1단계 (학기별 석차등급)**: `과목별 환산값의 합 ÷ 총 이수단위` ➔ **소수점 6째 자리에서 반올림하여 소수점 5째 자리까지 확정** (예: `5.43478`)
+      * **2단계 (학년별 석차등급)**: `(1학기 석차등급 + 2학기 석차등급) ÷ 2` ➔ **소수점 6째 자리에서 반올림하여 소수점 5째 자리까지 확정** (예: `5.19643`)
+      * **3단계 (총 석차등급)**: 학년별 반영비율(예: 1학년 40% + 2학년 60%)을 각각 곱하여 합산 ➔ **소수점 6째 자리에서 반올림하여 소수점 5째 자리까지 확정**
+      * **4단계 (환산점수 도출)**: 3단계에서 확정된 총 석차등급(소수점 5째 자리)이 속한 등급 구간(예: 4.00000 ~ 4.99999 등)을 판별한 후, 모집요강 환산점수표의 해당 등급 점수를 1:1로 정확히 적용.
+26. 🏫 **[출신고교구분(고교 유형)별 맞춤 성적 반영비율 적용 절대 규칙]**:
+    - **고교 유형 7대 코드 식별**: `1: 일반고`, `2: 특성화고`, `3: 검정고시`, `4: 특수목적고`, `5: 공고2+1`, `6: 일반고위탁`, `7: 외국고`
+    - **지원자 고교 유형 우선 탐색**: 성적 산출 전, 첨부된 서류(학생부, 원서 등)나 사용자의 질문에서 지원자의 출신고교 유형(예: 일반고위탁, 공고2+1, 특성화고, 검정고시 등)이 명시되어 있는지 가장 먼저 탐색하십시오.
+    - **고교 유형별 모집요강 예외 규정 100% 준수**:
+      * **일반고위탁 / 공고2+1**: 직업과정 위탁생이나 현장실습생의 경우, 3학년 성적을 제외하고 1~2학년 성적만 반영하거나 특정 학기를 제외하는 등 모집요강의 고교유형별 특수 반영 규정을 찾아 정확히 적용하십시오.
+      * **검정고시 합격자**: 학생부 석차등급 계산을 생략하고, 전 과목 평균 점수를 모집요강의 [검정고시 합격자 성적 환산점수표]에 1:1 대조하여 환산점수를 산출하십시오.
+      * **외국고 출신자**: 국내 학생부 체계가 없으므로 모집요강의 외국고 성적 처리 기준(최저점 부여 또는 면접 점수 환산 등)을 적용하십시오.
+    - **고교 유형 미특정 시 표준 적용 및 조건부 안내**: 만약 첨부 서류나 질문에 고교 유형이 특정되지 않은 일반 학생부인 경우, '일반고' 기준을 기본값으로 산출하되, **"※ 본 산출 결과는 일반고 기준이며, 지원자가 특성화고, 일반고위탁, 공고2+1, 검정고시 등 다른 출신고교 유형일 경우 반영 학기 및 비율이 달라질 수 있습니다."**라는 안내 문구를 반드시 명시하십시오.
 
 <지식 업데이트 반영 내역>
 {k_feedback_msg if k_feedback_msg else "수행된 업데이트 내역 없음"}
@@ -2018,40 +2047,29 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 total_cost = chat_cost + router_cost
                 total_tok = r_in + r_out + c_in + c_out
                 
-                print("\n" + "=" * 50)
-                print("🧾 [💸 AI 요금 결제 내역 (영수증)]")
-                if r_model != "NONE":
-                    print(f"[라우터 AI] 사용 모델: {r_model}")
-                    print(f"  - 입력: {r_in:,} / 출력: {r_out:,} (예상 비용: 약 {router_cost:.3f} 원)")
-                    print("-" * 50)
-                print(f"[최종 챗봇 AI] 사용 모델: {chat_model_name}")
-                print("  - 참조한 PDF 목록 및 챗봇 입력 토큰 점유율 추정:")
-                
                 formatted_docs_list = []
                 for idx, (fname, chars) in enumerate(doc_texts_len.items()):
                     ratio = chars / total_doc_chars
                     est_tokens = int(c_in * ratio)
                     line_str = f"{idx+1}) {fname} (약 {est_tokens:,} 토큰 / {ratio*100:.1f}%)"
-                    print(f"    {line_str}")
                     formatted_docs_list.append(line_str)
                     
-                if not doc_texts_len:
-                    print("    (참조한 문서 없음)")
-                    
                 rag_docs_formatted = "\n".join(formatted_docs_list) if formatted_docs_list else None
-                    
-                print(f"  - 챗봇 입력 토큰: {c_in:,} Tokens")
-                print(f"  - 챗봇 출력 토큰: {c_out:,} Tokens")
-                print(f"  - 챗봇 예상 비용: 약 {chat_cost:.3f} 원")
-                print("-" * 50)
-                print(f"🔹 총 소모 토큰 합계: {total_tok:,} Tokens")
-                print(f"💰 총 예상 청구 비용: 약 {total_cost:.3f} 원 (KRW)")
-                print("=" * 50 + "\n")
-                
                 return (r_model, r_in, r_out, c_in, c_out, total_tok, total_cost, rag_docs_formatted)
             except Exception as token_err:
                 print(f"[토큰 계산 오류] {token_err}")
                 return (r_model, r_in, r_out, 0, 0, 0, 0.0, None)
+
+        def print_pipeline_summary(time_str, router_lat, db_lat, chat_lat, t_data, log_id):
+            print(f"\n[Step 5] 🧾 처리 완료 요약")
+            print(f" ├─ 총 소요시간: {time_str} (라우터 {router_lat/1000.0:.2f}s | 데이터수집 {db_lat/1000.0:.2f}s | AI답변 {chat_lat/1000.0:.2f}s)")
+            if t_data[0] != "NONE":
+                print(f" ├─ 토큰 사용량: 라우터 {t_data[1]+t_data[2]:,} + 답변 {t_data[3]+t_data[4]:,} = 총 {t_data[5]:,} Tokens")
+            else:
+                print(f" ├─ 토큰 사용량: 답변 {t_data[3]+t_data[4]:,} Tokens (총 {t_data[5]:,} Tokens)")
+            print(f" ├─ 예상 비용: 약 {t_data[6]:.2f} 원")
+            print(f" └─ 감사 로그: #{log_id if log_id else '기록완료'} DB 저장 완료")
+            print("=" * 70 + "\n", flush=True)
 
         # [NEW] 단축 종료(Short-circuit) 로직 추가
         short_circuit_text = None
@@ -2074,11 +2092,23 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 response = [MockChunk(short_circuit_text)]
             else:
                 # [NEW] 학생용 분기 - 실시간 스트리밍 모드
-                response = final_model.generate_content(
-                    prompt, 
-                    request_options={"timeout": timeout_sec, "retry": no_retry},
-                    stream=True
-                )
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        response = final_model.generate_content(
+                            prompt, 
+                            request_options={"timeout": timeout_sec, "retry": no_retry},
+                            stream=True
+                        )
+                        break
+                    except Exception as e:
+                        err_msg = str(e)
+                        if ("503" in err_msg or "429" in err_msg) and attempt < max_retries - 1:
+                            reason = "구글 서버 일시적 과부하(503)" if "503" in err_msg else "API 호출 제한(429)"
+                            print(f"[MAIN-CHAT] ⚠️ 학생용 스트리밍 {reason} 감지 ({attempt+1}/{max_retries}). 5초 후 자동으로 재시도합니다...")
+                            time.sleep(5)
+                            continue
+                        raise e
             
             # finally 블록에서 conn 닫히는 것을 방지하기 위해 얕은 복사본을 유지하고 원본 초기화
             conn_for_stream = conn
@@ -2099,7 +2129,6 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                             continue
                     
                     time_final_end = time.time()
-                    print(f"⏱️ 최종 AI 답변 소요 시간 (스트리밍 완료): {time_final_end - time_db_end:.2f}초")
                     
                     latency_ms = int((time.time() - start_time) * 1000)
                     router_lat = int((time_router_end - start_time) * 1000)
@@ -2143,10 +2172,10 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     # 최종 완료 신호 전송
                     yield f"data: {json.dumps({'status': 'done', 'log_id': log_id, 'references': results_metadatas, 'latency_ms': latency_ms}, ensure_ascii=False)}\n\n"
                     
-                    # [NEW] 응답 소요 시간 분/초 계산 및 출력
+                    # [Step 5] 처리 완료 요약 출력
                     total_seconds = latency_ms / 1000.0
                     time_str = f"{int(total_seconds // 60)}분 {total_seconds % 60:.1f}초" if total_seconds >= 60 else f"{total_seconds:.1f}초"
-                    print(f"[BACKEND] ⏱️ AI 최종 응답 완료 (소요 시간: {time_str})")
+                    print_pipeline_summary(time_str, router_lat, db_lat, chat_lat, t_data, log_id)
                     
                 except Exception as e:
                     yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
@@ -2168,11 +2197,22 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                         self.text = text
                 response = MockResponse(short_circuit_text)
             else:
-                response = final_model.generate_content(prompt, request_options={"timeout": timeout_sec, "retry": no_retry})
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        response = final_model.generate_content(prompt, request_options={"timeout": timeout_sec, "retry": no_retry})
+                        break
+                    except Exception as e:
+                        err_msg = str(e)
+                        if ("503" in err_msg or "429" in err_msg) and attempt < max_retries - 1:
+                            reason = "구글 서버 일시적 과부하(503)" if "503" in err_msg else "API 호출 제한(429)"
+                            print(f"[MAIN-CHAT] ⚠️ 교직원용 답변 {reason} 감지 ({attempt+1}/{max_retries}). 5초 후 자동으로 재시도합니다...")
+                            time.sleep(5)
+                            continue
+                        raise e
             
             # [NEW] Audit Log 기록
             time_final_end = time.time()
-            print(f"⏱️ 최종 AI 답변 소요 시간: {time_final_end - time_db_end:.2f}초")
             
             # [NEW] 영수증 출력 및 토큰 데이터 확보
             is_short = bool(short_circuit_text)
@@ -2215,7 +2255,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             except Exception as audit_err:
                 print(f"Audit Log 기록 오류: {audit_err}")
 
-            # [NEW] 응답 소요 시간 분/초 계산 및 출력
+            # [Step 5] 처리 완료 요약 출력
             total_seconds = latency_ms / 1000.0
             if total_seconds >= 60:
                 mins = int(total_seconds // 60)
@@ -2223,7 +2263,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 time_str = f"{mins}분 {secs:.1f}초"
             else:
                 time_str = f"{total_seconds:.1f}초"
-            print(f"[BACKEND] ⏱️ AI 최종 응답 완료 (소요 시간: {time_str})")
+            print_pipeline_summary(time_str, router_lat, db_lat, chat_lat, t_data, log_id)
 
             return {
                 "status": "success",
