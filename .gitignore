@@ -66,3 +66,8 @@ nginx/ssl/*
 
 # Claude Code 개인 설정 (작업기록 알림 hook)
 .claude/settings.local.json
+
+# 서버가 실행 중 만드는 파일 (엑셀 채우기 디버그 사본, 마지막 쿼리, vite 임시 파일)
+backend/temp/
+backend/latest_query.sql
+*.timestamp-*.mjs
