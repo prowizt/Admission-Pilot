@@ -52,7 +52,7 @@ FastAPI 백엔드(`backend/main.py`) + MS-SQL(DDU_ADMISSION, **운영 DB 공유*
 - 콘솔이 cp949 → 스크립트는 `PYTHONIOENCODING=utf-8` 로 실행. DB 에 넣는 문자열도 cp949 로 표현 못 하는 글자(₩·이모지)는 `cp949_safe` 로.
 - DB 스크립트: `backend/tools/_db.py` 의 `connect()` 를 쓰거나, `load_dotenv(backend/.env)` 후 `app_config._owner_conn()`.
 - 설정값은 `backend/app_config.py` SPEC(기본값) + 대시보드 환경 설정(Sys_SystemSetting). 코드에 상수를 박지 말고 설정으로.
-- 타입 검사: `cd frontend && npx tsc --noEmit -p tsconfig.app.json` (MetricCatalogPanel 의 기존 오류는 무시).
+- 타입 검사: `cd frontend && npx tsc -b` (배포 빌드와 같은 검사 — **오류가 하나라도 있으면 배포가 멈추므로 0개여야 함**). student-web 도 같음. 프런트를 고쳤으면 커밋 전에 `npm run build` 까지 확인.
 
 ## 작업기록 (매일)
 

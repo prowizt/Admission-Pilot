@@ -122,7 +122,7 @@ export default function MetricCatalogPanel() {
           {editMetric && !editMetric.metric_id && <div className="p-3">{metricForm(editMetric)}</div>}
           {metrics.map(m => (
             <div key={m.metric_id} className={`px-4 py-2.5 text-sm min-w-0 ${m.is_active === 'Y' ? '' : 'opacity-60'}`}>
-              {editMetric?.metric_id === m.metric_id ? metricForm(editMetric) : (
+              {editMetric && editMetric.metric_id === m.metric_id ? metricForm(editMetric) : (
                 <div className="flex flex-col md:flex-row md:items-start gap-2 min-w-0">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
@@ -153,7 +153,7 @@ export default function MetricCatalogPanel() {
           {editDim && !editDim.dim_id && <div className="p-3">{dimForm(editDim)}</div>}
           {dims.map(d => (
             <div key={d.dim_id} className={`px-4 py-2 text-sm min-w-0 ${d.is_active === 'Y' ? '' : 'opacity-60'}`}>
-              {editDim?.dim_id === d.dim_id ? dimForm(editDim) : (
+              {editDim && editDim.dim_id === d.dim_id ? dimForm(editDim) : (
                 <div className="flex flex-col md:flex-row md:items-center gap-2 min-w-0">
                   <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
                     <span className="font-bold text-slate-800 w-20 shrink-0">{d.dim_name}</span>{badge(d.is_active)}
