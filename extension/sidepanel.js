@@ -245,6 +245,7 @@ function resetForm() {
   newRouterModelId.value = "";
   newModelId.value = "";
   newModelApiKey.value = "";
+  newModelEffort.value = "";
   editModelId.value = "";
   formTitle.innerText = "➕ 나만의 AI 모델 세트 추가";
   btnAddModel.innerText = "저장";
@@ -274,13 +275,15 @@ btnAddModel.addEventListener('click', () => {
       customModels[idx].routerModelName = routerModelIdStr;
       customModels[idx].modelName = modelId;
       customModels[idx].apiKey = apiKey;
+      delete customModels[idx].effort; // 추론 강도는 대시보드 환경 설정에서 관리
     }
     finalActiveId = editingId;
   } else {
-    // 신규 등록
+    // 신규 등록 (라우터 모델명이 신규 등록 시 누락되던 문제 함께 수정)
     const newModel = {
       id: "custom_" + Date.now(),
       alias: alias,
+      routerModelName: routerModelIdStr,
       modelName: modelId,
       apiKey: apiKey
     };
@@ -524,6 +527,324 @@ async function sendMessage() {
   addMessage(text, true);
   chatInput.value = '';
   chatInput.style.height = 'auto';
+
+  let endpoint = `${BASE_URL}/chat`;
+  let bodyData;
+  let headers = {
+    'x-gemini-key': currentActiveModel.apiKey
+  };
+
+  // 엑셀 파일이 첨부되었더라도, 사용자가 '채우기' 동작을 명시적으로 요구했을 때만 Autofill 모드로 동작
+  const isAutofillIntent = /채워|작성|매핑|맵핑|생성|넣어|채우기|자동완성/.test(text);
+
+  let combinedScrapedContext = "";
+  if (scrapedWebContext) {
+    combinedScrapedContext += "### [웹 화면 텍스트 스크랩]\n\n" + scrapedWebContext + "\n\n";
+  }
+  if (attachedFiles.length > 0) {
+    attachedFiles.forEach((f, idx) => {
+      combinedScrapedContext += `### [첨부 파일 ${idx + 1}] 파일명: ${f.name}\n\n${f.context}\n\n`;
+    });
+  }
+  const combinedFileName = attachedFiles.map(f => f.name).join(', ');
+
+  // [규칙] 파일 채우기(Autofill)는 파일이 정확히 1개이고 엑셀일 때만 수행 (2개 이상은 순수 비교분석 모드로 안전 동작)
+  const canAutofill = (attachedFiles.length === 1 && attachedFiles[0].name.toLowerCase().endsWith('.xlsx') && isAutofillIntent);
+
+  if (canAutofill) {
+    endpoint = `${BASE_URL}/chat-excel-autofill`;
+    const formData = new FormData();
+    formData.append('file', attachedFiles[0].rawFile);
+    formData.append('question', text);
+    formData.append('user_role', 'staff');
+    formData.append('model_name', currentActiveModel.modelName);
+    if (currentActiveModel.routerModelName) {
+      formData.append('router_model_name', currentActiveModel.routerModelName);
+    }
+    formData.append('history', JSON.stringify(chatHistory.slice(-6)));
+
+    if (combinedScrapedContext) formData.append('scraped_context', combinedScrapedContext);
+    if (combinedFileName) formData.append('scraped_file_name', combinedFileName);
+
+    bodyData = formData;
+    // [큰 문서 확인] 엑셀 채우기도 같은 파일·질문으로 재요청할 수 있도록 보관 (FormData 는 재전송 가능)
+    lastChatRequest = { endpoint, headers: { ...headers }, formData, isAutofill: true };
+  } else {
+    headers['Content-Type'] = 'application/json';
+    const payload = {
+      question: text,
+      user_role: 'staff',
+      model_name: currentActiveModel.modelName,
+      history: chatHistory.slice(-6)
+    };
+    if (currentActiveModel.routerModelName) {
+      payload.router_model_name = currentActiveModel.routerModelName;
+    }
+
+    if (combinedScrapedContext) {
+      payload.scraped_context = combinedScrapedContext;
+      if (combinedFileName) {
+        payload.scraped_file_name = combinedFileName;
+      }
+    }
+    bodyData = JSON.stringify(payload);
+    // [큰 문서 확인] 백엔드가 포함 여부를 물어오면 같은 요청을 결정값과 함께 다시 보내기 위해 보관
+    lastChatRequest = { endpoint, headers: { ...headers }, payload, isAutofill: false };
+  }
+
+  await postChat(endpoint, headers, bodyData, isAutofillIntent);
+}
+
+// [큰 문서 확인] 마지막 /chat 요청 원본 (재요청 시 pending_id / large_doc_decision 만 추가)
+let lastChatRequest = null;
+
+// [큰 문서 확인] 사용자가 [포함/제외]를 선택하면 같은 질문을 결정값과 함께 재요청 (라우터 재호출 없음)
+async function resumeLargeDocDecision(pendingId, decision) {
+  if (!lastChatRequest) {
+    addMessage("⚠️ 이전 요청 정보를 찾을 수 없습니다. 다시 질문해 주세요.", false, false);
+    return;
+  }
+  // 이번 요청 정보는 그대로 유지 (포함 시 한도 초과로 취소되면 제외로 다시 시도할 수 있도록)
+  if (lastChatRequest.isAutofill) {
+    // 엑셀 채우기: 원본 FormData(첨부 엑셀 포함)를 복사하고 결정값만 추가
+    const fd = new FormData();
+    for (const [k, v] of lastChatRequest.formData.entries()) {
+      if (k !== 'pending_id' && k !== 'large_doc_decision') fd.append(k, v);
+    }
+    fd.append('pending_id', pendingId);
+    fd.append('large_doc_decision', decision);
+    return await postChat(lastChatRequest.endpoint, lastChatRequest.headers, fd, true);
+  }
+  const payload = { ...lastChatRequest.payload, pending_id: pendingId, large_doc_decision: decision };
+  return await postChat(lastChatRequest.endpoint, lastChatRequest.headers, JSON.stringify(payload), false);
+}
+
+// [큰 문서 확인] 확인 말풍선 + [포함하고 진행] [제외하고 진행] 버튼
+function showLargeDocConfirm(data) {
+  addMessage(data.message || "AI가 큰 문서를 참고하려 합니다. 포함할까요?", false, false);
+  const lastBubble = chatContainer.lastElementChild.querySelector('.bg-white');
+  if (!lastBubble) return;
+  const btnWrap = document.createElement('div');
+  btnWrap.className = 'mt-2 pt-2 border-t border-gray-100 flex justify-end gap-2';
+  const mkBtn = (label, decision, cls) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `px-3 py-1.5 text-[11px] font-bold rounded shadow-sm transition-colors active:scale-95 ${cls}`;
+    b.innerText = label;
+    b.addEventListener('click', async () => {
+      btnWrap.querySelectorAll('button').forEach(x => x.disabled = true);
+      b.innerText = label + ' ✓';
+      const status = await resumeLargeDocDecision(data.pending_id, decision);
+      // 성공 외(예: 포함 → 토큰 한도 초과 취소, 네트워크 오류)에는 다른 선택지로 다시 시도할 수 있게 버튼을 되살림
+      if (status !== 'success') {
+        btnWrap.querySelectorAll('button').forEach(x => x.disabled = false);
+        b.innerText = label;
+      }
+    });
+    return b;
+  };
+  btnWrap.appendChild(mkBtn('포함하고 진행', 'include', 'bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-50'));
+  btnWrap.appendChild(mkBtn('제외하고 진행', 'exclude', 'bg-indigo-600 hover:bg-indigo-700 text-white'));
+
+  // [취소] AI 호출 없이 종료 (서버에 보관된 라우터 판단은 15분 후 자동 만료)
+  const btnCancel = document.createElement('button');
+  btnCancel.type = 'button';
+  btnCancel.className = 'px-3 py-1.5 text-[11px] font-bold rounded shadow-sm transition-colors active:scale-95 bg-gray-100 border border-gray-300 text-gray-600 hover:bg-gray-200';
+  btnCancel.innerText = '취소';
+  btnCancel.addEventListener('click', () => {
+    btnWrap.querySelectorAll('button').forEach(x => x.disabled = true);
+    btnCancel.innerText = '취소됨 ✓';
+    addMessage("요청을 취소했습니다. (AI 호출 없음) 질문을 바꾸거나 문서를 지정해서 다시 보내 주세요.", false, false);
+  });
+  btnWrap.appendChild(btnCancel);
+  lastBubble.appendChild(btnWrap);
+  chatContainer.scrollTop = chatContainer.scrollHeight;
+}
+
+// [조건 값 확인] 질문의 값(예: '정시')이 실제 DB 값 여러 개와 비슷할 때 값마다 하나를 고르고 같은 질문을 다시 요청 (라우터 재호출 없음)
+function showValueChoiceConfirm(data) {
+  addMessage(data.message || "조회할 값을 골라 주세요.", false, false);
+  const lastBubble = chatContainer.lastElementChild.querySelector('.bg-white');
+  if (!lastBubble) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'mt-2 pt-2 border-t border-gray-100 space-y-3 text-[11px]';
+  const stamp = Date.now();
+  const groups = [];
+  (data.items || []).forEach((it, i) => {
+    const box = document.createElement('div');
+    const q = document.createElement('div');
+    q.className = 'font-bold text-gray-700 mb-1';
+    q.innerText = `${it.column} '${it.given}'`;
+    box.appendChild(q);
+    const name = `vc-${stamp}-${i}`;
+    [...(it.candidates || []), '__ALL__', it.given].forEach((o, j) => {
+      const lb = document.createElement('label');
+      lb.className = 'flex items-start gap-1.5 py-0.5 cursor-pointer text-gray-700';
+      const rb = document.createElement('input');
+      rb.type = 'radio'; rb.name = name; rb.value = o; rb.className = 'mt-0.5';
+      if (j === 0) rb.checked = true;
+      const sp = document.createElement('span');
+      sp.innerText = o === '__ALL__' ? '위 값 모두 포함' : o === it.given ? `'${o}' 그대로 (바꾸지 않음)` : o;
+      lb.appendChild(rb); lb.appendChild(sp);
+      box.appendChild(lb);
+    });
+    groups.push({ given: it.given, name });
+    wrap.appendChild(box);
+  });
+  const btnRow = document.createElement('div');
+  btnRow.className = 'flex justify-end gap-2';
+  const btnGo = document.createElement('button');
+  btnGo.type = 'button';
+  btnGo.className = 'px-3 py-1.5 text-[11px] font-bold rounded shadow-sm transition-colors active:scale-95 bg-indigo-600 hover:bg-indigo-700 text-white';
+  btnGo.innerText = '이 값으로 조회';
+  const btnCancel = document.createElement('button');
+  btnCancel.type = 'button';
+  btnCancel.className = 'px-3 py-1.5 text-[11px] font-bold rounded shadow-sm transition-colors active:scale-95 bg-gray-100 border border-gray-300 text-gray-600 hover:bg-gray-200';
+  btnCancel.innerText = '취소';
+  const setDisabled = (v) => wrap.querySelectorAll('input, button').forEach(x => x.disabled = v);
+  btnGo.addEventListener('click', async () => {
+    const choices = {};
+    groups.forEach(g => {
+      const sel = wrap.querySelector(`input[name="${g.name}"]:checked`);
+      if (sel) choices[g.given] = sel.value;
+    });
+    if (!lastChatRequest || lastChatRequest.isAutofill) {
+      addMessage("⚠️ 이전 요청 정보를 찾을 수 없습니다. 같은 질문을 다시 보내 주세요.", false, false);
+      return;
+    }
+    setDisabled(true);
+    btnGo.innerText = '이 값으로 조회 ✓';
+    const payload = { ...lastChatRequest.payload, pending_id: data.pending_id, value_choices: choices };
+    const status = await postChat(lastChatRequest.endpoint, lastChatRequest.headers, JSON.stringify(payload), false);
+    if (status !== 'success' && status !== 'confirm_large_docs') {
+      setDisabled(false);
+      btnGo.innerText = '이 값으로 조회';
+    }
+  });
+  btnCancel.addEventListener('click', () => {
+    setDisabled(true);
+    btnCancel.innerText = '취소됨 ✓';
+    addMessage("요청을 취소했습니다. (최종 AI 호출 없음)", false, false);
+  });
+  btnRow.appendChild(btnGo); btnRow.appendChild(btnCancel);
+  wrap.appendChild(btnRow);
+  lastBubble.appendChild(wrap);
+  chatContainer.scrollTop = chatContainer.scrollHeight;
+}
+
+// [채우기 기준 확인] 고른 기준으로 같은 엑셀·질문을 다시 요청 (대응표만 바뀌면 라우터 재호출 없음)
+async function resumeExcelChoices(req, pendingId, choices, saveDefault) {
+  if (!req || !req.isAutofill) {
+    addMessage("⚠️ 이전 엑셀 채우기 요청 정보를 찾을 수 없습니다. 다시 요청해 주세요.", false, false);
+    return;
+  }
+  const skip = ['pending_id', 'large_doc_decision', 'excel_choice_id', 'excel_choices', 'save_default'];
+  const fd = new FormData();
+  for (const [k, v] of req.formData.entries()) {
+    if (!skip.includes(k)) fd.append(k, v);
+  }
+  fd.append('excel_choice_id', pendingId);
+  fd.append('excel_choices', JSON.stringify(choices));
+  fd.append('save_default', saveDefault ? 'true' : 'false');
+  return await postChat(req.endpoint, req.headers, fd, true);
+}
+
+// [채우기 기준 확인] 기준마다 선택지(라디오) + 직접 입력 + [다음에도 이 기준 사용] + [이 기준으로 채우기]
+function showExcelChoiceConfirm(data, req, title) {
+  addMessage(title || data.message || "채우기 기준을 골라 주세요.", false, false);
+  const lastBubble = chatContainer.lastElementChild.querySelector('.bg-white');
+  if (!lastBubble) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'mt-2 pt-2 border-t border-gray-100 space-y-3 text-[11px]';
+  const stamp = Date.now();
+  const groups = [];
+  (data.decisions || []).forEach((d, i) => {
+    const box = document.createElement('div');
+    const q = document.createElement('div');
+    q.className = 'font-bold text-gray-700 mb-1';
+    q.innerText = d.question || d.topic;
+    box.appendChild(q);
+    const name = `xc-${stamp}-${i}`;
+    const opts = [...(d.options || [])];
+    if (d.applied && !opts.includes(d.applied)) opts.unshift(d.applied);
+    opts.forEach(o => {
+      const lb = document.createElement('label');
+      lb.className = 'flex items-start gap-1.5 py-0.5 cursor-pointer text-gray-700';
+      const rb = document.createElement('input');
+      rb.type = 'radio'; rb.name = name; rb.value = o; rb.className = 'mt-0.5';
+      if (o === d.applied) rb.checked = true;
+      const sp = document.createElement('span');
+      sp.innerText = o + (o === d.applied ? '  (현재 적용)' : '');
+      lb.appendChild(rb); lb.appendChild(sp);
+      box.appendChild(lb);
+    });
+    const lbc = document.createElement('label');
+    lbc.className = 'flex items-center gap-1.5 py-0.5 text-gray-700';
+    const rbc = document.createElement('input');
+    rbc.type = 'radio'; rbc.name = name; rbc.value = '__custom__';
+    const inp = document.createElement('input');
+    inp.type = 'text'; inp.placeholder = '직접 입력';
+    inp.className = 'flex-1 border border-gray-300 rounded px-1.5 py-0.5 text-[11px]';
+    inp.addEventListener('focus', () => { rbc.checked = true; });
+    lbc.appendChild(rbc); lbc.appendChild(inp);
+    box.appendChild(lbc);
+    groups.push({ topic: d.topic, name, input: inp });
+    wrap.appendChild(box);
+  });
+
+  const saveLb = document.createElement('label');
+  saveLb.className = 'flex items-center gap-1.5 text-gray-600';
+  const saveCb = document.createElement('input');
+  saveCb.type = 'checkbox';
+  const saveSp = document.createElement('span');
+  saveSp.innerText = '다음에도 이 기준 사용 (사전지식 [통계 기본 기준]에 저장 · 쿼리 요청에도 적용)';
+  saveLb.appendChild(saveCb); saveLb.appendChild(saveSp);
+  wrap.appendChild(saveLb);
+
+  const btnRow = document.createElement('div');
+  btnRow.className = 'flex justify-end gap-2';
+  const btnGo = document.createElement('button');
+  btnGo.type = 'button';
+  btnGo.className = 'px-3 py-1.5 text-[11px] font-bold rounded shadow-sm transition-colors active:scale-95 bg-indigo-600 hover:bg-indigo-700 text-white';
+  btnGo.innerText = '이 기준으로 채우기';
+  const btnCancel = document.createElement('button');
+  btnCancel.type = 'button';
+  btnCancel.className = 'px-3 py-1.5 text-[11px] font-bold rounded shadow-sm transition-colors active:scale-95 bg-gray-100 border border-gray-300 text-gray-600 hover:bg-gray-200';
+  btnCancel.innerText = '취소';
+  const setDisabled = (v) => wrap.querySelectorAll('input, button').forEach(x => x.disabled = v);
+
+  btnGo.addEventListener('click', async () => {
+    const choices = groups.map(g => {
+      const sel = wrap.querySelector(`input[name="${g.name}"]:checked`);
+      let ans = sel ? sel.value : '';
+      if (ans === '__custom__') ans = g.input.value.trim();
+      return { topic: g.topic, answer: ans };
+    }).filter(c => c.answer);
+    if (choices.length !== groups.length) {
+      alert('모든 기준을 골라 주세요. (직접 입력을 골랐다면 내용을 적어 주세요)');
+      return;
+    }
+    setDisabled(true);
+    btnGo.innerText = '이 기준으로 채우기 ✓';
+    const status = await resumeExcelChoices(req, data.pending_id, choices, saveCb.checked);
+    if (status !== 'success' && status !== 'confirm_excel_options') {
+      setDisabled(false);
+      btnGo.innerText = '이 기준으로 채우기';
+    }
+  });
+  btnCancel.addEventListener('click', () => {
+    setDisabled(true);
+    btnCancel.innerText = '취소됨 ✓';
+    addMessage("엑셀 채우기를 취소했습니다. 질문에 기준을 적어 다시 요청할 수도 있습니다.", false, false);
+  });
+  btnRow.appendChild(btnGo); btnRow.appendChild(btnCancel);
+  wrap.appendChild(btnRow);
+  lastBubble.appendChild(wrap);
+  chatContainer.scrollTop = chatContainer.scrollHeight;
+}
+
+// 요청 전송 + 로딩 UI + 응답 처리 (일반 질문 / 큰 문서 확인 후 재요청 공용)
+async function postChat(endpoint, headers, bodyData, isAutofillIntent) {
   btnSend.disabled = true;
   chatInput.disabled = true;
 
@@ -565,66 +886,7 @@ async function sendMessage() {
     }
   }, 1000);
 
-  let endpoint = `${BASE_URL}/chat`;
-  let bodyData;
-  let headers = {
-    'x-gemini-key': currentActiveModel.apiKey
-  };
-
-  // 엑셀 파일이 첨부되었더라도, 사용자가 '채우기' 동작을 명시적으로 요구했을 때만 Autofill 모드로 동작
-  const isAutofillIntent = /채워|작성|매핑|맵핑|생성|넣어|채우기|자동완성/.test(text);
-
-  let combinedScrapedContext = "";
-  if (scrapedWebContext) {
-    combinedScrapedContext += "### [웹 화면 텍스트 스크랩]\n\n" + scrapedWebContext + "\n\n";
-  }
-  if (attachedFiles.length > 0) {
-    attachedFiles.forEach((f, idx) => {
-      combinedScrapedContext += `### [첨부 파일 ${idx + 1}] 파일명: ${f.name}\n\n${f.context}\n\n`;
-    });
-  }
-  const combinedFileName = attachedFiles.map(f => f.name).join(', ');
-
-  // [규칙] 파일 채우기(Autofill)는 파일이 정확히 1개이고 엑셀일 때만 수행 (2개 이상은 순수 비교분석 모드로 안전 동작)
-  const canAutofill = (attachedFiles.length === 1 && attachedFiles[0].name.toLowerCase().endsWith('.xlsx') && isAutofillIntent);
-
-  if (canAutofill) {
-    endpoint = `${BASE_URL}/chat-excel-autofill`;
-    const formData = new FormData();
-    formData.append('file', attachedFiles[0].rawFile);
-    formData.append('question', text);
-    formData.append('user_role', 'staff');
-    formData.append('model_name', currentActiveModel.modelName);
-    if (currentActiveModel.routerModelName) {
-      formData.append('router_model_name', currentActiveModel.routerModelName);
-    }
-    formData.append('history', JSON.stringify(chatHistory.slice(-6)));
-    
-    if (combinedScrapedContext) formData.append('scraped_context', combinedScrapedContext);
-    if (combinedFileName) formData.append('scraped_file_name', combinedFileName);
-    
-    bodyData = formData;
-  } else {
-    headers['Content-Type'] = 'application/json';
-    const payload = {
-      question: text,
-      user_role: 'staff',
-      model_name: currentActiveModel.modelName,
-      history: chatHistory.slice(-6)
-    };
-    if (currentActiveModel.routerModelName) {
-      payload.router_model_name = currentActiveModel.routerModelName;
-    }
-
-    if (combinedScrapedContext) {
-      payload.scraped_context = combinedScrapedContext;
-      if (combinedFileName) {
-        payload.scraped_file_name = combinedFileName;
-      }
-    }
-    bodyData = JSON.stringify(payload);
-  }
-
+  let resultStatus = null; // 호출 측(큰 문서 확인 버튼)에서 결과에 따라 버튼을 다시 활성화하기 위해 반환
   try {
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -634,6 +896,7 @@ async function sendMessage() {
     });
 
     const data = await response.json();
+    resultStatus = data.status || 'error';
 
     if (data.status === 'success') {
       const finalAnswer = data.answer ? data.answer.replace(/\$\\rightarrow\$/g, '→').replace(/\\rightarrow/g, '→') : '';
@@ -679,10 +942,42 @@ async function sendMessage() {
         window.URL.revokeObjectURL(url);
       }
 
+      // [기준 바꿔서 다시 채우기] 격자 채우기 결과에 계산 기준이 있으면 버튼 추가 (15분간 라우터 재호출 없이 다시 채움)
+      if (data.criteria_pending_id && data.decisions && data.decisions.length > 0) {
+        const reqSnapshot = lastChatRequest;
+        const resBubble = chatContainer.lastElementChild.querySelector('.bg-indigo-50, .bg-gray-100, .bg-white');
+        if (resBubble) {
+          const row = document.createElement('div');
+          row.className = 'mt-2 pt-2 border-t border-indigo-100 flex justify-end';
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'px-3 py-1.5 text-[11px] font-bold rounded shadow-sm transition-colors active:scale-95 bg-white border border-indigo-300 text-indigo-700 hover:bg-indigo-50';
+          b.innerText = '기준 바꿔서 다시 채우기';
+          b.addEventListener('click', () => {
+            showExcelChoiceConfirm({ pending_id: data.criteria_pending_id, decisions: data.decisions }, reqSnapshot,
+              "🧮 바꿀 기준을 고르세요. (현재 적용된 기준이 선택되어 있습니다)");
+          });
+          row.appendChild(b);
+          resBubble.appendChild(row);
+        }
+      }
+
       if (!isAutofillIntent) {
         resetWebScrapState();
         resetFileUploadState();
       }
+    } else if (data.status === 'confirm_excel_options') {
+      // [채우기 기준 확인] 질문·기본값에 없는 계산 기준을 채우기 전에 묻습니다. (대화 기록에는 저장하지 않음)
+      showExcelChoiceConfirm(data, lastChatRequest);
+    } else if (data.status === 'confirm_large_docs') {
+      // [큰 문서 확인] 최종 AI 호출 전에 큰 문서 포함 여부를 사용자에게 묻습니다. (대화 기록에는 저장하지 않음)
+      showLargeDocConfirm(data);
+    } else if (data.status === 'confirm_values') {
+      // [조건 값 확인] 질문의 값이 실제 DB 값 여러 개와 비슷할 때 고르게 함 (대화 기록에는 저장하지 않음)
+      showValueChoiceConfirm(data);
+    } else if (data.status === 'cancelled') {
+      // [토큰 한도 초과 / 확인 만료] 백엔드가 API 호출 전에 취소한 경우 (과금 없음, 대화 기록에는 저장하지 않음)
+      addMessage(data.message || "⛔ 입력 토큰 한도 초과로 AI 호출을 취소했습니다.", false, false);
     } else {
       addMessage("오류가 발생했습니다: " + data.detail, false, true);
     }
@@ -704,6 +999,7 @@ async function sendMessage() {
     chatInput.focus();
     currentAbortController = null;
   }
+  return resultStatus;
 }
 
 chatInput.addEventListener('input', function () {

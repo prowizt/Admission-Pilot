@@ -3,6 +3,8 @@ import axios from 'axios';
 import { Send, User, Bot, HelpCircle, Square, Copy, Check, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 // 유틸리티 함수: Tailwind 클래스 병합
 function cn(...inputs: ClassValue[]) {
@@ -391,9 +393,22 @@ function App() {
                 </div>
               )}
 
-              <div className="whitespace-pre-wrap leading-relaxed text-[15px]">
-                {msg.content}
-              </div>
+              {msg.role === 'assistant' && !msg.isError ? (
+                // [답변 표시] 마크다운(표·제목·굵게·목록)을 그려서 보여줌. HTML 태그는 그대로 글자로 표시(보안)
+                <div className="chat-md leading-relaxed text-[15px]">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}
+                    components={{
+                      table: ({ node, ...p }) => <div className="chat-table-wrap"><table {...p} /></div>,
+                      a: ({ node, ...p }) => <a {...p} target="_blank" rel="noopener noreferrer" />,
+                    }}>
+                    {msg.content}
+                  </ReactMarkdown>
+                </div>
+              ) : (
+                <div className="whitespace-pre-wrap leading-relaxed text-[15px]">
+                  {msg.content}
+                </div>
+              )}
 
               <div className="clear-both"></div>
 

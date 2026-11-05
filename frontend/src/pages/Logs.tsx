@@ -2,7 +2,9 @@ import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import axios from 'axios';
 import { format } from 'sql-formatter';
-import { Activity, BrainCircuit, MessageSquare, Database, Sparkles, AlertTriangle, Clock, RefreshCw, ChevronRight, X, TerminalSquare, BookOpen, Key, ChevronLeft, ThumbsUp, ThumbsDown, Copy, Check, Download, ChevronDown, ChevronUp } from 'lucide-react';
+import { FaqRegisterModal, type Faq } from '@/components/FaqPanel';
+import ClaudeStatsPanel from '@/components/ClaudeStatsPanel';
+import { Activity, BrainCircuit, MessageSquare, Database, Sparkles, Search, Clock, RefreshCw, ChevronRight, X, TerminalSquare, BookOpen, ChevronLeft, ThumbsUp, ThumbsDown, Copy, Check, Download, ChevronDown, ChevronUp } from 'lucide-react';
 
 const formatLatency = (ms: number | undefined) => {
   if (!ms) return '-';
@@ -19,64 +21,82 @@ export default function Logs() {
   const [activeTab, setActiveTab] = useState('logs');
   const [logs, setLogs] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [analytics, setAnalytics] = useState<any>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [selectedLog, setSelectedLog] = useState<any>(null);
+  const [faqDraft, setFaqDraft] = useState<Faq | null>(null); // [답변 등록] 입학처 Q&A 등록 창
   const [copiedScrap, setCopiedScrap] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
+  const [copiedId, setCopiedId] = useState<number | null>(null); // [ID 복사] 방금 복사한 로그 ID
+
+  // [ID 복사] '#525' 형태로 복사 → Claude 에 그대로 붙여 넣어 분석 요청
+  // http(IP 접속)에서는 clipboard API 가 막혀 있어 예전 방식으로 대신 복사
+  const copyLogId = async (id: number, e?: { stopPropagation: () => void }) => {
+    e?.stopPropagation();
+    const text = `#${id}`;
+    try {
+      if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
+      else {
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+        document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+      }
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(prev => (prev === id ? null : prev)), 1500);
+    } catch { /* 복사 실패 시 조용히 무시 */ }
+  };
+  const idBadge = (id: number, dark = false) => (
+    <button type="button" onClick={e => copyLogId(id, e)} title="누르면 ID 복사 (Claude 에게 붙여 넣어 분석 요청)"
+            className={`inline-flex items-center gap-1 font-mono font-bold rounded px-1.5 py-0.5 text-[11px] transition-colors whitespace-nowrap ${
+              dark ? 'bg-indigo-800 hover:bg-indigo-700 border border-indigo-700 text-white'
+                   : copiedId === id ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 hover:bg-indigo-100 text-slate-600 hover:text-indigo-700 border border-slate-200'}`}>
+      {copiedId === id ? <Check size={11} className={dark ? 'text-emerald-400' : ''} /> : <Copy size={11} className={dark ? 'text-indigo-300' : 'opacity-60'} />}
+      #{id}{copiedId === id && <span className="font-sans">복사됨</span>}
+    </button>
+  );
   const [isExpandedScrap, setIsExpandedScrap] = useState(false);
 
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
+  const [hideTest, setHideTest] = useState(false);
+  // [대화 로그 필터] 내용 검색·월·직군·모델·반응 속도 — 서버에서 거르고 페이지 단위로 받음
+  const [showFilters, setShowFilters] = useState(false); // 검색·필터 줄 펼침
+  const [qInput, setQInput] = useState('');
+  const [filters, setFilters] = useState({ q: '', month: '', role: '', model: '', speed: '' });
+  const [facets, setFacets] = useState<{ months: string[]; models: { name: string; count: number }[] }>({ months: [], models: [] });
+  const [total, setTotal] = useState(0);
   const ITEMS_PER_PAGE = 10;
 
   useEffect(() => {
-    fetchLogs();
+    axios.get('/api/logs/audit/facets').then(res => setFacets(res.data)).catch(() => {});
   }, []);
+  useEffect(() => {
+    fetchLogs();
+  }, [currentPage, filters, hideTest]);
+
+  const setFilter = (key: keyof typeof filters, value: string) => {
+    setFilters(prev => ({ ...prev, [key]: value }));
+    setCurrentPage(1);
+  };
+  const resetFilters = () => {
+    setQInput(''); setFilters({ q: '', month: '', role: '', model: '', speed: '' }); setCurrentPage(1);
+  };
+  const filterCount = Object.values(filters).filter(v => v !== '').length;
+  const filterActive = filterCount > 0;
 
   const fetchLogs = async () => {
     try {
       setIsLoading(true);
-      const res = await axios.get('/api/logs/audit');
+      const res = await axios.get('/api/logs/audit', {
+        params: { ...filters, exclude_test: hideTest, page: currentPage, size: ITEMS_PER_PAGE },
+      });
       if (res.data.status === 'success') {
         setLogs(res.data.data);
-        setCurrentPage(1); // Reset page on refresh
+        setTotal(res.data.total ?? res.data.data.length);
       }
     } catch (err) {
       console.error(err);
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const runAnalytics = async () => {
-    if (logs.length === 0) return alert('분석할 최근 로그가 없습니다.');
-    const geminiKey = localStorage.getItem('gemini_api_key');
-    if (!geminiKey) {
-      return alert('AI 인사이트 분석을 실행하려면 [환경 설정] 또는 좌측 챗봇에서 Gemini API Key를 등록해야 합니다.');
-    }
-
-    try {
-      setIsAnalyzing(true);
-      const questions = logs.filter(l => l.user_feedback !== 'UP').slice(0, 50).map(l => l.question).filter(q => q && q.trim() !== '');
-      if (questions.length === 0) return alert('유효한 질문 데이터가 없습니다.');
-      
-      const res = await axios.post('/api/logs/analytics', 
-        { questions },
-        { headers: { 'x-gemini-key': geminiKey } }
-      );
-      
-      if (res.data.status === 'success') {
-        setAnalytics(res.data.data);
-      } else {
-        alert('분석 중 오류 발생: ' + (res.data.message || '알 수 없는 오류'));
-      }
-    } catch (err) {
-      console.error(err);
-      alert('분석 서버와의 통신에 실패했습니다.');
-    } finally {
-      setIsAnalyzing(false);
     }
   };
 
@@ -98,17 +118,20 @@ export default function Logs() {
 
 
   // Pagination Logic
-  const totalPages = Math.ceil(logs.length / ITEMS_PER_PAGE) || 1;
-  const paginatedLogs = logs.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
+  // [테스트] 시험 질문(질문에 '[테스트]' 표시)은 실제 비용이라 지우지 않고 표시·숨기기만 함
+  const isTestLog = (l: any) => (l.question || '').includes('[테스트]');
+  // 서버가 조건에 맞는 한 페이지만 보내줌 (총 건수는 total)
+  const totalPages = Math.ceil(total / ITEMS_PER_PAGE) || 1;
+  const paginatedLogs = logs;
 
   const renderPagination = () => {
-    const startIdx = logs.length === 0 ? 0 : (currentPage - 1) * ITEMS_PER_PAGE + 1;
-    const endIdx = Math.min(currentPage * ITEMS_PER_PAGE, logs.length);
+    const startIdx = total === 0 ? 0 : (currentPage - 1) * ITEMS_PER_PAGE + 1;
+    const endIdx = Math.min(currentPage * ITEMS_PER_PAGE, total);
 
     return (
       <div className="flex flex-col sm:flex-row justify-between items-center my-3 gap-3 min-w-0 px-2">
         <div className="text-[11px] md:text-xs text-gray-500 font-bold">
-          총 {logs.length}건 중 {startIdx} - {endIdx}건 표시
+          총 {total.toLocaleString()}건 중 {startIdx.toLocaleString()} - {endIdx.toLocaleString()}건 표시
         </div>
         <div className="flex items-center gap-1.5">
           <button 
@@ -193,14 +216,14 @@ export default function Logs() {
             <span className="sm:hidden">대화 로그</span>
           </button>
           <button
-            onClick={() => setActiveTab('analytics')}
+            onClick={() => setActiveTab('usage')}
             className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap flex items-center gap-2 ${
-              activeTab === 'analytics' ? 'bg-slate-50 text-indigo-900 font-bold' : 'bg-indigo-800/50 text-indigo-200 hover:bg-indigo-800 hover:text-white'
+              activeTab === 'usage' ? 'bg-slate-50 text-indigo-900 font-bold' : 'bg-indigo-800/50 text-indigo-200 hover:bg-indigo-800 hover:text-white'
             }`}
           >
-            <Sparkles size={16} className="shrink-0" /> 
-            <span className="hidden sm:inline">AI 로그 인사이트</span>
-            <span className="sm:hidden">AI 인사이트</span>
+            <Activity size={16} className="shrink-0" />
+            <span className="hidden sm:inline">Claude 사용 통계</span>
+            <span className="sm:hidden">사용 통계</span>
           </button>
         </div>
       </div>
@@ -216,15 +239,69 @@ export default function Logs() {
                 <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm">
                   <Activity className="text-slate-400" size={16} /> 실시간 대화 기록
                 </h3>
-                <span className="text-xs font-bold bg-white border border-slate-200 text-slate-600 px-2 py-1 rounded-full shadow-sm">{logs.length} 건</span>
+                <div className="flex items-center gap-3">
+                  <button onClick={() => setShowFilters(v => !v)}
+                          className={`flex items-center gap-1 px-2.5 py-1 text-xs font-bold rounded-md border transition-colors ${showFilters || filterActive ? 'border-indigo-300 bg-indigo-50 text-indigo-700' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'}`}>
+                    <Search size={13} /> 검색·필터
+                    {filterActive && <span className="ml-0.5 px-1.5 rounded-full bg-indigo-600 text-white text-[10px]">{filterCount}</span>}
+                    {showFilters ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                  </button>
+                  <label className="flex items-center gap-1.5 text-xs font-bold text-slate-600 cursor-pointer select-none">
+                    <input type="checkbox" checked={hideTest} onChange={e => { setHideTest(e.target.checked); setCurrentPage(1); }} className="accent-indigo-600" />
+                    테스트 숨기기
+                  </label>
+                  <span className="text-xs font-bold bg-white border border-slate-200 text-slate-600 px-2 py-1 rounded-full shadow-sm">{total.toLocaleString()} 건</span>
+                </div>
               </div>
+              {/* [대화 로그 필터] 자주 쓰지 않아 [검색·필터] 버튼으로 펼침. 접어도 걸린 조건은 그대로 적용 */}
+              {showFilters && <div className="px-5 py-2.5 border-b border-slate-100 flex flex-wrap items-center gap-2 bg-white">
+                <div className="flex items-center gap-1 flex-1 min-w-[200px] max-w-[360px]">
+                  <input type="text" value={qInput} placeholder="질문·답변 내용 검색"
+                         className="border border-slate-300 rounded-md px-2 py-1.5 text-xs bg-white text-slate-700 outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 flex-1 min-w-0"
+                         onChange={e => setQInput(e.target.value)}
+                         onKeyDown={e => { if (e.key === 'Enter') setFilter('q', qInput.trim()); }} />
+                  <button onClick={() => setFilter('q', qInput.trim())}
+                          className="px-2.5 py-1.5 text-xs font-bold rounded-md bg-indigo-600 text-white hover:bg-indigo-700 whitespace-nowrap">검색</button>
+                </div>
+                {/* 월 선택: 달이 쌓여도 목록이 길어지지 않게 달력(년·월) 선택 */}
+                <div className="flex items-center gap-1">
+                  <input type="month" value={filters.month} onChange={e => setFilter('month', e.target.value)}
+                         min={facets.months[facets.months.length - 1] || undefined} max={facets.months[0] || undefined}
+                         title="월 선택 (비우면 전체 기간)"
+                         className="border border-slate-300 rounded-md px-2 py-1 text-xs bg-white text-slate-700 outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500" />
+                  {filters.month
+                    ? <button onClick={() => setFilter('month', '')} title="전체 기간" className="text-slate-400 hover:text-slate-600"><X size={14} /></button>
+                    : <span className="text-[11px] text-slate-400 whitespace-nowrap">전체 기간</span>}
+                </div>
+                <select value={filters.role} onChange={e => setFilter('role', e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-xs bg-white text-slate-700 outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500">
+                  <option value="">전체 직군</option>
+                  <option value="student">수험생</option>
+                  <option value="staff">교직원</option>
+                </select>
+                <select value={filters.model} onChange={e => setFilter('model', e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-xs bg-white text-slate-700 outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500 max-w-[200px]">
+                  <option value="">전체 모델</option>
+                  {facets.models.map(m => <option key={m.name} value={m.name}>{m.name} ({m.count.toLocaleString()})</option>)}
+                </select>
+                <select value={filters.speed} onChange={e => setFilter('speed', e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-xs bg-white text-slate-700 outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500">
+                  <option value="">전체 반응 속도</option>
+                  <option value="fast">10초 미만</option>
+                  <option value="mid">10~30초</option>
+                  <option value="slow">30~60초</option>
+                  <option value="vslow">60초 이상</option>
+                </select>
+                {filterActive && (
+                  <button onClick={resetFilters} className="px-2 py-1.5 text-xs font-bold rounded-md border border-slate-300 text-slate-600 hover:bg-slate-50 whitespace-nowrap">
+                    <X size={12} className="inline" /> 필터 초기화
+                  </button>
+                )}
+              </div>}
               
               {/* Desktop Table View */}
               <div className="hidden md:block overflow-x-auto">
                 <table className="w-full text-left border-collapse min-w-[800px]">
                   <thead>
                     <tr className="bg-white border-b border-slate-100">
-                      <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider w-[140px]">일시</th>
+                      <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider w-[140px]">ID · 일시</th>
                       <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider w-[120px]">직군 / 모델</th>
                       <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider">질문 요약</th>
                       <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-center w-[120px]">반응 속도</th>
@@ -235,14 +312,17 @@ export default function Logs() {
                     {paginatedLogs.length === 0 ? (
                       <tr>
                         <td colSpan={5} className="py-16 text-center text-slate-400 font-medium text-sm bg-slate-50/50">
-                          아직 수집된 대화 로그가 없습니다.
+                          {filterActive ? '조건에 맞는 대화 로그가 없습니다.' : '아직 수집된 대화 로그가 없습니다.'}
                         </td>
                       </tr>
                     ) : (
                       paginatedLogs.map(log => (
                         <tr key={log.id} onClick={() => setSelectedLog(log)} className="hover:bg-indigo-50/40 transition-colors group cursor-pointer">
                           <td className="px-4 py-3 align-middle text-xs text-slate-500 font-medium whitespace-nowrap">
-                            {log.created_at}
+                            <div className="flex flex-col items-start gap-1">
+                              {idBadge(log.id)}
+                              {log.created_at}
+                            </div>
                           </td>
                           <td className="px-4 py-3 align-middle">
                             <div className="flex flex-col gap-1">
@@ -259,7 +339,7 @@ export default function Logs() {
                           <td className="px-4 py-3 align-middle max-w-[300px] lg:max-w-[500px]">
                             <div className="flex flex-col gap-1">
                               <div className="font-semibold text-slate-800 text-sm truncate" title={log.question}>
-                                <span className="text-indigo-400 font-bold mr-1">Q.</span> {log.question}
+                                <span className="text-indigo-400 font-bold mr-1">Q.</span>{isTestLog(log) && <span className="text-[10px] font-bold bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded mr-1">테스트</span>} {log.question}
                               </div>
                               <div className="text-xs text-slate-500 truncate" title={log.answer}>
                                 <span className="text-slate-400 font-bold mr-1">A.</span> {log.answer}
@@ -273,8 +353,8 @@ export default function Logs() {
                           </td>
                           <td className="px-4 py-3 align-middle text-center">
                             <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border whitespace-nowrap ${
-                              (log.latency_ms || 0) < 3000 ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 
-                              (log.latency_ms || 0) < 8000 ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-rose-50 text-rose-600 border-rose-100'
+                              (log.latency_ms || 0) < 10000 ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 
+                              (log.latency_ms || 0) < 30000 ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-rose-50 text-rose-600 border-rose-100'
                             }`}>
                               {formatLatency(log.latency_ms)}
                             </span>
@@ -317,7 +397,7 @@ export default function Logs() {
               <div className="block md:hidden divide-y divide-slate-100">
                 {paginatedLogs.length === 0 ? (
                   <div className="py-16 text-center text-slate-400 font-medium text-sm bg-slate-50/50">
-                    아직 수집된 대화 로그가 없습니다.
+                    {filterActive ? '조건에 맞는 대화 로그가 없습니다.' : '아직 수집된 대화 로그가 없습니다.'}
                   </div>
                 ) : (
                   paginatedLogs.map(log => (
@@ -329,18 +409,19 @@ export default function Logs() {
                           }`}>
                             {log.user_role === 'staff' ? '교직원' : '수험생'}
                           </span>
+                          {idBadge(log.id)}
                           <span className="text-[11px] text-slate-500 font-medium">{log.created_at}</span>
                         </div>
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border whitespace-nowrap ${
-                          (log.latency_ms || 0) < 3000 ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 
-                          (log.latency_ms || 0) < 8000 ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-rose-50 text-rose-600 border-rose-100'
+                          (log.latency_ms || 0) < 10000 ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 
+                          (log.latency_ms || 0) < 30000 ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-rose-50 text-rose-600 border-rose-100'
                         }`}>
                           {formatLatency(log.latency_ms)}
                         </span>
                       </div>
                       
                       <div className="font-semibold text-slate-800 text-sm line-clamp-2 mt-1 leading-snug" title={log.question}>
-                        <span className="text-indigo-400 font-bold mr-1">Q.</span> {log.question}
+                        <span className="text-indigo-400 font-bold mr-1">Q.</span>{isTestLog(log) && <span className="text-[10px] font-bold bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded mr-1">테스트</span>} {log.question}
                       </div>
                       {log.total_tokens != null && (
                         <div className="text-[10px] text-slate-500 font-bold">
@@ -380,107 +461,15 @@ export default function Logs() {
           </div>
         )}
 
-        {/* === 탭 2: AI 로그 인사이트 === */}
-        {activeTab === 'analytics' && (
-          <div className="animate-in fade-in duration-300 min-w-0 h-full flex flex-col gap-4">
-            
-            {/* 분석 컨트롤 바 */}
-            <div className="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col md:flex-row justify-between items-center gap-4 text-center md:text-left">
-              <div>
-                <h2 className="text-lg font-bold text-slate-800 flex items-center justify-center md:justify-start gap-2">
-                  <BrainCircuit className="text-indigo-600" size={20} /> AI 트렌드 및 취약점 분석
-                </h2>
-                <p className="text-sm text-slate-500 mt-1 font-medium">최근 50건의 교직원 질의응답을 분석하여 핫 키워드와 사전지식(RAG)의 맹점을 파악합니다.</p>
-              </div>
-              <button 
-                onClick={runAnalytics}
-                disabled={isAnalyzing}
-                className={`flex items-center gap-2 px-5 py-3 rounded-lg font-bold text-sm transition-all shadow-sm shrink-0 ${
-                  isAnalyzing ? 'bg-indigo-100 text-indigo-400 cursor-not-allowed border border-indigo-200' : 'bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-md hover:scale-105 active:scale-95'
-                }`}
-              >
-                {isAnalyzing ? (
-                  <><RefreshCw size={18} className="animate-spin" /> 분석 진행 중...</>
-                ) : (
-                  <><Sparkles size={18} /> 최근 50건 분석 시작하기</>
-                )}
-              </button>
-            </div>
-
-            {/* 분석 진행 중 뷰 */}
-            {isAnalyzing && (
-              <div className="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col items-center justify-center py-24 min-h-[400px]">
-                <div className="w-12 h-12 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
-                <h3 className="text-lg font-bold text-slate-700 mb-2">데이터 수집 및 통계 분석 중</h3>
-                <p className="text-slate-500 font-medium">Gemini AI가 최신 트렌드를 요약하고 있습니다. (약 10~20초 소요)</p>
-              </div>
-            )}
-
-            {/* 분석 전 초기 뷰 */}
-            {!analytics && !isAnalyzing && (
-              <div className="flex-1 bg-slate-50/50 rounded-xl border border-dashed border-slate-300 flex flex-col items-center justify-center py-24 min-h-[400px]">
-                <div className="bg-white p-4 rounded-full shadow-sm mb-4">
-                  <Sparkles size={32} className="text-indigo-300" />
-                </div>
-                <h3 className="text-slate-600 font-bold mb-2">아직 분석된 데이터가 없습니다</h3>
-                <p className="text-slate-500 text-sm">상단의 [분석 시작하기] 버튼을 눌러 리포트를 생성해 보세요.</p>
-              </div>
-            )}
-
-            {/* 분석 완료 결과 리포트 뷰 */}
-            {analytics && !isAnalyzing && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 flex-1">
-                {/* Keywords Card */}
-                <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 flex flex-col">
-                  <div className="flex items-center gap-3 mb-6 pb-4 border-b border-slate-100">
-                    <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg">
-                      <Key size={20} />
-                    </div>
-                    <div>
-                      <h3 className="font-bold text-slate-800 text-lg">최근 핫 키워드 Top</h3>
-                      <p className="text-xs text-slate-500 font-medium">교직원들이 가장 많이 묻는 주제</p>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-2.5">
-                    {analytics.keywords?.map((kw: string, i: number) => (
-                      <span key={i} className="px-3.5 py-1.5 bg-indigo-50 text-indigo-700 border border-indigo-100 rounded-lg text-sm font-bold shadow-sm">
-                        #{kw}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Weak Points Card */}
-                <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 flex flex-col">
-                  <div className="flex items-center gap-3 mb-6 pb-4 border-b border-slate-100">
-                    <div className="p-2 bg-rose-50 text-rose-600 rounded-lg">
-                      <AlertTriangle size={20} />
-                    </div>
-                    <div>
-                      <h3 className="font-bold text-slate-800 text-lg">지식 보완 필요 사항 (취약점)</h3>
-                      <p className="text-xs text-slate-500 font-medium">RAG 검색 시 답변을 못했거나 불명확했던 패턴</p>
-                    </div>
-                  </div>
-                  <div className="space-y-3 overflow-y-auto custom-scrollbar pr-2 max-h-[300px]">
-                    {analytics.weak_points?.map((wp: any, i: number) => (
-                      <div key={i} className="bg-rose-50/50 rounded-lg p-3 border border-rose-100/50">
-                        <div className="font-bold text-rose-800 text-sm mb-1">{wp.topic}</div>
-                        <div className="text-slate-600 text-xs font-medium leading-relaxed">{wp.reason}</div>
-                      </div>
-                    ))}
-                    {(!analytics.weak_points || analytics.weak_points.length === 0) && (
-                      <div className="text-slate-500 text-sm font-medium py-8 text-center bg-slate-50 rounded-lg border border-slate-100">
-                        발견된 취약 질문 패턴이 없습니다! RAG가 잘 방어하고 있습니다. 🎉
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+        {/* === 탭 3: Claude 사용 통계 === */}
+        {activeTab === 'usage' && (
+          <div className="animate-in fade-in duration-300 min-w-0 py-4"><ClaudeStatsPanel /></div>
         )}
 
+
       </div>
+
+      {faqDraft && <FaqRegisterModal initial={faqDraft} onClose={() => setFaqDraft(null)} />}
 
       {/* Log Detail Modal */}
       {selectedLog && createPortal(
@@ -489,10 +478,24 @@ export default function Logs() {
             <div className="px-6 py-4 border-b border-indigo-800 flex justify-between items-center bg-indigo-900 text-white shrink-0">
               <h3 className="font-bold flex items-center gap-2">
                 <TerminalSquare size={18} className="text-indigo-400" />
-                로그 상세 (ID: #{selectedLog.id})
+                로그 상세 {idBadge(selectedLog.id, true)}
               </h3>
               <div className="flex items-center gap-3">
-                <button 
+                <button
+                  onClick={() => setFaqDraft({
+                    topic: '',  // 주제는 직접 짧게 (질문 원문은 '실제 질문 예'에 들어감)
+                    answer: selectedLog.answer || '',
+                    apply_year: '',
+                    sample_question: (selectedLog.question || '').trim().slice(0, 500),
+                    is_active: 'Y',
+                    source_log_id: selectedLog.id,
+                  })}
+                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 border border-emerald-500 rounded-md text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm"
+                  title="이 질문의 입학처 공식 답변을 Q&A 로 등록합니다 (다음 질문부터 챗봇이 참고)"
+                >
+                  <MessageSquare size={14} /> 답변 등록
+                </button>
+                <button
                   onClick={() => {
                     const text = `[Log ID: #${selectedLog.id}]
 Question: ${selectedLog.question || ''}
@@ -505,8 +508,8 @@ DB/RAG: ${formatLatency(selectedLog.db_latency_ms)}
 Final Chatbot AI: ${formatLatency(selectedLog.chat_latency_ms)}
 
 [Models & Tokens]
-Final Model: ${selectedLog.model_name || ''} (In: ${selectedLog.chat_in_tokens || 0}, Out: ${selectedLog.chat_out_tokens || 0})
-Router Model: ${selectedLog.router_model_name || ''} (In: ${selectedLog.router_in_tokens || 0}, Out: ${selectedLog.router_out_tokens || 0})
+Final Model: ${selectedLog.model_name || ''} (In: ${selectedLog.chat_in_tokens || 0}, Out: ${selectedLog.chat_out_tokens || 0})${selectedLog.chat_mode ? ` · ${selectedLog.chat_mode}` : ''}
+Router Model: ${selectedLog.router_model_name || ''} (In: ${selectedLog.router_in_tokens || 0}, Out: ${selectedLog.router_out_tokens || 0})${selectedLog.router_mode ? ` · ${selectedLog.router_mode}` : ''}
 Total Tokens: ${selectedLog.total_tokens || 0}
 Estimated Cost: ₩${selectedLog.estimated_cost ? Number(selectedLog.estimated_cost).toFixed(1) : 0}
 
@@ -606,6 +609,12 @@ ${selectedLog.scraped_context || 'NONE'}`;
                       <span className="text-slate-500">출력 토큰:</span>
                       <span className="font-bold text-slate-700">{selectedLog.router_out_tokens?.toLocaleString() || 0}</span>
                     </div>
+                    {selectedLog.router_mode && (
+                      <div className="flex justify-between items-center text-sm mt-1">
+                        <span className="text-slate-500">호출 설정:</span>
+                        <span className="font-bold text-blue-700 text-xs">{selectedLog.router_mode}</span>
+                      </div>
+                    )}
                   </div>
                   <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-center">
                     <div className="text-sm font-extrabold text-indigo-600 uppercase tracking-wider mb-2 truncate flex items-center flex-wrap gap-1" title={selectedLog.model_name}>
@@ -622,6 +631,12 @@ ${selectedLog.scraped_context || 'NONE'}`;
                       <span className="text-slate-500">출력 토큰:</span>
                       <span className="font-bold text-slate-700">{selectedLog.chat_out_tokens?.toLocaleString() || 0}</span>
                     </div>
+                    {selectedLog.chat_mode && (
+                      <div className="flex justify-between items-center text-sm mt-1">
+                        <span className="text-slate-500">호출 설정:</span>
+                        <span className="font-bold text-indigo-700 text-xs">{selectedLog.chat_mode}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

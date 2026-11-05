@@ -5,6 +5,7 @@ import os
 import re
 import io
 import uuid
+import threading
 import time
 import logging
 import traceback
@@ -42,6 +43,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from excel_autofill import router as excel_autofill_router
+import llm_client
+import metric_query
+import db_access
+import app_config
 
 # 서버 초기화: 입시처 통합 AI 지식 관리 시스템 중앙 통제소
 app = FastAPI(
@@ -87,8 +92,6 @@ def get_system_prompt(user_role: str = "staff"):
         3. 절대 추측하지 마십시오. 데이터가 없으면 없다고 하세요.
         4. 문서 검토 시 항상 제공된 '사전지식(실무 지침)'을 최우선 기준으로 적용하십시오.
         5. '공식 규정(구매 규정, 예산·회계 규정 등)'과 '사전지식'이 상충될 경우 무조건 '사전지식'을 우선시하십시오.
-        6. 지출 원인기안의 경우, 100만원 미만은 수신처가 없어도 되며, 100만원 이상일 때만 총무처장 협조를 요구하십시오.
-        7. 지출기안의 경우 수신처에 '총무처 접수자'가 지정되어야 한다는 실무 규칙을 '구매 규정'보다 우선하여 검토하십시오.
         """
 
 
@@ -102,6 +105,357 @@ class ChatRequest(BaseModel):
     router_model_name: Optional[str] = None
     user_role: str = "staff" # 권한: "staff"(교직원) 또는 "student"(일반학생)
     history: Optional[List[dict]] = []
+    pending_id: Optional[str] = None          # [큰 문서 확인] 확인 응답에서 받은 ID (재요청 시 라우터 재호출 생략)
+    large_doc_decision: Optional[str] = None  # [큰 문서 확인] "include" 또는 "exclude"
+    value_choices: Optional[dict] = None      # [조건 값 확인] {질문에 쓴 값: 사용자가 고른 실제 DB 값}
+    effort: Optional[str] = None              # (예전 확장 호환용, 무시됨) 추론 강도는 환경 설정 STAFF_EFFORT
+
+# [큰 문서 확인] 사용자 확인을 기다리는 라우터 판단 결과 임시 보관소 (메모리, 15분 후 만료)
+PENDING_ROUTER = {}
+PENDING_TTL_SEC = 15 * 60
+
+def purge_pending_router():
+    now = time.time()
+    # 항목마다 보관 시간(ttl)을 따로 둘 수 있음 (엑셀 '기준 바꿔서 다시 채우기'는 더 오래 보관)
+    for pid in [k for k, v in PENDING_ROUTER.items() if now - v["created_at"] > v.get("ttl", PENDING_TTL_SEC)]:
+        PENDING_ROUTER.pop(pid, None)
+
+
+def llm_cost_krw(model_name, in_tok, out_tok) -> float:
+    """호출 1건의 예상 비용(원, 부가세 포함). Claude 는 llm_client 단가표, Gemini 는 /chat 영수증과 같은 원/토큰 단가."""
+    if not model_name or model_name == "NONE" or not (in_tok or out_tok):
+        return 0.0
+    vat = 1 + llm_client.VAT_RATE
+    m = model_name.lower()
+    if llm_client.is_claude(model_name):
+        return llm_client.estimate_cost_krw(model_name, llm_client.LLMResult(text="", in_tokens=in_tok, out_tokens=out_tok))
+    if "3.5" in m:
+        return ((in_tok * 0.002415) + (out_tok * 0.009660)) * vat
+    if "lite" in m or "8b" in m:
+        return ((in_tok * 0.000139) + (out_tok * 0.000556)) * vat
+    return ((in_tok * 0.000470) + (out_tok * 0.001880)) * vat
+
+
+def insert_interim_audit_log(conn, *, user_role, question, scraped_context, sql_query, answer, latency_ms,
+                             model_name, router_model_name, router_in=0, router_out=0, chat_in=0, chat_out=0,
+                             rag_query="", rag_documents="", router_latency_ms=None, db_latency_ms=None,
+                             chat_latency_ms=None, router_mode="", chat_mode=""):
+    """
+    [확인 대기 로그] 사용자 확인(큰 문서 포함 여부, 엑셀 채우기 기준 선택)을 기다리며 응답을 돌려줄 때,
+    그때까지 쓴 AI 비용을 감사 로그 1줄로 남깁니다. (확인 후 이어지는 요청은 추가 비용만 별도 줄로 기록)
+    반환: 로그 id (실패 시 None)
+    """
+    if not conn:
+        return None
+    def safe_str(txt):
+        if not txt:
+            return ""
+        return cp949_safe(txt)
+    try:
+        cost = llm_cost_krw(router_model_name, router_in, router_out) + llm_cost_krw(model_name, chat_in, chat_out)
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO Sys_AIAuditLog (
+                user_role, model_name, question, scraped_context,
+                sql_query, rag_query, answer, latency_ms,
+                router_model_name, router_in_tokens, router_out_tokens,
+                chat_in_tokens, chat_out_tokens, total_tokens, estimated_cost,
+                rag_documents, router_latency_ms, db_latency_ms, chat_latency_ms,
+                router_mode, chat_mode
+            )
+            OUTPUT INSERTED.id
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            safe_str(user_role), safe_str(model_name), safe_str(question), safe_str(scraped_context),
+            safe_str(sql_query), safe_str(rag_query), safe_str(answer), latency_ms,
+            safe_str(router_model_name), router_in, router_out,
+            chat_in, chat_out, router_in + router_out + chat_in + chat_out, cost,
+            safe_str(rag_documents), router_latency_ms, db_latency_ms, chat_latency_ms,
+            safe_str(router_mode), safe_str(chat_mode)
+        ))
+        row = cur.fetchone()
+        conn.commit()
+        return row[0] if row else None
+    except Exception as e:
+        print(f"[확인 대기 로그] 기록 오류: {e}")
+        return None
+
+
+# [라우터 구조화 출력] 추론을 끈 라우터가 긴 질문(CSV 등)에 JSON 대신 대화문으로 답하는 것을 API 단계에서 차단
+ROUTER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sql_query": {"type": "string", "description": "T-SQL SELECT 문 또는 'NONE'"},
+        "need_rag": {"type": "boolean"},
+        "rag_search_query": {"type": "string", "description": "참고할 공식 문서명을 쉼표로 연결 (없으면 빈 문자열)"},
+        "rag_year_filter": {"type": "string", "description": "4자리 학년도 또는 'ALL'"},
+        "target_documents": {"type": "array", "items": {"type": "string"}},
+        "knowledge_action": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["INSERT", "DELETE", "NONE"]},
+                "category": {"type": "string"},
+                "content": {"type": "string"}
+            },
+            "required": ["action", "category", "content"],
+            "additionalProperties": False
+        }
+    },
+    "required": ["sql_query", "need_rag", "rag_search_query", "rag_year_filter", "target_documents", "knowledge_action"],
+    "additionalProperties": False
+}
+
+# [RAG 검색어 제한] 검색어가 수천 개로 쪼개지면 ChromaDB 가 'too many SQL variables' 로 실패하고 임베딩에 수십 초가 걸림
+RAG_QUERY_MAX_COUNT = 10
+RAG_QUERY_MAX_LEN = 80
+
+def fallback_rag_query(question: str) -> str:
+    """라우터 응답 파싱 실패 시 검색어: CSV·표 데이터 줄을 빼고 자연어 문장만 사용합니다."""
+    lines = [l.strip() for l in (question or "").splitlines() if l.strip()]
+    natural = [l for l in lines if l.count(",") < 3 and l.count("|") < 3 and l.count("\t") < 3]
+    return " ".join(natural)[:200].replace(",", " ")
+
+
+
+# [감사 로그 글자 보존] DB 연결이 cp949 라서 그 밖의 글자는 지워짐 → 자주 쓰는 기호는 비슷한 글자로 바꿔 남김
+# (예: 수식의 빼기 '−' 가 지워져 '400,000  167,800' 처럼 기록되던 문제)
+_CP949_FALLBACK = str.maketrans({"−": "-", "–": "-", "—": "-", "‐": "-", "‑": "-",
+                                 "✓": "v", "✔": "v", "✗": "x", "✘": "x", " ": " ",
+                                 " ": " ", " ": " ", "≤": "<=", "≥": ">="})
+
+
+def cp949_safe(txt) -> str:
+    return str(txt).translate(_CP949_FALLBACK).encode("cp949", errors="ignore").decode("cp949")
+
+
+def today_line() -> str:
+    """프롬프트에 넣는 오늘 날짜 (사전지식의 '작년·올해' 같은 날짜 기준 해석에 필요)"""
+    import datetime as _dt
+    d = _dt.date.today()
+    y = current_admission_year()
+    return (f"[오늘 날짜] {d.isoformat()} ({'월화수목금토일'[d.weekday()]}요일) / "
+            f"[기준 입시학년도] {y}학년도 (입학처가 정한 현재 업무 기준 학년도. '올해'·학년도를 말하지 않은 질문은 {y}학년도, '작년'은 {int(y) - 1}학년도)")
+
+
+def load_supplemental_knowledge(cursor, user_role="staff", with_date=False) -> str:
+    """
+    [사전지식 대상(target_scope)별 조회]
+    - 교직원: '학생 전용'을 제외한 전부 (NULL = 기존 사전지식 = 교직원 전용)
+    - 학생: '학생'·'공통'만 (인사 정보·결재 규칙 등 내부 지식은 학생 챗봇에 절대 전달하지 않음)
+    """
+    if user_role == "student":
+        scope_cond = "target_scope IN ('student', 'all')"
+    else:
+        scope_cond = "ISNULL(target_scope, 'staff') <> 'student'"
+    cursor.execute(
+        f"SELECT category, content, CONVERT(VARCHAR(10), created_at, 120) FROM Sys_SupplementalKnowledge "
+        f"WHERE is_active = 'Y' AND {scope_cond} ORDER BY category ASC, id ASC"
+    )
+    lines = [f"- [{cat}] {cnt}" + (f" (등록일: {d})" if with_date else "") for cat, cnt, d in cursor.fetchall()]
+    return ("\n".join(lines) + "\n") if lines else ""
+
+
+# ==========================================
+# [입학처 Q&A] Sys_StudentFAQ: 입학처가 등록한 질문별 공식 답변 (학생·교직원 챗봇 공통)
+# - apply_year 'ALL' = 매년 같은 답변(공통), '2027' 등 = 그 입시학년도 질문에만 참고
+# - 전체 분량이 FAQ_ALL_TOKENS 이하이면 해당 학년도 Q&A 를 모두 넣고, 넘으면 라우터가 고른 주제만 넣음
+# ==========================================
+def date_admission_year() -> str:
+    """날짜로 계산한 입시학년도 (학년도는 3/1 ~ 다음 해 2월 말, 운영학년도 A 동안 A+1학년도 입시 진행)"""
+    import datetime as _dt
+    d = _dt.date.today()
+    return str((d.year if d.month >= 3 else d.year - 1) + 1)
+
+
+# [시스템 설정] Sys_SystemSetting (대시보드에서 변경). 매 질문 DB 를 읽지 않도록 잠시 보관
+_SETTING_CACHE = {}
+_SETTING_TTL_SEC = 60
+
+
+def get_setting(key, default=None):
+    hit = _SETTING_CACHE.get(key)
+    if hit and time.time() - hit[1] < _SETTING_TTL_SEC:
+        return hit[0]
+    value = default
+    conn = None
+    try:
+        conn = get_mssql_connection()
+        if conn:
+            cur = conn.cursor()
+            cur.execute("SELECT setting_value FROM Sys_SystemSetting WHERE setting_key = ?", (key,))
+            row = cur.fetchone()
+            if row and row[0]:
+                value = row[0]
+    except Exception as e:
+        print(f"[시스템 설정] '{key}' 조회 오류: {str(e)[:120]}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    _SETTING_CACHE[key] = (value, time.time())
+    return value
+
+
+def current_admission_year() -> str:
+    """기준 입시학년도: 대시보드에서 정한 값 (없으면 날짜로 계산). 3~4월처럼 지난 학년도 통계 업무가 이어지는 기간을 직접 맞출 수 있음"""
+    y = str(get_setting("admission_year") or "").strip()
+    return y if re.fullmatch(r"20\d\d", y) else date_admission_year()
+
+
+def faq_all_tokens() -> int:
+    return app_config.get("FAQ_ALL_TOKENS")
+
+
+def load_faq_rows(cursor):
+    """사용 중인 Q&A 전부 [(faq_id, topic, answer, apply_year)] (테이블이 없으면 빈 목록)"""
+    try:
+        cursor.execute("SELECT faq_id, topic, answer, apply_year FROM Sys_StudentFAQ WHERE is_active = 'Y' ORDER BY faq_id")
+        return [tuple(r) for r in cursor.fetchall()]
+    except Exception as e:
+        print(f"[입학처 Q&A] 조회 오류: {str(e)[:120]}")
+        return []
+
+
+def faq_size(rows) -> int:
+    """대략적인 토큰 수 (한글은 글자 수 ≈ 토큰 수)"""
+    return sum(len(t) + len(a) + 12 for _, t, a, _ in rows)
+
+
+def faq_years_for(text, router_years=None):
+    """Q&A 를 고를 학년도: 질문·라우터에 나온 학년도, 없으면 지금 진행 중인 입시학년도"""
+    years = {str(y).strip() for y in (router_years or []) if re.fullmatch(r"20\d\d", str(y).strip())}
+    years |= set(re.findall(r"(?<!\d)(20\d\d)\s*(?:학년도|년도)", text or ""))
+    return sorted(years) or [current_admission_year()]
+
+
+def select_faq(rows, years, topics=None):
+    """학년도에 맞는 Q&A (공통 + 해당 학년도). 같은 주제가 공통·학년도에 모두 있으면 학년도 것만. topics 를 주면 그 주제만"""
+    years = set(years or [])
+    picked = [r for r in rows if r[3] == "ALL" or r[3] in years]
+    specific = {norm_doc_name(r[1]) for r in picked if r[3] != "ALL"}
+    picked = [r for r in picked if r[3] != "ALL" or norm_doc_name(r[1]) not in specific]
+    if topics is not None:
+        wanted = {norm_doc_name(t) for t in topics if t}
+        picked = [r for r in picked if norm_doc_name(r[1]) in wanted]
+    return picked
+
+
+def faq_pick_by_words(rows, question, limit=5):
+    """라우터가 없을 때(학생 Fast-Track 등) 질문과 주제의 글자 겹침으로 고름"""
+    scored = sorted(((name_bigram_score(question, r[1]), r) for r in rows), key=lambda x: -x[0])
+    return [r for s, r in scored[:limit] if s >= 0.5]
+
+
+def faq_year_label(y) -> str:
+    return "공통" if y == "ALL" else f"{y}학년도"
+
+
+def faq_context_text(rows) -> str:
+    return "\n\n".join(f"◆ [{faq_year_label(y)}] {t}\n{a}" for _, t, a, y in rows)
+
+
+def faq_topic_list_text(rows) -> str:
+    return "\n".join(f"- {t} ({faq_year_label(y)})" for _, t, _, y in rows)
+
+
+# ==========================================
+# [문서 선택 보조] 파일명/제목 기반 매칭
+# ==========================================
+# 현재 ChromaDB 기본 임베딩(영어 모델)은 한글 문서를 거의 구분하지 못하므로(긴 문서가 아무 검색어에나 상위 노출),
+# 교직원 문서 선택은 파일명·제목 매칭을 기준으로 하고, 매칭이 하나도 없을 때만 한글 2글자 겹침 점수로 보완합니다.
+def norm_doc_name(s) -> str:
+    """확장자/기호/공백 제거 + '학년도'·'년도' 제거 (예: '2027학년도 모집요강.pdf' → '2027모집요강')"""
+    s = re.sub(r'\.[a-zA-Z0-9]+$', '', str(s or ""))
+    s = re.sub(r'[^a-zA-Z0-9가-힣]', '', s).lower()
+    return s.replace("학년도", "").replace("년도", "")
+
+
+def name_bigram_score(query: str, name: str) -> float:
+    """문서명(name)의 2글자 조각 중 검색어(query)에 들어 있는 비율 (0~1)"""
+    q, n = norm_doc_name(query), norm_doc_name(name)
+    if len(n) < 2 or len(q) < 2:
+        return 0.0
+    n_grams = {n[i:i + 2] for i in range(len(n) - 1)}
+    q_grams = {q[i:i + 2] for i in range(len(q) - 1)}
+    return len(n_grams & q_grams) / len(n_grams)
+
+
+# 질문에서 검색 대상을 '한정'하는 조사/표현 (예: 'OOO에서 찾아줘', 'OOO만 보고', 'OOO 기준으로', 'OOO을 보고')
+EXCLUSIVE_MARKERS = ("에서", "만", "기준", "을기준", "를기준", "보고", "을보고", "를보고", "으로만", "로만")
+
+
+def extract_doc_title(scraped_context: str) -> str:
+    """스크랩 본문에서 공문 제목을 추출합니다. (표의 '| 제 목 | ... |' 행 → 문서대장의 '...' 순으로 시도)"""
+    if not scraped_context:
+        return ""
+    m = re.search(r"\|\s*제\s*목\s*\|\s*([^|\n]{4,})", scraped_context)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"'([^'\n]{6,})'", scraped_context)
+    return m.group(1).strip() if m else ""
+
+
+def find_explicit_docs(question: str):
+    """
+    사용자 질문에 문서명이 직접 적혀 있으면(예: '2027모집요강 보고 해줘') 해당 문서를 연도/검색 결과와 무관하게 반환합니다.
+    - 스크랩 본문(붙임 목록 등)이 아닌 질문 문장만 대조합니다.
+    - 반환: (문서 목록, exclusive) / exclusive=True 는 '문서명+에서/만/기준'처럼 검색 대상을 그 문서로 한정한 경우
+    - 문서 형식은 RAG 선발 문서와 동일: {"doc_text", "meta", "distance", "source"}
+    """
+    q_norm = norm_doc_name(question)
+    if not q_norm:
+        return [], False
+    found = []
+    exclusive = False
+    for source, col in (("rule", rule_db), ("ref", reference_db)):
+        try:
+            got = col.get(include=["metadatas"])
+            hit_ids = []
+            for doc_id, meta in zip(got["ids"], got["metadatas"]):
+                names = [norm_doc_name(meta.get("filename")), norm_doc_name(meta.get("title"))]
+                hits = [n for n in names if len(n) >= 4 and n in q_norm]
+                if hits:
+                    hit_ids.append(doc_id)
+                    if any(n + mk in q_norm for n in hits for mk in EXCLUSIVE_MARKERS):
+                        exclusive = True
+            if hit_ids:
+                docs = col.get(ids=hit_ids, include=["documents", "metadatas"])
+                for doc_text, meta in zip(docs["documents"], docs["metadatas"]):
+                    found.append({"doc_text": doc_text, "meta": meta, "distance": 0.0, "source": source})
+        except Exception as e:
+            print(f"명시 지정 문서 조회 오류({source}): {e}")
+    return found, exclusive
+
+
+def detect_db_only_intent(question: str, conn) -> str:
+    """
+    질문이 정형 DB 로 검색 대상을 한정했는지 판단합니다. 한정했다면 그 근거 문구를, 아니면 빈 문자열을 반환합니다.
+    - 일반 표현: '정형DB', 'DB에서', 'DB만', '데이터베이스에서' 등
+    - 테이블명: Sys_TableCatalog 의 영문/한글 테이블명 + '에서/만/기준' (예: '입시마스타에서 검색해줘')
+      (테이블명은 카탈로그에서 동적으로 읽으며 코드에 하드코딩하지 않습니다)
+    """
+    q_norm = norm_doc_name(question)
+    if not q_norm:
+        return ""
+    generic_names = ["정형db", "정형디비", "정형데이터", "db", "디비", "데이터베이스"]
+    for g in generic_names:
+        if g.startswith("정형") and g in q_norm:
+            return g
+        if any(g + mk in q_norm for mk in EXCLUSIVE_MARKERS):
+            return g
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT table_name, table_name_kr FROM Sys_TableCatalog WHERE is_active = 'Y'")
+            for t_name, t_kr in cur.fetchall():
+                for n in (norm_doc_name(t_name), norm_doc_name(t_kr)):
+                    if len(n) >= 3 and any(n + mk in q_norm for mk in EXCLUSIVE_MARKERS):
+                        return t_kr or t_name
+        except Exception as e:
+            print(f"테이블 카탈로그 조회 오류: {e}")
+    return ""
 
 class ColumnUpdateItem(BaseModel):
     id: int
@@ -243,12 +597,13 @@ def get_mssql_connection():
         print(f"[OK] 선택된 MS-SQL 드라이버: {driver_name}")
 
         # 3. 동적 드라이버 연결 문자열 구성 (ODBC 18 SSL 검증 에러 우회)
+        # 접속 정보는 backend/.env 에만 둠 (DB_SERVER · DB_NAME · DB_USER · DB_PWD, 코드·git 에 비밀번호를 남기지 않음)
         conn_str = (
             f"DRIVER={{{driver_name}}};"
-            "SERVER=10.10.1.11,1433;"
-            "DATABASE=DDU_ADMISSION;"
-            "UID=admission_ai;"
-            "PWD=fjk12#$;"
+            f"SERVER={os.getenv('DB_SERVER', '10.10.1.11,1433')};"
+            f"DATABASE={os.getenv('DB_NAME', 'DDU_ADMISSION')};"
+            f"UID={os.getenv('DB_USER', '')};"
+            f"PWD={os.getenv('DB_PWD', '')};"
             "TrustServerCertificate=yes;"
         )
         
@@ -262,6 +617,264 @@ def get_mssql_connection():
     except Exception as e:
         print(f"MS-SQL 연결 에러 발생: {e}")
         return None
+
+
+def set_db_comment(cursor, table, column, text):
+    """
+    [DB 주석] 테이블(column=None) 또는 컬럼의 MS_Description 을 추가하거나 갱신합니다. (extract_schema.py 에 표시)
+    테이블·컬럼을 새로 만들거나 바꿀 때 함께 호출합니다. 실패해도 본 작업은 계속합니다.
+    """
+    try:
+        text = str(text or "")[:3000]
+        cursor.execute("SELECT OBJECTPROPERTY(OBJECT_ID(?), 'IsUserTable')", (table,))
+        if (cursor.fetchone() or [0])[0] != 1:
+            return  # 뷰·외부 객체는 주석 대상 아님 (extract_schema.py 는 테이블만 표시)
+        if column:
+            cursor.execute("SELECT 1 FROM sys.extended_properties WHERE name = 'MS_Description' AND major_id = OBJECT_ID(?) "
+                           "AND minor_id = COLUMNPROPERTY(OBJECT_ID(?), ?, 'ColumnId')", (table, table, column))
+        else:
+            cursor.execute("SELECT 1 FROM sys.extended_properties WHERE name = 'MS_Description' AND major_id = OBJECT_ID(?) AND minor_id = 0", (table,))
+        proc = "sp_updateextendedproperty" if cursor.fetchone() else "sp_addextendedproperty"
+        cursor.execute(f"EXEC {proc} @name = N'MS_Description', @value = ?, @level0type = N'SCHEMA', @level0name = N'dbo', "
+                       f"@level1type = N'TABLE', @level1name = ?" + (", @level2type = N'COLUMN', @level2name = ?" if column else ""),
+                       [text, table] + ([column] if column else []))
+    except Exception as e:
+        print(f"[DB 주석] {table}.{column or '(테이블)'} 주석 저장 실패: {e}")
+
+
+VALUE_DICT_CACHE = {"at": 0.0, "data": {}, "status": [], "refreshed_at": None}
+_VALUE_DICT_REFRESHING = threading.Lock()
+
+
+def refresh_value_dictionary_in_background():
+    """값 사전을 별도 스레드·별도 연결로 갱신 (이미 갱신 중이면 아무 것도 안 함)"""
+    if not _VALUE_DICT_REFRESHING.acquire(blocking=False):
+        return
+
+    def work():
+        conn = None
+        try:
+            conn = get_mssql_connection()
+            if conn:
+                get_value_dictionary(conn, force=True)
+        except Exception as e:
+            print(f"[값 사전] 백그라운드 갱신 오류: {e}")
+        finally:
+            if conn:
+                conn.close()
+            _VALUE_DICT_REFRESHING.release()
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+def get_value_dictionary(conn, force=False) -> dict:
+    """
+    [값 사전] 활성 테이블의 구분 열에 '실제로 들어 있는 값'을 최근 2개 학년도별로 읽습니다. (1시간 캐시, Sys_ValueDictionary 에 저장)
+    힌트(열 설명)에 사람이 적어 둔 고정 목록은 해마다 바뀌는 전형명 등을 따라가지 못하므로, AI 에게는 이 실제 값을 함께 줍니다.
+    - 대상 열: 문자형이면서 (카탈로그 설명이 있는 열) 또는 (행 수가 적은 테이블의 열), 학년도별 값이 60개 이하인 열
+    - Sys_ColumnCatalog.value_dict_mode: 'Y' 항상 포함 / 'N' 항상 제외 / NULL 자동 판단 (대시보드 '실제 값 현황' 탭에서 지정)
+    - 학년도 열: 열 이름에 '학년도'가 들어간 첫 번째 열 (없으면 학년도 구분 없이 전체)
+    반환: {테이블: {열: {학년도: [값, ...]}}}  (열마다 포함/제외 이유는 VALUE_DICT_CACHE["status"])
+    """
+    now = time.time()
+    if not force and VALUE_DICT_CACHE["data"] and now - VALUE_DICT_CACHE["at"] < app_config.get("VALUE_DICT_TTL_SEC"):
+        return VALUE_DICT_CACHE["data"]
+    if not force and VALUE_DICT_CACHE["data"]:
+        # [응답 지연 방지] 갱신에 10초 넘게 걸리므로, 만료되면 기존 값을 바로 쓰고 갱신은 뒤에서 (질문이 기다리지 않게)
+        refresh_value_dictionary_in_background()
+        return VALUE_DICT_CACHE["data"]
+    result, status, saved, history = {}, [], [], {}
+    try:
+        real = get_real_table_columns(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT table_name, column_name, ai_description, value_dict_mode FROM Sys_ColumnCatalog")
+        catalog = {(t, c): (d, (m or "").strip().upper()) for t, c, d, m in cur.fetchall()}
+        for t_name, cols in real.items():
+            try:
+                cur.execute(f"SELECT COUNT(*) FROM [{t_name}]")
+                n_rows = cur.fetchone()[0]
+                year_col = next((c for c, _ in cols if "학년도" in c), None)
+                years = [None]
+                if year_col:
+                    cur.execute(f"SELECT TOP 2 [{year_col}] FROM [{t_name}] WHERE [{year_col}] IS NOT NULL GROUP BY [{year_col}] ORDER BY [{year_col}] DESC")
+                    years = [r[0] for r in cur.fetchall()] or [None]
+                for c, d in cols:
+                    if d not in ("varchar", "nvarchar", "char", "nchar") or c == year_col:
+                        continue
+                    desc, mode = catalog.get((t_name, c), ("", ""))
+                    st = {"table": t_name, "column": c, "mode": mode or "AUTO", "included": False, "reason": "", "row_count": n_rows}
+                    status.append(st)
+                    if mode == "N":
+                        st["reason"] = "제외로 지정됨"
+                        continue
+                    if mode != "Y" and not (desc or "").strip() and n_rows > 20000:
+                        st["reason"] = "큰 테이블(2만 행 초과)이고 열 설명이 없음 (구분 열이면 [포함] 지정)"
+                        continue
+                    if year_col and years != [None]:
+                        ph = ",".join("?" * len(years))
+                        cur.execute(f"SELECT [{year_col}], [{c}], COUNT(*) FROM [{t_name}] WHERE [{year_col}] IN ({ph}) AND [{c}] IS NOT NULL "
+                                    f"GROUP BY [{year_col}], [{c}]", years)
+                    else:
+                        cur.execute(f"SELECT NULL, [{c}], COUNT(*) FROM [{t_name}] WHERE [{c}] IS NOT NULL GROUP BY [{c}]")
+                    fetched = [(y, str(v).strip(), n) for y, v, n in cur.fetchall() if str(v).strip() != ""]
+                    if not fetched:
+                        st["reason"] = "값 없음"
+                        continue
+                    # 숫자·코드 열(모집인원, 코드값 등)과 사람마다 다른 식별번호 열(값 하나가 1~2행에만 나옴)은 구분 값이 아니므로 제외
+                    numeric_share = sum(1 for _, v, _ in fetched if re.fullmatch(r"-?\d+(\.\d+)?", v)) / len(fetched)
+                    rows_per_value = sum(n for _, _, n in fetched) / len(fetched)
+                    if mode != "Y" and numeric_share >= 0.5:
+                        st["reason"] = "숫자·코드 값 위주"
+                        continue
+                    if mode != "Y" and n_rows > 20000 and len(fetched) > 5 and rows_per_value < 3:
+                        st["reason"] = "사람마다 다른 번호 열로 보임 (값 하나가 2~3행 이하)"
+                        continue
+                    by_year, counts = {}, {}
+                    for y, v, n in fetched:
+                        yk = str(y) if y is not None else "전체"
+                        by_year.setdefault(yk, []).append(v)
+                        counts[(yk, v)] = counts.get((yk, v), 0) + n
+                    if not all(1 <= len(v) <= 60 for v in by_year.values()):
+                        st["reason"] = f"값 종류가 너무 많음 (학년도별 60개 초과)"
+                        continue
+                    result.setdefault(t_name, {})[c] = {y: sorted(set(v)) for y, v in sorted(by_year.items(), reverse=True)}
+                    if year_col and years != [None]:
+                        # 지난 학년도 값 전체 (강원도 → 강원특별자치도처럼 이름이 바뀐 옛 값을 이름 보정이 새 이름으로 바꾸지 않도록)
+                        cur.execute(f"SELECT DISTINCT LTRIM(RTRIM([{c}])) FROM [{t_name}] WHERE [{c}] IS NOT NULL")
+                        history.setdefault(t_name, {})[c] = {str(r[0]) for r in cur.fetchall() if r[0] not in (None, "")}
+                    st["included"] = True
+                    st["reason"] = "포함으로 지정됨" if mode == "Y" else "자동 포함"
+                    saved += [(t_name, c, yk, v, n) for (yk, v), n in counts.items()]
+            except Exception as e:
+                print(f"[값 사전] {t_name} 조회 생략: {e}")
+        # 현황 화면·학년도 비교용으로 DB 에 저장 (전체 교체)
+        try:
+            cur.execute("DELETE FROM Sys_ValueDictionary")
+            if saved:
+                cur.executemany("INSERT INTO Sys_ValueDictionary (table_name, column_name, year_value, value, row_count) VALUES (?, ?, ?, ?, ?)", saved)
+            conn.commit()
+        except Exception as e:
+            print(f"[값 사전] DB 저장 실패 (메모리 값으로 진행): {e}")
+        import datetime as _dt
+        VALUE_DICT_CACHE.update(at=now, data=result, status=status, refreshed_at=_dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        import value_resolver
+        value_resolver.HISTORY = history
+        print(f"[값 사전] {sum(len(v) for v in result.values())}개 열의 실제 값 갱신 ({', '.join(result.keys())})")
+    except Exception as e:
+        print(f"[값 사전] 생성 오류 (값 사전 없이 진행): {e}")
+    return result
+
+
+def find_label_fixes(conn, table_name, col_values: dict, counts: dict = None) -> dict:
+    """
+    [표기 검사] 테이블의 문자 열마다 기준 열을 찾아 표기를 대조합니다.
+    - 기준 열: 다른 테이블 값 사전 열 중 값이 가장 많이 겹치는 열 (공백 무시 50% 이상).
+      원본 시스템 테이블(EXTERNAL, 예: 입시마스타)을 엑셀 업로드 테이블보다 우선, 같은 열 이름이면 가산
+    - 공백·기호만 다른 값 → 기준 표기로 바꿀 목록 (fixes)
+    - 같은 열 안에서 공백만 다른 표기가 섞여 있으면(예: '재외국민 및 외국인' / '재외국민및외국인') 기준 표기 또는 많이 쓰인 표기로 통일
+    - 기준 열(최근 2개 학년도)에 없는 값 → unknown (신규 전형·학과이거나 기준 테이블에 데이터가 없는 값)
+    col_values: {열: {학년도 또는 '전체': set(값)}}, counts: {(열, 값): 행 수} (표기 통일 때 많이 쓰인 쪽 판단용)
+    반환: {열: {"ref": "테이블.열", "fixes": {원래 값: 바꿀 값}, "unknown": [값]}}
+    """
+    from value_resolver import _norm
+    vd = get_value_dictionary(conn)
+    counts = counts or {}
+    cur = conn.cursor()
+    cur.execute("SELECT table_name, ISNULL(db_source, 'INTERNAL') FROM Sys_TableCatalog")
+    source = dict(cur.fetchall())
+    out = {}
+    for col, by_year in col_values.items():
+        all_vals = set().union(*by_year.values()) if by_year else set()
+        if not all_vals or sum(1 for v in all_vals if re.fullmatch(r"-?\d+(\.\d+)?", v)) * 2 >= len(all_vals):
+            continue
+        best = None
+        for t, cols in vd.items():
+            if t == table_name:
+                continue
+            for rc, ref_years in cols.items():
+                ref_norm = {_norm(x) for vals in ref_years.values() for x in vals}
+                overlap = sum(1 for v in all_vals if _norm(v) in ref_norm) / len(all_vals)
+                if overlap < 0.5:
+                    continue
+                score = (source.get(t) == "EXTERNAL", overlap + (0.3 if rc == col else 0))
+                if best is None or score > best[0]:
+                    best = (score, t, rc, ref_years)
+        ref, ref_name = set(), ""
+        if best:
+            _, ref_table, ref_col, ref_years = best
+            ref = {x for vals in ref_years.values() for x in vals}
+            ref_name = f"{ref_table}.{ref_col}"
+        ref_by_norm = {}
+        for r in ref:
+            ref_by_norm.setdefault(_norm(r), []).append(r)
+        own_by_norm = {}
+        for v in all_vals:
+            own_by_norm.setdefault(_norm(v), []).append(v)
+        fixes, unknown = {}, []
+        for v in sorted(all_vals):
+            if v in ref:
+                continue
+            cands = ref_by_norm.get(_norm(v), [])
+            if len(cands) == 1:
+                fixes[v] = cands[0]
+                continue
+            same = own_by_norm.get(_norm(v), [])
+            if len(same) > 1:
+                # 같은 열 안의 다른 표기와 통일: 많이 쓰인 표기 → 공백이 적은 표기 순
+                target = max(same, key=lambda x: (counts.get((col, x), 0), -x.count(" ")))
+                if target != v:
+                    fixes[v] = target
+                    continue
+            if ref and v not in unknown:
+                unknown.append(v)
+        if fixes or unknown:
+            out[col] = {"ref": ref_name or "같은 열의 다른 표기", "fixes": fixes, "unknown": unknown}
+    return out
+
+
+def docs_named_as_tables(conn, sql) -> list:
+    """쿼리의 테이블 이름 중 실제 테이블이 아니고 문서 제목과 같은 것 → 그 문서 제목 목록 (라우터가 문서를 테이블로 착각한 경우)"""
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sys.objects WHERE type IN ('U', 'V')")
+        real = {r[0].lower() for r in cur.fetchall()}
+        names = [norm_doc_name(t) for t in db_access.referenced_tables(sql) if t.lower() not in real]
+        names = [n for n in names if len(n) >= 4]
+        if not names:
+            return []
+        cur.execute("SELECT filename, title FROM Sys_DocumentCatalog WHERE is_active = 'Y'")
+        out = []
+        for fname, title in cur.fetchall():
+            d = norm_doc_name(title or fname)
+            if d and any(n == d or n in d or d in n for n in names):
+                out.append(re.sub(r"\s*,\s*", " ", title or re.sub(r'\.[a-zA-Z0-9]+$', '', fname)))  # 쉼표는 검색어 구분자라 공백으로
+        return out
+    except Exception as e:
+        print(f"[문서-테이블 착각 확인] 오류: {e}")
+        return []
+
+
+def get_real_table_columns(conn) -> dict:
+    """
+    활성 테이블(Sys_TableCatalog)의 실제 열 이름과 자료형을 INFORMATION_SCHEMA 에서 읽습니다.
+    반환: {테이블명: [(열이름, 자료형), ...]} (열 순서 유지). 실패하면 빈 dict 를 반환해 호출부가 카탈로그로 대체합니다.
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE
+            FROM INFORMATION_SCHEMA.COLUMNS c
+            JOIN Sys_TableCatalog t ON t.table_name = c.TABLE_NAME
+            WHERE t.is_active = 'Y'
+            ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION
+        """)
+        result = {}
+        for t_name, c_name, d_type in cur.fetchall():
+            result.setdefault(t_name, []).append((c_name, d_type))
+        return result
+    except Exception as e:
+        print(f"실제 테이블 열 조회 오류 (카탈로그로 대체): {e}")
+        return {}
 
 
 def get_dynamic_db_schema(conn, user_role="staff"):
@@ -285,25 +898,51 @@ def get_dynamic_db_schema(conn, user_role="staff"):
             query += " AND c.is_public = 'Y'"
             
         cursor.execute(query)
+        catalog_rows = cursor.fetchall()
+
+        # 실제 DB 의 열 이름·자료형 (카탈로그와 어긋나도 AI 가 실제 이름을 받도록 열 이름은 여기서 가져옴)
+        real_columns = get_real_table_columns(conn)
+
         schema_dict = {}
         table_desc_dict = {}
-        for row in cursor.fetchall():
-            t_name, t_desc, c_name, ai_desc = row
-            if t_name not in schema_dict:
-                schema_dict[t_name] = []
-                table_desc_dict[t_name] = t_desc
-            
-            # AI를 위한 힌트 조합
-            col_str = f"[{c_name}]"
-            if ai_desc: col_str += f"(설명:{ai_desc})"
-            schema_dict[t_name].append(col_str)
-            
+        catalog_cols = {}
+        for t_name, t_desc, c_name, ai_desc in catalog_rows:
+            table_desc_dict.setdefault(t_name, t_desc)
+            catalog_cols.setdefault(t_name, {})[c_name] = ai_desc
+
+        for t_name, cols in catalog_cols.items():
+            real = real_columns.get(t_name)
+            if not real:
+                # 실제 열을 읽지 못한 테이블은 기존처럼 카탈로그만으로 구성
+                schema_dict[t_name] = [f"[{c}]" + (f"(설명:{d})" if d else "") for c, d in cols.items()]
+                continue
+            real_names = {c for c, _ in real}
+            for c in cols:
+                if c not in real_names:
+                    print(f"[카탈로그 불일치] {t_name}.{c} — 실제 테이블에 없는 열이라 AI 스키마에서 제외 (Sys_ColumnCatalog 수정 필요)")
+            col_strs = []
+            for c, d_type in real:
+                if c in cols:
+                    desc = cols[c]
+                    col_strs.append(f"[{c}]({d_type}" + (f", 설명:{desc})" if desc else ")"))
+                elif user_role != "student":
+                    # 카탈로그에 없는 실제 열은 교직원에게만 (학생은 카탈로그 공개 열만)
+                    col_strs.append(f"[{c}]({d_type})")
+            schema_dict[t_name] = col_strs
+
+        value_dict = get_value_dictionary(conn)
         schema_str = "[현재 AI가 접근 가능한 MS-SQL 테이블 구조]\n"
         for t_name, cols in schema_dict.items():
             t_desc = table_desc_dict.get(t_name)
             t_desc_str = f" (테이블 용도: {t_desc})" if t_desc else ""
             schema_str += f"- Table: [{t_name}]{t_desc_str} | Columns: {', '.join(cols)}\n"
-            
+            # [값 사전] 이 테이블 구분 열의 실제 값 (학년도별). 열 설명의 값 목록보다 우선 (해마다 바뀌는 전형명 등)
+            shown = {re.match(r"\[([^\]]+)\]", s).group(1) for s in cols if re.match(r"\[([^\]]+)\]", s)}
+            for c, by_year in value_dict.get(t_name, {}).items():
+                if c in shown:  # 학생은 공개 열만 (schema_dict 에 들어간 열만)
+                    vals = " / ".join(f"{y}: {', '.join(v)}" for y, v in by_year.items())
+                    schema_str += f"    └ [{c}] 실제 값 ({vals})\n"
+
         # 2. 비정형 데이터 (문서 카탈로그)
         doc_query = "SELECT doc_type, year, title, description FROM Sys_DocumentCatalog WHERE is_active = 'Y'"
         if user_role == "student":
@@ -315,7 +954,10 @@ def get_dynamic_db_schema(conn, user_role="staff"):
             schema_str += "\n[현재 AI가 접근 가능한 비정형 문서 목록 (ChromaDB에 저장됨)]\n"
             for doc in docs:
                 d_type, d_year, d_title, d_desc = doc
-                year_str = f"{d_year}학년도 " if d_year and str(d_year) not in d_title else ""
+                # 'ALL'(전 학년도 공통)은 학년도를 붙이지 않음 (AI 가 'ALL학년도 …' 처럼 없는 이름을 만들지 않도록)
+                year_str = f"{d_year}학년도 " if d_year and str(d_year) != "ALL" and str(d_year) not in d_title else ""
+                # 검색어는 쉼표로 구분하므로 제목 속 쉼표는 '·' 로 바꿔 보여 줌 (제목이 두 검색어로 쪼개지지 않도록)
+                d_title = re.sub(r"\s*,\s*", "·", d_title or "")
                 desc_str = f" (문서 설명: {d_desc})" if d_desc else ""
                 schema_str += f"- [{d_type}] {year_str}{d_title}{desc_str}\n"
                 
@@ -325,9 +967,73 @@ def get_dynamic_db_schema(conn, user_role="staff"):
         return "카탈로그 추출 오류"
 
 
+def schema_blocks_for_question(dynamic_schema: str, question: str) -> str:
+    """[테이블 지정 질문] 질문에 테이블 이름이 그대로 적혀 있으면 그 테이블의 스키마 줄(열·자료형·실제 값)을 돌려줌.
+    최종 AI 는 원래 스키마를 받지 않아, 'OO 테이블에 넣을 쿼리 만들어줘' 같은 요청에 열 이름을 지어내던 문제 방지"""
+    if not dynamic_schema or not question:
+        return ""
+    q = question.lower()
+    out, keep = [], False
+    for line in dynamic_schema.split("\n"):
+        m = re.match(r"- Table: \[([^\]]+)\]", line)
+        if m:
+            keep = m.group(1).lower() in q
+        elif not line.startswith("    └"):
+            keep = False
+        if keep:
+            out.append(line)
+    return "\n".join(out)
+
+
 # ==========================================
 # [3] 핵심 API 엔드포인트
 # ==========================================
+@app.on_event("startup")
+def ensure_audit_log_columns():
+    """
+    [스키마 보강] 감사 로그에 라우터/최종 답변의 호출 설정(effort·추론) 칸이 없으면 추가합니다.
+    NULL 허용 칸 추가이므로 기존 데이터·기존 코드에는 영향이 없으며, 이미 있으면 아무 것도 하지 않습니다.
+    """
+    conn = get_mssql_connection()
+    if not conn:
+        print("[스키마 보강] MS-SQL 연결 실패로 감사 로그 칸 확인을 건너뜁니다.")
+        return
+    try:
+        cur = conn.cursor()
+        for col in ("router_mode", "chat_mode"):
+            cur.execute(f"IF COL_LENGTH('Sys_AIAuditLog', '{col}') IS NULL ALTER TABLE Sys_AIAuditLog ADD {col} NVARCHAR(100) NULL")
+        # 사전지식 적용 대상 (NULL = 기존 사전지식 = 교직원 전용)
+        cur.execute("IF COL_LENGTH('Sys_SupplementalKnowledge', 'target_scope') IS NULL ALTER TABLE Sys_SupplementalKnowledge ADD target_scope NVARCHAR(20) NULL")
+        # 추가한 칸의 주석 (extract_schema.py 로 확인)
+        set_db_comment(cur, "Sys_AIAuditLog", "router_mode", "라우터 AI 호출 설정 (추론 강도·추론 끔 여부)")
+        set_db_comment(cur, "Sys_AIAuditLog", "chat_mode", "최종 AI 호출 설정 (추론 강도·확인 대기 등)")
+        set_db_comment(cur, "Sys_SupplementalKnowledge", "target_scope", "사전지식 적용 대상 (staff: 교직원, student: 학생, all: 전체, NULL: 교직원)")
+        conn.commit()
+        print("[스키마 보강] Sys_AIAuditLog.router_mode / chat_mode, Sys_SupplementalKnowledge.target_scope 확인 완료")
+    except Exception as e:
+        print(f"[스키마 보강] 감사 로그 칸 추가 오류: {e}")
+    finally:
+        conn.close()
+
+
+@app.on_event("startup")
+def sync_db_grants_on_startup():
+    """[DB 권한 분리] 서버 시작 시 학생 계정의 SELECT 권한을 카탈로그 공개 열과 맞추고, 조회 계정 연결을 점검"""
+    conn = get_mssql_connection()
+    if not conn:
+        return
+    refresh_value_dictionary_in_background()  # 첫 질문이 값 사전 생성(10초+)을 기다리지 않도록 미리 채움
+    try:
+        db_access.sync_student_grants(conn)
+        for role, label in (("staff", "교직원 읽기 계정"), ("student", "학생 조회 계정")):
+            c = db_access.role_connection(role)
+            print(f"[DB 권한] {label}: {'연결 확인' if c else '설정 없음/연결 실패 → ' + ('기존 계정 사용' if role == 'staff' else '학생 쿼리 실행 안 함')}")
+            if c:
+                c.close()
+    finally:
+        conn.close()
+
+
 @app.get("/health")
 async def health_check():
     """
@@ -460,10 +1166,12 @@ async def upload_knowledge(
         try:
             cursor = conn.cursor()
             desc_val = description if description else ""
+            # [토큰 수] 참고 문서로 뽑히면 AI 입력에 들어가는 양 (대시보드 표시용, Claude 기준 무료 계산 API)
+            token_count = doc_token_count(safe_text)
             cursor.execute("""
-                INSERT INTO Sys_DocumentCatalog (doc_id, filename, doc_type, year, title, description, is_public)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (doc_id, file.filename, doc_type, year, title, desc_val, is_public))
+                INSERT INTO Sys_DocumentCatalog (doc_id, filename, doc_type, year, title, description, is_public, token_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (doc_id, file.filename, doc_type, year, title, desc_val, is_public, token_count))
             conn.commit()
             cursor.close()
             conn.close()
@@ -756,9 +1464,10 @@ async def update_document(
             if filename_val:
                 cursor.execute("""
                     UPDATE Sys_DocumentCatalog 
-                    SET year=?, title=?, description=?, is_public=?, is_active=?, filename=?
+                    SET year=?, title=?, description=?, is_public=?, is_active=?, filename=?, token_count=?
                     WHERE doc_id=?
-                """, (year, title, desc_val, is_public, is_active, filename_val, doc_id))
+                """, (year, title, desc_val, is_public, is_active, filename_val,
+                      doc_token_count(safe_text) if safe_text is not None else None, doc_id))
             else:
                 cursor.execute("""
                     UPDATE Sys_DocumentCatalog 
@@ -910,6 +1619,12 @@ async def upload_dynamic_statistics(
             cols_def = ", ".join([f"[{h}] {col_types[i]}" for i, h in enumerate(headers)])
             cursor.execute(f"CREATE TABLE [{table_name}] (id INT IDENTITY(1,1) PRIMARY KEY, {cols_def}, created_at DATETIME DEFAULT GETDATE())")
             print(f"[OK] 테이블 [{table_name}] 생성 완료")
+            # 새 테이블·컬럼 주석 (extract_schema.py 로 확인)
+            set_db_comment(cursor, table_name, None, " - ".join(x for x in [table_name_kr, description] if x) or "엑셀 업로드 테이블")
+            set_db_comment(cursor, table_name, "id", "고유 ID")
+            set_db_comment(cursor, table_name, "created_at", "업로드일시")
+            for h in headers:
+                set_db_comment(cursor, table_name, h, f"엑셀 머리글 '{h}'")
             
         # [NEW] 테이블 카탈로그 등록 (한글명 및 설명 포함)
         kr_name = (table_name_kr if table_name_kr else table_name).replace("'", "''")
@@ -928,17 +1643,49 @@ async def upload_dynamic_statistics(
         placeholders = ", ".join(["?"] * len(headers))
         insert_query = f"INSERT INTO [{table_name}] ({columns_str}) VALUES ({placeholders})"
         
-        inserted_count = 0
+        data_rows = []
         for row in sheet.iter_rows(min_row=2, values_only=True):
             if all(cell is None or str(cell).strip() == "" for cell in row): continue
-            row_data = tuple(row[i] if i < len(row) else None for i in range(len(headers)))
-            cursor.execute(insert_query, row_data)
+            data_rows.append([row[i] if i < len(row) else None for i in range(len(headers))])
+
+        # [표기 검사] 구분 열 값을 다른 테이블(입시마스타 등)의 실제 값과 대조 → 띄어쓰기만 다르면 맞춰 저장, 처음 보는 값은 알림
+        label_lines = []
+        try:
+            year_idx = next((i for i, h in enumerate(headers) if "학년도" in h), None)
+            col_values = {}
+            for r in data_rows:
+                y = str(r[year_idx]).strip() if year_idx is not None and r[year_idx] is not None else "전체"
+                for i, h in enumerate(headers):
+                    if i != year_idx and isinstance(r[i], str) and r[i].strip():
+                        col_values.setdefault(h, {}).setdefault(y, set()).add(r[i].strip())
+            checks = find_label_fixes(conn, table_name, col_values)
+            for h, info in checks.items():
+                i = headers.index(h)
+                if info["fixes"]:
+                    n_fixed = 0
+                    for r in data_rows:
+                        if isinstance(r[i], str) and r[i].strip() in info["fixes"]:
+                            r[i] = info["fixes"][r[i].strip()]
+                            n_fixed += 1
+                    label_lines.append(f"✏️ [{h}] {info['ref']} 표기로 맞춤 ({n_fixed}행): "
+                                       + ", ".join(f"'{a}' → '{b}'" for a, b in info["fixes"].items()))
+                if info["unknown"]:
+                    label_lines.append(f"🆕 [{h}] {info['ref']}(최근 2개 학년도)에 없는 값 (신규 전형·학과이거나 기준 테이블에 데이터가 없음, 그대로 저장): {', '.join(info['unknown'])}")
+        except Exception as label_err:
+            print(f"[표기 검사] 생략: {label_err}")
+
+        inserted_count = 0
+        for row_data in data_rows:
+            cursor.execute(insert_query, tuple(row_data))
             inserted_count += 1
-            
+
         conn.commit()
         cursor.close()
         conn.close()
-        return {"status": "success", "message": f"[{table_name}] 테이블에 {inserted_count}건 저장 및 카탈로그 등록 완료."}
+        message = f"[{table_name}] 테이블에 {inserted_count}건 저장 및 카탈로그 등록 완료."
+        if label_lines:
+            message += "\n\n[표기 검사]\n" + "\n".join(label_lines)
+        return {"status": "success", "message": message, "label_check": label_lines}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"업로드 중 오류: {str(e)}")
 
@@ -1040,15 +1787,25 @@ def mask_pii(text: str) -> str:
 @app.post("/chat")
 def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
     start_time = time.time()
-    
+    # [테스트] 시험 질문은 앞에 '[테스트]' 를 붙여 보냄 → AI 에는 떼고 보내고, 감사 로그에만 표시 (비용 기록은 그대로 남김)
+    is_test_request = (request.question or "").lstrip().startswith("[테스트]")
+    if is_test_request:
+        request.question = request.question.lstrip()[len("[테스트]"):].strip()
+    # [쿼리 요청] 교직원이 SQL 문 자체를 요청하면 라우터 추론을 켜고(effort high), 실행 오류는 1회 자동 수정, 답변에 실행한 SQL 을 보여 줌
+    is_query_request = request.user_role != "student" and bool(re.search(r"쿼리|SQL", request.question or "", re.I))
+    router_effort, router_thinking_off = "low", llm_client.ROUTER_THINKING_OFF
+
     # [NEW] 터미널에 요청 수신 헤더 및 사용자 질문 로깅
     role_str = "학생용 (student)" if request.user_role == "student" else "교직원용 (staff)"
     import datetime
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     # [보안 통제] 사용자의 질문(question) 내에 포함된 민감한 개인정보(주민번호, 휴대전화번호)를 백엔드 초입에서 원천 마스킹
+    pii_masked = False  # 질문에서 개인정보를 실제로 가렸는지 (학생 답변 맨 위 안내 여부)
     if request.question:
-        request.question = mask_pii(request.question)
+        masked_q = mask_pii(request.question)
+        pii_masked = masked_q != request.question
+        request.question = masked_q
 
     print("\n" + "=" * 70)
     print(f"🚀 [{current_time}] 신규 채팅 요청 수신 [{role_str}]")
@@ -1062,17 +1819,30 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             if not x_gemini_key:
                 raise HTTPException(status_code=401, detail="학생 전용 API 키(STUDENT_API_KEY)가 서버에 설정되어 있지 않습니다.")
         
-        student_model = os.getenv("STUDENT_MODEL", "gemini-2.5-flash")
+        student_model = app_config.get("STUDENT_MODEL")
         request.model_name = student_model
+        # 학생용 모델을 Claude 로 전환한 경우 Gemini 용 STUDENT_API_KEY 대신 서버 ANTHROPIC_API_KEY 사용
+        if llm_client.is_claude(student_model):
+            x_gemini_key = os.getenv("ANTHROPIC_API_KEY", "")
 
-    if not x_gemini_key:
-        raise HTTPException(status_code=401, detail="Gemini API Key가 필요합니다.")
+    # [Gemini ↔ Claude 전환] 헤더 키는 공급자 공통 키로 사용 (Claude 모델 + 헤더 키 없음 → 서버 ANTHROPIC_API_KEY)
+    router_model_for_key = request.router_model_name or request.model_name
+    chat_api_key = llm_client.resolve_api_key(request.model_name, x_gemini_key)
+    router_api_key = llm_client.resolve_api_key(router_model_for_key, x_gemini_key)
+    if llm_client.is_claude(request.model_name) != llm_client.is_claude(router_model_for_key) and x_gemini_key:
+        # 라우터와 최종 모델의 공급자가 다르면 헤더 키 하나로 둘 다 호출할 수 없으므로, Claude 쪽은 서버 키 사용
+        if llm_client.is_claude(request.model_name):
+            chat_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        else:
+            router_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+
+    if not chat_api_key or not router_api_key:
+        raise HTTPException(status_code=401, detail="API Key가 필요합니다. (Claude 모델은 확장 설정의 키 또는 서버 ANTHROPIC_API_KEY 필요)")
 
     log_id = None
     conn = None
     try:
-        genai.configure(api_key=x_gemini_key)
-        
+
         # 1. MS-SQL 실시간 구조 파악 (데이터 사전 자동 생성)
         conn = get_mssql_connection()
         dynamic_schema = get_dynamic_db_schema(conn, request.user_role) if conn else "DB 연결 불가"
@@ -1137,18 +1907,17 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         # =======================================================
         # [NEW] 라우터 AI를 위한 사전지식 선행 조회
         pre_supplemental_text = ""
+        faq_rows_all = []  # [입학처 Q&A] 사용 중인 전체 Q&A
         if conn:
             try:
-                pre_cursor = conn.cursor()
-                pre_cursor.execute(
-                    "SELECT category, content FROM Sys_SupplementalKnowledge WHERE is_active = 'Y' ORDER BY category ASC, id ASC"
-                )
-                rows = pre_cursor.fetchall()
-                if rows:
-                    for r in rows:
-                        pre_supplemental_text += f"- [{r[0]}] {r[1]}\n"
+                pre_supplemental_text = load_supplemental_knowledge(conn.cursor(), request.user_role)
             except Exception as e:
                 print(f"사전지식 선행 조회 오류: {e}")
+            faq_rows_all = load_faq_rows(conn.cursor())
+        # 분량이 많으면 전부 넣지 않고 라우터가 질문에 맞는 주제를 고름
+        faq_by_router = faq_size(faq_rows_all) > faq_all_tokens()
+        faq_topics = None  # 라우터가 고른 Q&A 주제 (faq_by_router 일 때만)
+        faq_years = None  # Q&A 를 고를 학년도
 
         # 스크랩된 전체 내용을 질문과 조합하여 관련된 DB 통계를 정확히 찾을 수 있도록 유도
         sql_search_text = request.question
@@ -1180,8 +1949,44 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         router_in_tokens = 0
         router_out_tokens = 0
         used_router_model = "NONE"
-        
-        if skip_router:
+        metric_notes = []  # [지표 사전] 쿼리 요청을 설계도로 조립했을 때의 안내 (답변 AI 에 전달)
+        ratio_cols = []  # [쿼리 요청] 설계도의 백분율 비율 이름 (100% 초과 경고용)
+
+        # [큰 문서 확인 후 재요청] 보관해 둔 라우터 판단 결과를 재사용 (라우터 재호출/비용 없음)
+        resume_state = None
+        log_question = request.question  # 감사 로그에 남길 질문 (확인 후 이어지는 요청이면 원 로그 번호 표시)
+        if request.pending_id and request.user_role != "student":
+            purge_pending_router()
+            resume_state = PENDING_ROUTER.get(request.pending_id)
+            if not resume_state:
+                return {
+                    "status": "cancelled",
+                    "reason": "pending_expired",
+                    "message": "⏱️ 확인 대기 시간(15분)이 지나 요청이 만료되었습니다. 같은 질문을 다시 보내 주세요."
+                }
+
+        if resume_state:
+            sql_query = resume_state["sql_query"]
+            need_rag = resume_state["need_rag"]
+            rag_query = resume_state["rag_query"]
+            rag_year_filter = resume_state["rag_year_filter"]
+            target_documents = resume_state["target_documents"]
+            used_router_model = resume_state["used_router_model"]
+            metric_notes = resume_state.get("metric_notes", [])
+            faq_topics = resume_state.get("faq_topics")
+            faq_years = resume_state.get("faq_years")
+            # 라우터 비용은 확인 대기 로그에 이미 기록됨 → 이어지는 요청은 추가 비용(최종 AI)만 기록
+            router_in_tokens = 0
+            router_out_tokens = 0
+            prev_id = resume_state.get("log_id")
+            resume_label = "조건 값 선택" if request.value_choices else f"큰 문서 {'포함' if request.large_doc_decision == 'include' else '제외'}"
+            log_question = f"[{'#' + str(prev_id) + ' ' if prev_id else ''}이어서 · {resume_label}] {request.question}"
+            # 사전지식 등록/삭제는 첫 요청에서 이미 반영되었으므로 중복 실행 방지
+            k_action = "NONE"
+            k_category = "기타"
+            k_content = ""
+            print(f"\n[Step 2] 🧠 라우터 AI: 이전 판단 결과 재사용 ({resume_label} 선택, 라우터 재호출 없음)")
+        elif skip_router:
             sql_query = "NONE"
             need_rag = True
             rag_query = request.question
@@ -1206,6 +2011,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         else:
             sql_router_prompt = f"""
         너는 대동대학교 입시처의 수석 데이터 아키텍트이자 실시간 입시 사전지식 관리자야. 
+        {today_line()}
         사용자의 [질문]에 답변하기 위해 아래의 [현재 데이터베이스 및 문서 카탈로그 현황]을 분석하고, 
         어떻게 데이터를 조회 및 반영해야 할지 판단해 줘.
 
@@ -1231,35 +2037,29 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         - 사용자의 [질문]이 "수정할 곳 알려줘", "이것도 해줘" 처럼 대명사를 포함하거나 단답형인 경우, 반드시 아래 [이전 대화 맥락]을 읽고 사용자가 어떤 문서를 검토 중이었는지, 혹은 어떤 통계를 질문 중이었는지 의도를 추론하십시오.
         - [이전 대화 맥락]에 특정 규정 문서나 예산안에 대한 논의가 있었다면, 이번 턴의 `rag_search_query`나 `target_documents`에도 해당 문서가 연속적으로 포함되도록 반영하십시오.
 
-        [기본 사전 지식 주입]
-        1. [입시 학년도 정의]: 대학교 입시에서 'N학년도 전형문서'는 'N-1년도'에 모집을 실시하는 전형을 뜻합니다. (예: 2027학년도 전형문서 = 2026년 가을/겨울에 모집 실시). 사용자가 질문한 연도가 '실시 연도'인지 '입학 학년도'인지 문맥을 파악하여 SQL과 문서 검색 타겟을 정확히 일치시키세요.
-        2. [일반 학년도 정의]: 학년도(예: 2026학년도)는 3월 1일부터 다음 해 2월 말일까지를 의미합니다. (예: 2026학년도 = 2026.03 ~ 2027.02).
-        3. [신입/편입 구분]: 대학 입학 결과에는 신입생 뿐만 아니라 '편입생'도 존재합니다. 사용자가 특정 전형만 지정하지 않고 '최종 모집 결과' 등 종합 검토를 요청하는 경우, `[신입편입구분]` 조건에 '신입'만 걸어 조회하지 말고, '신입'과 '편입' 데이터를 구분하여 각각 조회하거나 한꺼번에 수집하도록 T-SQL을 구성하세요.
-        4. [정원내 및 정원외 전형 구분 규칙]: 
-           - 대학 학칙상 명시된 '입학정원'은 오직 **정원내 전형**에만 적용됩니다.
-           - 전문대졸이상자, 기회균형 등 **'정원외 전형'**은 관계법령 및 학칙에 따라 입학정원 제한을 받지 않고 초과등록이 법적으로 허용됩니다.
-           - 따라서 DB 최종등록자 수와 학칙상 입학정원을 비교·대조할 때는 반드시 `[정원내외명] = '정원내'`(혹은 `LIKE '%정원내%'`) 조건의 등록자 수만 직접 대조해야 합니다.
-           - 정원외 등록자는 입학정원 대비 초과/미달 판단에서 제외하고 별도의 단독 수치(예: '정원외 등록자 O명')로만 나타내어야 하므로, 이를 분석할 수 있도록 T-SQL 작성 시 `[정원내외명]`을 GROUP BY 하거나 SELECT 절에서 조건별 분리 집계(CASE WHEN 등) 및 조건절로 구분하여 조회하게 만드십시오.
-        5. [동적 엑셀 데이터 테이블 연산 규칙]: 동적으로 업로드된 엑셀 데이터 테이블(`EXCEL_...` 등)을 조회할 때, `SUM`, `AVG` 등 수학적 연산을 수행해야 한다면 쿼리 실행 전 반드시 `CAST([컬럼명] AS FLOAT)` 또는 `CAST([컬럼명] AS INT)`를 사용하여 숫자형으로 형변환을 적용하십시오. (예: `SUM(CAST([입학정원] AS INT))`)
+        [기본 쿼리 규칙]
+        (학년도 정의, 신입/편입 조회 범위, 정원내/외 구분 등 업무 규칙은 위 [관리자 등록 최상위 사전지식]을 따르십시오.)
+        1. [동적 엑셀 데이터 테이블 연산 규칙]:동적으로 업로드된 엑셀 데이터 테이블(`EXCEL_...` 등)을 조회할 때, `SUM`, `AVG` 등 수학적 연산을 수행해야 한다면 쿼리 실행 전 반드시 `CAST([컬럼명] AS FLOAT)` 또는 `CAST([컬럼명] AS INT)`를 사용하여 숫자형으로 형변환을 적용하십시오. (예: `SUM(CAST([입학정원] AS INT))`)
         
         [가장 중요한 SQL 작성 규칙]
+        0. **[목록에 있는 테이블만]** FROM·JOIN 에는 아래 [현재 AI가 접근 가능한 MS-SQL 테이블 구조]에 나온 테이블 이름만 쓰십시오. 목록에 없는 테이블 이름을 지어내거나, 비정형 문서(PDF 등)의 제목을 테이블처럼 쓰지 마십시오. 필요한 정보가 문서에만 있으면 `sql_query`는 "NONE"으로 두고 그 문서의 제목을 `rag_search_query`에 넣으십시오. (목록에 없는 테이블을 쓴 쿼리는 시스템이 실행하지 않습니다.) 조회할 데이터가 목록의 테이블에 없거나 조회가 필요 없으면, 형식상의 쿼리(예: `WHERE 1=0`)를 쓰지 말고 `sql_query`를 "NONE"으로 두십시오.
         1. 컬럼명이 한글일 수 있으므로 대괄호 []를 반드시 사용해.
         2. **[띄어쓰기 절대 금지]** 대괄호 `[]` 내부의 테이블명과 컬럼명에는 절대로 공백이나 띄어쓰기를 임의로 넣지 마세요. 카탈로그에 표시된 문자열 철자를 공백 없이 100% 동일하게 따라야 합니다. (예: `[입시학 년도]`가 아닌 `[입시학년도]`, `[전형 명]`이 아닌 `[전형명]`)
         3. **[ai_description 준수]** 컬럼 설명(`ai_description`)에 가능한 코드값이나 텍스트 형태(예: '합격자(최종아님),최종등록자(최종합격자)')가 콤마로 나열되어 있다면, 이를 실제 DB에 저장된 데이터 명칭으로 인지하십시오. 문자열 비교 조건절(WHERE)을 작성할 때 텍스트를 자의적으로 단축하거나 가공(예: 괄호 제거 등)하지 말고 카탈로그에 명시된 문자열 그대로(예: `[최종입시결과] = '최종등록자(최종합격자)'`, `[정원내외명] = '정원외'`) 매칭하여 쿼리를 작성하십시오.
         4. 문자열 조건은 무조건 `=` 대신 `LIKE`를 사용하되, 사용자의 단어에서 핵심 형태소만 짧게 잘라서 검색해! (단, 3번 규칙에 따라 콤마로 나열된 고유값이 확실하고 정밀 비교가 필요한 경우는 `=`로 완전히 일치시키세요. **또한 LIKE '%...%' 구문 안에 절대로 띄어쓰기나 공백을 자의적으로 넣지 마세요.** 예: '%경 남%' 불가, '%경남%' 정상)
         5. 통계나 숫자를 물어보면 무조건 `COUNT()`, `SUM()` 같은 집계 함수를 사용해!
         6. 목록을 물어볼 때는 데이터 폭발 방지를 위해 기본적으로 `SELECT TOP 300 * FROM ...` 처럼 300건 제한을 걸되, 사용자가 명시적으로 '전체 데이터', '전체 다운로드', '제한 없이' 등을 요구한 경우에 한해 최대 `SELECT TOP 10000 * FROM ...` 처럼 1만건까지 허용해!
-        7. **[학년도 강제]** 질문에 특정 연도/학년도가 포함되어 있다면 반드시 `WHERE [입시학년도] = '2026'` 과 같이 학년도 조건을 추가해!
+        7. **[학년도 강제]** 질문에 특정 연도/학년도가 포함되어 있다면 반드시 학년도 조건을 WHERE 에 추가해! 학년도 열 이름은 테이블마다 다를 수 있으니, 조회하는 테이블의 스키마에 적힌 학년도 열 이름을 글자 그대로 써. (예: `WHERE [학년도열] = '2026'`)
         8. **[스크랩/첨부 문서 데이터 구조 분석 및 범용 쿼리 매핑 규칙]**:
            - 사용자가 제시한 `[질문]`과 하단의 스크랩/첨부 문서를 종합적으로 분석하여 사용자의 명확한 의도를 파악하십시오.
            - 사용자의 질의가 특정 데이터의 대조, 검증, 비교를 명시적으로 요구하거나 문서 내용상 데이터 교차 검토가 필요한 경우에 한하여, 원본 문서에 기재된 실제 데이터 구조(표 레이아웃, 그룹핑 기준 등)와 1:1 교차 검토가 가능하도록 T-SQL 쿼리를 영리하게 빌드하십시오.
            - 만약 사용자의 질의나 스크랩 문서가 특정 데이터 대조를 요하지 않는 일반 서류이거나, 대조할 대상 데이터가 문서 내에 명시적으로 존재하지 않는다면, 불필요한 쿼리를 작성하지 말고 `sql_query`를 무조건 "NONE"으로 설정하십시오.
-        9. **[구매/예산/계약 문서 감지 및 RAG 쿼리 확장 규칙]**:
-           - 사용자의 [질문]이나 스크랩된 문서 내용(제목 등)에 '원인기안', '제작 계획', '구입', '품의', '지출', '계약' 등의 실무 행정/예산 집행 키워드가 감지될 경우, 명시적으로 '구매'나 '예산'이라는 단어가 없더라도 이는 100% 구매 및 예산 관련 기안문으로 간주해야 합니다.
-           - 이 경우 AI는 행정 결재선뿐만 아니라 금액 및 예산 한도의 적정성을 필수적으로 검토해야 하므로, **반드시 `rag_search_query`에 '구매 규정, 예산ㆍ회계 규정, 본예산' 등 사내 예산/구매 관련 핵심 규정 문서 명칭을 강제로 추가**하여 RAG 검색 풀에 포함시키십시오.
-        10. **[지역명 약어 자동 변환 규칙]**: 사용자가 질문에 '부울경'이라고 입력하면 반드시 `[출신고교시도] LIKE '%부산%' OR [출신고교시도] LIKE '%울산%' OR [출신고교시도] LIKE '%경상남도%'` 형태로 3개의 조건을 OR로 묶어서 풀어 검색하십시오. '경남', '전북', '충남' 등의 다른 지역 약어가 사용된 경우에도 DB에는 '경상남도', '전라북도', '충청남도' 등으로 정식 명칭이 저장되어 있으므로, 반드시 정식 명칭으로 변환하여 `LIKE '%경상남도%'` 형태로 검색하십시오.
-        11. **[숫자형 컬럼 비교 절대 규칙]**: 학점, 평점, 점수, 인원수, 금액 등 숫자형(Numeric/Float/Int) 데이터를 담고 있는 컬럼의 값이 존재하는지 검사할 때는 절대 빈 문자열(`''`)과 비교하지 마십시오. (예: `[대졸평균평점] <> ''` 불가) 반드시 `IS NOT NULL AND [컬럼명] > 0` 형태로만 작성하십시오.
-        12. **[학생부 성적 산출 및 출신고교구분 감지 RAG 확장 규칙]**: 사용자의 [질문]이나 첨부 문서에 '학생부', '성적 산출', '환산점수', '석차등급', 또는 출신고교 유형('일반고', '특성화고', '검정고시', '특목고', '공고2+1', '일반고위탁', '외국고' 등)이 감지될 경우, 반드시 `need_rag`를 `true`로 설정하고 `rag_search_query`에 '모집요강 학생부 성적 반영방법, 출신고교구분 성적반영비율, 학생부 등급비율 및 환산점수표, 검정고시 성적 환산점수표'를 핵심 검색어로 포함시키십시오.
+        9. **[검토 대상 문서의 쟁점별 규정 포함]**:
+           - 스크랩/첨부 문서(기안문·공문 등)를 검토하는 경우, 그 문서가 무엇을 하려는 문서인지와 검토할 쟁점(예: 돈을 쓰는지, 누가 결재하는지, 기간·대상 요건이 있는지)을 먼저 파악하십시오.
+           - 질문이나 문서에 규정 이름이 직접 나오지 않더라도, 파악한 쟁점을 다루는 규정을 위 비정형 문서 목록에서 찾아 `rag_search_query`에 공식 문서명 그대로 빠짐없이 넣으십시오.
+        10. **[숫자형 컬럼 비교 절대 규칙]**: 학점, 평점, 점수, 인원수, 금액 등 숫자형(Numeric/Float/Int) 데이터를 담고 있는 컬럼의 값이 존재하는지 검사할 때는 절대 빈 문자열(`''`)과 비교하지 마십시오. (예: `[대졸평균평점] <> ''` 불가) 반드시 `IS NOT NULL AND [컬럼명] > 0` 형태로만 작성하십시오.
+        11. **[계산·판단 근거 문서 포함]**: 질문에 답하려면 계산이나 기준표 적용이 필요하면(예: 점수를 다른 기준으로 바꾸기), 그 계산 방법·기준표가 실린 문서도 위 비정형 문서 목록에서 찾아 `rag_search_query`에 함께 넣으십시오. 질문이 "가능할까?", "어느 정도야?"처럼 어떤 값을 기준과 견주어 판단해 달라는 것이면, 견줄 기준이 되는 자료(이전 결과·기준 수치 등)가 실린 문서도 함께 넣으십시오.
+        12. **[데이터 추가·수정 쿼리 초안 요청]**: 사용자가 어떤 테이블에 행을 넣거나 고치는 SQL(INSERT·UPDATE 등)을 써 달라고 하면, 그 쿼리를 직접 만들지 말고 `sql_query`에는 참고용 SELECT 를 만드십시오. 목적은 두 가지입니다. (가) 넣을 행의 나머지 열에 들어갈 실제 값 표기를 기존 행에서 그대로 따르기, (나) 같은 행이 이미 있는지 확인하기. 그래서 조건은 같은 학년도에서 넣을 행의 이름 값(예: 전형명)이 같은 행으로 잡고, 시기·차수 같은 구분 열(예: 모집구분)로는 거르지 마십시오. 그러면 다른 시기의 같은 이름 행에서 표기를 따르고, 같은 시기 행이 있으면 중복도 보입니다. 결과가 수십 건을 넘지 않게 하십시오. 이런 쿼리 초안 요청은 DB 값만으로 쓸 수 있으므로, 사용자가 문서 내용을 근거로 요구하지 않았다면 `need_rag`는 false, `rag_search_query`는 비워 두고 비정형 문서를 넣지 마십시오.
 
 
         {dynamic_schema}
@@ -1275,26 +2075,87 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         {{
             "sql_query": "정형 데이터 조회가 필요하면 T-SQL SELECT 문을, 필요 없으면 'NONE'을 입력",
             "need_rag": true 혹은 false (비정형 문서 목록에서 찾아봐야 할 정보가 있다면 true),
-            "rag_search_query": "need_rag가 true일 경우, 문서를 검색할 핵심 키워드. 만약 검토해야 할 연관된 여러 개의 규정/문서가 있을 경우, 각 키워드나 문서명을 쉼표(,)로 연결하여 모두 나열하십시오. (예: '구매 규정, 법인카드 사용 규정, 예산 회계 규정, 위임전결 규정')",
+            "rag_search_query": "need_rag가 true일 경우, 참고할 문서를 [현재 데이터베이스 및 문서 카탈로그 현황]의 비정형 문서 목록에서 골라 **공식 문서명(제목)을 글자 그대로** 쉼표(,)로 연결하여 나열하십시오. 시스템은 이 문서명과 카탈로그 문서명을 대조해서만 문서를 찾으므로, 카탈로그에 없는 설명형 문구(예: 'OO 지급 기준', 'OO 수신처 규칙')는 절대 쓰지 마십시오. 질문의 근거가 될 수 있는 규정은 빠짐없이, 관련 없는 문서는 넣지 마십시오. (예: '구매 규정, 법인카드 사용 규정, 예산ㆍ회계 규정, 위임전결 규정')",
             "rag_year_filter": "특정 학년도의 문서만 찾아야 할 경우 해당 4자리 숫자 입력. 단, 학칙 등 상시 적용되는 문서를 찾아야 하거나 연도를 모르면 'ALL' 입력",
             "target_documents": "질문자가 특정 문서를 명시적으로 지정하여 검토를 요구한 경우(예: '2027학년도 모집요강만 보고 말해줘'), [현재 데이터베이스 및 문서 카탈로그 현황]을 참고하여 일치하는 공식 파일명들을 리스트 형태로 추출하십시오. (예: ['2027학년도 모집요강.pdf', '예산ㆍ회계 규정.pdf']). 지정이 없으면 빈 배열 []을 반환하십시오.",
             "knowledge_action": {{
                 "action": "INSERT" 또는 "DELETE" 또는 "NONE",
-                "category": "인사/조직" 또는 "결재라인" 또는 "예외규정" 또는 "기타",
+                "category": "인사/조직" 또는 "결재라인" 또는 "예외규정" 또는 "02_도메인룰" 또는 "03_엑셀매핑" 또는 "04_성적산출" 또는 "기타",
                 "content": "등록 시에는 저장할 사전지식 요약 팩트 문장, 삭제 시에는 삭제를 식별할 수 있는 키워드나 요약 내용 (해당사항 없으면 빈 문자열)"
             }}
         }}
         """
+            if is_query_request:
+                # [쿼리 요청] 사용자가 SSMS 에서 직접 쓸 SQL 을 원함 → 요청한 모양 그대로, 실행 가능한 완성 쿼리로
+                sql_router_prompt += """
+        [🧾 쿼리 요청 전용 규칙 (사용자가 SQL 문 자체를 요청함)]
+        - 사용자가 요청한 표 모양(예: 행은 학과, 열은 전형별 모집인원·지원인원·지원율)이 그대로 나오도록 sql_query 를 완성하십시오. 열로 펼쳐야 하면 SUM(CASE WHEN ...) 으로 펼치고, 비율은 NULLIF 로 0 나누기를 막아 계산하십시오.
+        - 지표가 서로 다른 테이블에 있으면(예: 모집인원 테이블 + 입시마스타) 하위 쿼리나 CTE 로 각각 집계한 뒤 구분 열로 LEFT JOIN 해 하나의 결과로 만드십시오. (모집구분 표기가 다를 수 있음: 사전지식 참고)
+        - 숫자 아닌 값이 섞인 열(예: 모집인원 '제한없음')은 ISNUMERIC 으로 숫자만 합산하고, 그렇게 처리했다는 사실이 쿼리 주석(-- ...)으로 드러나게 하십시오.
+        - 질문에 나온 조건(학년도, 모집구분, 신입/편입 등)은 모두 WHERE 에 넣고, TOP 으로 결과를 자르지 마십시오. ORDER BY 는 사용해도 됩니다.
+        - '모든 전형', '모든 학과'처럼 전부를 요청하면, 열로 펼칠 값은 스키마의 '└ [열] 실제 값 (학년도: …)' 목록에서 질문한 학년도의 값을 하나도 빠뜨리지 말고 모두 열로 만드십시오. (실제 값 목록이 열 설명의 값 목록보다 우선 — 해마다 바뀌는 값을 반영함. 테이블마다 표기가 다를 수 있으니 각 테이블의 실제 값을 그대로 쓰고, 두 테이블을 합칠 때 표기가 다르면 REPLACE(열, ' ', '') 처럼 공백을 없애 비교) 값은 LIKE 대신 = 로 정확히 비교하십시오.
+        - need_rag 는 쿼리 작성에 문서가 꼭 필요할 때만 true 로 하십시오.
+"""
+            # [지표 사전] 쿼리 요청이고 지표가 모두 사전에 있으면 AI 는 설계도만 내고, 표 모양 SQL 은 시스템이 정의대로 조립
+            query_catalog = metric_query.load_catalog(conn) if (is_query_request and conn) else {"metrics": [], "dims": []}
+            router_schema = ROUTER_SCHEMA
+            if query_catalog["metrics"]:
+                sql_router_prompt += f"""
+        {metric_query.catalog_prompt_text(query_catalog)}
+        [🧮 지표 설계도 (metric_plan) 규칙]
+        - 요청한 숫자가 모두 위 [지표 사전]의 지표(와 그 지표끼리의 비율)이면 "metric_plan" 의 use 를 true 로 하고, 지표명·구분명은 위 목록의 이름을 글자 그대로 쓰십시오. 이때 SQL 은 시스템이 지표 정의대로 조립하므로 "sql_query" 는 "NONE" 으로 두십시오.
+          · metrics: 필요한 지표 (합격·등록 인원의 정의는 질문·사전지식을 따르고, 지정이 없으면 설명에 '이라고만 하면 이 지표'라고 적힌 지표)
+          · rows: 표의 행이 되는 구분 (예: 학과). 행 없이 전체 합계 한 줄이면 빈 배열
+          · column_dimension: 열로 펼칠 구분 (예: '전형별로 열을 나눠' → 전형). 펼치지 않으면 빈 문자열
+          · column_values: 열로 펼칠 값을 사용자가 지정했을 때만 적음. '모든 전형'이거나 지정이 없으면 빈 배열 (시스템이 실제 값을 모두 넣음)
+          · ratios: 비율 지표 (예: 지원율 = 지원인원 ÷ 모집인원). scale 은 백분율이면 100, '몇 대 1' 같은 배수(경쟁률)면 1
+          · filters: 질문에 나온 조건 (학년도·모집구분 등). 값은 질문에 쓴 말 그대로 적어도 됨 (시스템이 실제 값으로 맞춤)
+        - 사전에 없는 숫자나 구분이 하나라도 필요하거나, 목록(행 단위 조회)을 요청한 경우에는 use 를 false 로 하고 지금까지처럼 sql_query 를 직접 작성하십시오.
+        - 출력 JSON 에 "metric_plan": {{"use": true/false, "metrics": [...], "rows": [...], "column_dimension": "", "column_values": [], "ratios": [{{"name": "", "numerator": "", "denominator": "", "scale": 100}}], "filters": [{{"dimension": "", "values": []}}]}} 를 반드시 넣으십시오.
+"""
+                router_schema = json.loads(json.dumps(ROUTER_SCHEMA))
+                router_schema["properties"]["metric_plan"] = {
+                    "type": "object",
+                    "properties": {
+                        "use": {"type": "boolean"},
+                        "metrics": {"type": "array", "items": {"type": "string"}},
+                        "rows": {"type": "array", "items": {"type": "string"}},
+                        "column_dimension": {"type": "string"},
+                        "column_values": {"type": "array", "items": {"type": "string"}},
+                        "ratios": {"type": "array", "items": {
+                            "type": "object",
+                            "properties": {"name": {"type": "string"}, "numerator": {"type": "string"},
+                                           "denominator": {"type": "string"}, "scale": {"type": "number"}},
+                            "required": ["name", "numerator", "denominator", "scale"], "additionalProperties": False}},
+                        "filters": {"type": "array", "items": {
+                            "type": "object",
+                            "properties": {"dimension": {"type": "string"}, "values": {"type": "array", "items": {"type": "string"}}},
+                            "required": ["dimension", "values"], "additionalProperties": False}},
+                    },
+                    "required": ["use", "metrics", "rows", "column_dimension", "column_values", "ratios", "filters"],
+                    "additionalProperties": False,
+                }
+                router_schema["required"].append("metric_plan")
+            if faq_by_router:
+                # [입학처 Q&A] 분량이 많으면 주제 목록만 보여 주고 라우터가 필요한 주제를 고름
+                sql_router_prompt += f"""
+        [입학처 Q&A 주제 목록] (입학처가 등록한 질문별 공식 답변의 주제. 괄호는 적용 학년도)
+{faq_topic_list_text(faq_rows_all)}
+        - 질문에 답하는 데 필요한 주제를 위 목록에서 골라 "faq_topics" 에 주제 이름을 글자 그대로 넣으십시오. 관련 주제가 없으면 빈 배열로 두십시오.
+"""
+                router_schema = json.loads(json.dumps(router_schema))
+                router_schema["properties"]["faq_topics"] = {"type": "array", "items": {"type": "string"}}
+                router_schema["required"].append("faq_topics")
+            router_effort = app_config.get("QUERY_ROUTER_EFFORT") if is_query_request else "low"
+            router_thinking_off = False if is_query_request else llm_client.ROUTER_THINKING_OFF
             router_model_to_use = request.router_model_name or request.model_name
-            sql_model = genai.GenerativeModel(router_model_to_use)
-                
-            no_retry = retry.Retry(initial=0, maximum=0, multiplier=0, deadline=0)
-            print(f"\n[Step 2] 🧠 라우터 AI 분석 중... (사용 모델: {router_model_to_use})")
+            print(f"\n[Step 2] 🧠 라우터 AI 분석 중... (사용 모델: {router_model_to_use}{', 쿼리 요청 모드 effort=' + router_effort if is_query_request else ''})")
             max_retries = 3
             sql_response = None
             for attempt in range(max_retries):
                 try:
-                    sql_response = sql_model.generate_content(sql_router_prompt, request_options={"retry": no_retry})
+                    sql_response = llm_client.generate(router_model_to_use, router_api_key, sql_router_prompt, json_schema=router_schema,
+                                                       effort=router_effort, timeout=300 if is_query_request else 120, thinking_off=router_thinking_off)
                     break
                 except Exception as e:
                     err_msg = str(e)
@@ -1310,8 +2171,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 # [NEW] 라우터 토큰 측정
                 try:
                     used_router_model = router_model_to_use
-                    router_in_tokens = sql_model.count_tokens(sql_router_prompt).total_tokens
-                    router_out_tokens = sql_model.count_tokens(sql_response.text).total_tokens
+                    router_in_tokens = sql_response.in_tokens
+                    router_out_tokens = sql_response.out_tokens
                 except Exception as rt_err:
                     print(f"라우터 토큰 계산 오류: {rt_err}")
                     
@@ -1320,13 +2181,40 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     response_text = response_text.replace("```json", "").replace("```", "").strip()
                 elif response_text.startswith("```"):
                     response_text = response_text.replace("```", "").strip()
-                    
+                # 추론을 끈 모델이 JSON 앞뒤에 설명 문장을 붙이는 경우 대비: 첫 '{' ~ 마지막 '}' 구간만 추출
+                if not response_text.startswith("{") and "{" in response_text and "}" in response_text:
+                    response_text = response_text[response_text.index("{"):response_text.rindex("}") + 1]
+
                 parsed_json = json.loads(response_text)
                 sql_query = parsed_json.get("sql_query", "NONE")
                 need_rag = parsed_json.get("need_rag", False)
                 rag_query = parsed_json.get("rag_search_query", request.question)
                 rag_year_filter = parsed_json.get("rag_year_filter", "ALL")
                 target_documents = parsed_json.get("target_documents", [])
+                if faq_by_router:
+                    faq_topics = parsed_json.get("faq_topics") or []
+
+                # [지표 사전] 설계도가 있으면 표 모양 SQL 을 지표 정의대로 조립 (사전에 없는 지표 등 오류면 AI 가 쓴 SQL 사용)
+                plan = parsed_json.get("metric_plan") or {}
+                if query_catalog["metrics"] and (plan.get("use") or plan.get("metrics")):
+                    print(f" ├─ [지표 설계도] {json.dumps(plan, ensure_ascii=False)}")
+                    # 정의가 둘 이상인 지표(합격·등록인원): 질문 지정 > [통계 기본 기준] > 지표 사전 기본 정의, 비율의 분자·분모도 같은 정의로
+                    import excel_grid
+                    defaults = metric_query.read_default_criteria(conn, (excel_grid.DEFAULT_CRITERIA_TITLE,) + excel_grid.OLD_CRITERIA_TITLES)
+                    plan, def_notes = metric_query.apply_default_definitions(plan, query_catalog, request.question, defaults)
+                    if def_notes:
+                        print(f" ├─ [지표 설계도] 정의 기준: {def_notes}")
+                    built_sql, plan_notes, plan_errors = metric_query.build_query_sql(plan, query_catalog, get_value_dictionary(conn), conn)
+                    if built_sql:
+                        sql_query = built_sql
+                        ratio_cols = [r["name"] for r in plan.get("ratios") or [] if metric_query._scale(r) == 100]
+                        metric_notes = [f"지표 사전 설계도로 조립: 지표 {plan.get('metrics')} / 행 {plan.get('rows')} / 열 {plan.get('column_dimension') or '-'} / 조건 "
+                                        + ", ".join(f"{f.get('dimension')}={f.get('values')}" for f in plan.get("filters") or [])]
+                        metric_notes += [f"계산 기준: {n}" for n in def_notes] + plan_notes
+                        print(f" ├─ [지표 설계도] SQL 조립 완료 {plan_notes}")
+                    else:
+                        print(f" ├─ [지표 설계도] 사용 불가 → AI 작성 SQL 사용: {plan_errors}")
+
                 
                 # [실시간 지식 보완 액션 추출]
                 k_action_data = parsed_json.get("knowledge_action", {})
@@ -1342,21 +2230,30 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     ai_years.extend([str(y).strip() for y in rag_year_filter if str(y).strip() not in ["ALL", ""]])
 
                 all_text = (request.question or "") + " " + (request.scraped_context or "") + " " + (rag_query or "")
-                # 단순히 202x 형태가 아닌 '202x년', '202x학년도' 와 같이 명확한 연도 지칭 및 '202x-MM-DD' 형태의 기안/결재일자 연도 감지 (Copyright 등 풋터 오염 방지)
-                detected_years = re.findall(r"\b(202\d)(?:\s*(?:학년도|년도|년)|[-./]\s*\d{1,2}\b)", all_text)
-                
-                combined_base_years = set(ai_years + detected_years)
 
-                # [NEW] 입시 도메인 특화 연도 자동 확장(+1): N년도 이벤트는 N+1학년도 규정을 적용받으므로 감지/지정된 연도의 +1 연도도 필터에 허용
-                expanded_years = set()
-                for dy in combined_base_years:
-                    if not dy or not dy.strip():
-                        continue
-                    expanded_years.add(dy)
-                    # [이중 확장 방지] 바로 앞 연도(Y-1)가 이미 감지되었다면, 현재 연도(Y)는 이미 앞 연도의 N+1 결과물이므로 추가 확장을 스킵합니다.
-                    if str(int(dy) - 1) not in combined_base_years:
-                        expanded_years.add(str(int(dy) + 1))
-                
+                # [연도 처리 - 운영학년도 ↔ 입시학년도 쌍]
+                # 학년도는 3/1 ~ 다음 해 2월 말. 운영학년도 A 동안 A+1학년도 입시를 진행하므로 (예: 2026학년도 예산으로 2027학년도 입시 운영)
+                # 1) 문서의 날짜(기안일/시행일 등)로 운영학년도 A 를 구해 {A, A+1} 을 검색 연도로 사용합니다.
+                # 2) 본문에 'Y학년도'처럼 직접 적힌 연도는 그대로만 추가합니다. (무조건 +1 확장 시 2028 등 무관 문서 유입 방지)
+                # 3) 날짜가 하나도 없으면 기준 입시학년도 Y 로 {Y-1, Y} 를 사용합니다. (대시보드에서 정한 업무 기준)
+                explicit_years = re.findall(r"(?<!\d)(202\d)\s*(?:학년도|년도)", all_text)
+                date_pairs = re.findall(r"(?<!\d)(202\d)\s*[-./]\s*(\d{1,2})(?!\d)", all_text)
+                date_pairs += re.findall(r"(?<!\d)(202\d)\s*년\s*(\d{1,2})\s*월", all_text)
+                if not date_pairs:
+                    date_pairs = [(str(int(current_admission_year()) - 1), "3")]  # 운영학년도 = 기준 입시학년도 - 1
+
+                # 본문에 여러 날짜(활동일, 인용 규정 시행일 등)가 섞여 있으므로 가장 최근 날짜(보통 기안/시행일)의 운영학년도만 사용
+                operating_candidates = [int(y) if int(m) >= 3 else int(y) - 1 for y, m in date_pairs if 1 <= int(m) <= 12]
+                operating_years = {max(operating_candidates)} if operating_candidates else set()
+
+                expanded_years = set(ai_years) | set(explicit_years)
+                for a in operating_years:
+                    expanded_years.update({str(a), str(a + 1)})
+                expanded_years = {y for y in expanded_years if y and y.strip()}
+                # [입학처 Q&A] 질문·라우터가 가리킨 학년도 (없으면 진행 중인 입시학년도). 문서 검색용 확장 연도와는 별도
+                faq_years = faq_years_for(request.question, ai_years)
+                print(f" ├─ [연도] 운영학년도 {sorted(operating_years)} → 검색 연도 {sorted(expanded_years)} (본문 명시: {sorted(set(explicit_years))})")
+
                 if expanded_years:
                     rag_year_filter = sorted(list(expanded_years))
                 else:
@@ -1365,7 +2262,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 print(f"JSON 파싱 오류: {json_err} / 원본: {sql_response.text}")
                 sql_query = "NONE"
                 need_rag = True
-                rag_query = request.question
+                rag_query = fallback_rag_query(request.question)
                 rag_year_filter = "ALL"
                 target_documents = []
                 k_action = "NONE"
@@ -1385,7 +2282,29 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         # =======================================================
         k_feedback_msg = ""
         supplemental_context = ""
-        
+
+        # [입학처 Q&A] 공통 + 해당 학년도 Q&A 선택 (분량이 많으면 라우터가 고른 주제만)
+        if faq_years is None:
+            faq_years = faq_years_for(request.question)
+        faq_selected = select_faq(faq_rows_all, faq_years)
+        if faq_by_router:
+            faq_selected = (select_faq(faq_rows_all, faq_years, faq_topics) if faq_topics is not None
+                            else faq_pick_by_words(faq_selected, request.question))
+        # 교직원의 문서 검토(스크랩·첨부가 있는 요청)에는 학생 Q&A 가 관계없으므로 넣지 않음
+        if request.user_role != "student" and (request.scraped_context or "").strip():
+            faq_selected = []
+        # 교직원 일반 질문: Q&A 전체를 넣지 않고, 주제가 질문과 겹치는 것만 (예: 수험생 문의에 답할 때)
+        elif request.user_role != "student" and not faq_by_router:
+            faq_selected = faq_pick_by_words(faq_selected, request.question)
+        faq_context = faq_context_text(faq_selected)
+        if faq_rows_all:
+            print(f"[입학처 Q&A] 학년도 {faq_years} · {'라우터 선택' if faq_by_router else '전체'} → {len(faq_selected)}건 "
+                  f"(약 {faq_size(faq_selected):,} 토큰): {[r[1] for r in faq_selected][:10]}")
+
+        # [보안] 사전지식 등록/삭제는 교직원만 가능 (학생 챗봇 대화로 사전지식이 바뀌지 않도록 차단)
+        if request.user_role == "student":
+            k_action = "NONE"
+
         if conn:
             try:
                 cursor = conn.cursor()
@@ -1428,26 +2347,82 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 
                 conn.commit()
                 
-                # B. 현재 활성화된 모든 사전지식 수집
-                cursor.execute(
-                    "SELECT category, content, CONVERT(VARCHAR(10), created_at, 120) FROM Sys_SupplementalKnowledge WHERE is_active = 'Y' ORDER BY category ASC, id ASC"
-                )
-                rows = cursor.fetchall()
-                if rows:
-                    for r in rows:
-                        cat, cnt, r_date = r
-                        supplemental_context += f"- [{cat}] {cnt} (등록일: {r_date})\n"
-                else:
-                    supplemental_context = "등록된 실시간 보완 지식 없음"
+                # B. 현재 활성화된 사전지식 수집 (사용자 역할별 대상 필터 적용)
+                supplemental_context = load_supplemental_knowledge(cursor, request.user_role, with_date=True) or "등록된 실시간 보완 지식 없음"
                     
             except Exception as k_db_err:
                 print(f"보완 지식 트랜잭션 에러: {k_db_err}")
                 supplemental_context = "보완 지식 데이터 로딩 오류"
         
+        # =======================================================
+        # [사용자 명시 지시 우선 적용 - 교직원] 질문에 검색 대상을 직접 지정하면 라우터 AI 판단보다 우선합니다.
+        # - 'OOO 문서에서/만/기준' → 그 문서만 사용, SQL 생략
+        # - '정형DB에서', '입시마스타에서' 등 → DB만 조회, 문서 검색 생략
+        # - 문서명만 언급(한정 표현 없음) → 그 문서를 반드시 포함 (다른 판단은 라우터 유지)
+        # =======================================================
+        explicit_docs, explicit_doc_only = [], False
+        db_only_reason = ""
+        if request.user_role != "student":
+            explicit_docs, explicit_doc_only = find_explicit_docs(request.question)
+            db_only_reason = detect_db_only_intent(request.question, conn)
+            if explicit_docs:
+                need_rag = True
+                if explicit_doc_only and not db_only_reason:
+                    sql_query = "NONE"
+                print(f"\n[사용자 지정] 문서: {[d['meta'].get('filename') for d in explicit_docs]}{' (이 문서만 사용, SQL 생략)' if explicit_doc_only and not db_only_reason else ''}")
+            if db_only_reason and not explicit_docs:
+                need_rag = False
+                print(f"\n[사용자 지정] '{db_only_reason}' 한정 → 정형 DB만 조회 (문서 검색 생략)")
+
+        # [형식상 쿼리 제거] 라우터가 'WHERE 1=0' 처럼 결과가 없을 게 뻔한 쿼리를 칸 채우기용으로 쓴 경우 → 실행하지 않음
+        if sql_query and re.search(r"\bWHERE\s+(?:\(\s*)?(?:1\s*=\s*0|0\s*=\s*1|1\s*<>\s*1|1\s*!=\s*1)\s*(?:\)\s*)?(?:$|ORDER\b|;)",
+                                   sql_query.strip(), re.I):
+            print(f"\n[형식상 쿼리] 항상 거짓인 조건(WHERE 1=0 등)의 쿼리 → 실행하지 않음: {sql_query[:80]}")
+            sql_query = "NONE"
+
+        # =======================================================
+        # [이름 보정] SQL 조건 값(전형명·학과명 등)을 실제 DB 값과 대조 → 후보 1개면 자동 교체, 여러 개면 사용자에게 물음
+        # =======================================================
+        value_notes = []
+        if sql_query and sql_query.upper().strip() != "NONE" and conn:
+            from value_resolver import resolve_sql_values
+            value_dict = get_value_dictionary(conn)
+            sql_query, value_notes, value_ask = resolve_sql_values(sql_query, value_dict, request.value_choices)
+            if value_ask and request.user_role == "student":
+                # 학생에게는 묻지 않고 가장 가까운 후보로 진행
+                sql_query, more_notes, _ = resolve_sql_values(sql_query, value_dict, {a["given"]: a["candidates"][0] for a in value_ask})
+                value_notes += more_notes
+            elif value_ask:
+                lines = ["🔎 **질문의 조건 값이 실제 DB 의 여러 값과 비슷합니다. 어느 값으로 조회할지 골라 주세요.**"]
+                for a in value_ask:
+                    lines.append(f"- {a['column']} '{a['given']}' → {', '.join(a['candidates'])}")
+                pending_id = uuid.uuid4().hex
+                interim_log_id = insert_interim_audit_log(
+                    conn, user_role=request.user_role, question=("[테스트] " if is_test_request else "") + f"[조건 값 확인 대기] {request.question}",
+                    scraped_context=request.scraped_context, sql_query=sql_query, rag_query=rag_query,
+                    answer="\n".join(lines), latency_ms=int((time.time() - start_time) * 1000),
+                    model_name=request.model_name, router_model_name=used_router_model,
+                    router_in=router_in_tokens, router_out=router_out_tokens,
+                    router_latency_ms=int((time.time() - start_time) * 1000),
+                    router_mode=llm_client.mode_label(used_router_model, router_effort, router_thinking_off),
+                    chat_mode="확인 대기 (최종 AI 미호출)")
+                PENDING_ROUTER[pending_id] = {
+                    "created_at": time.time(), "sql_query": sql_query, "need_rag": need_rag, "rag_query": rag_query,
+                    "rag_year_filter": rag_year_filter, "target_documents": target_documents,
+                    "used_router_model": used_router_model, "router_in_tokens": router_in_tokens,
+                    "router_out_tokens": router_out_tokens, "log_id": interim_log_id, "metric_notes": metric_notes,
+                    "faq_topics": faq_topics, "faq_years": faq_years,
+                }
+                print(f"\n[이름 보정] ✋ 후보가 여러 개인 조건 값 {len(value_ask)}건 → 사용자 선택 대기 (pending_id={pending_id[:8]}...)")
+                return {"status": "confirm_values", "pending_id": pending_id, "log_id": interim_log_id,
+                        "items": value_ask, "message": "\n".join(lines)}
+            for n in value_notes:
+                print(f"[이름 보정] {n}")
+
         formatted_sql = format_sql_query(sql_query)
         time_router_end = time.time()
         time_db_end = time_router_end
-        
+
         has_sql = sql_query and sql_query.upper().strip() != "NONE"
         print(f"\n[Step 2 결과] 🧠 라우터 판단 완료")
         print(f" ├─ DB 쿼리(SQL): {'필요 (' + sql_query.split()[0] + '...)' if has_sql else 'NONE (정형 데이터 조회 불필요)'}")
@@ -1486,9 +2461,34 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 # [최적화] AI가 추출된 데이터의 출처와 필터링 조건을 확신할 수 있도록 사용된 쿼리 원문을 증거로 덧붙입니다.
                 sql_context += f"[시스템이 데이터를 추출할 때 사용한 조건(쿼리)]:\n{formatted_sql}\n"
                 
-                cursor = conn.cursor()
-                cursor.execute(sql_query)
-                
+                # [DB 권한 분리] 학생은 학생 계정(공개 열만)·공개 테이블만, 교직원은 읽기 계정으로 실행. 한 문장의 조회만 허용
+                query_runner = db_access.QueryRunner(conn, request.user_role)
+                try:
+                    cursor = query_runner.execute(sql_query)
+                except db_access.QueryBlocked:
+                    raise
+                except Exception as first_err:
+                    if not is_query_request:
+                        raise
+                    # [쿼리 요청 · 자가 교정 1회] 오류 메시지 + 실제 열 목록을 주고 AI 가 한 번만 다시 쓰게 함 (엑셀 채우기와 같은 방식)
+                    import asyncio
+                    from excel_autofill import ai_fix_sql
+                    print(f" ├─ MS-SQL: 쿼리 오류 → AI 재작성 1회 시도 ({first_err})")
+                    fixed_sql, fix_in, fix_out = asyncio.run(ai_fix_sql(conn, request.question, "", sql_query, first_err,
+                                                                        used_router_model, router_api_key))
+                    router_in_tokens += fix_in
+                    router_out_tokens += fix_out
+                    if not fixed_sql:
+                        raise
+                    from value_resolver import resolve_sql_values
+                    sql_query, fix_notes, _ = resolve_sql_values(fixed_sql.strip().rstrip(";"), get_value_dictionary(conn), request.value_choices)
+                    value_notes += [n for n in fix_notes if n not in value_notes]
+                    formatted_sql = format_sql_query(sql_query)
+                    sql_context = (f"[시스템이 데이터를 추출할 때 사용한 조건(쿼리)] (처음 쿼리가 오류 '{str(first_err)[:150]}' 로 실패해 자동 수정 후 실행함):\n"
+                                   f"{formatted_sql}\n")
+                    print(f" ├─ MS-SQL: 재작성 쿼리 실행\n{formatted_sql}")
+                    cursor = query_runner.execute(sql_query)
+
                 # [개선] 다중 결과셋(Multiple Result Sets)을 순회하며 모든 결과를 sql_context에 누적
                 result_idx = 1
                 columns_used_set = set()
@@ -1539,8 +2539,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                             try:
                                 count_query = re.sub(r'SELECT\s+TOP\s+\d+\s+(.*?)\s+FROM', 'SELECT COUNT(*) FROM', sql_query, count=1, flags=re.IGNORECASE)
                                 count_query = re.sub(r'ORDER\s+BY\s+.*$', '', count_query, flags=re.IGNORECASE | re.DOTALL)
-                                c_cursor = conn.cursor()
-                                c_cursor.execute(count_query)
+                                c_cursor = query_runner.execute(count_query)
                                 total_sql_count = c_cursor.fetchone()[0]
                                 c_cursor.close()
                             except Exception as count_err:
@@ -1551,6 +2550,38 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     else:
                         total_sql_count = fetched_sql_count
                 
+                # [쿼리 요청 · 실행 결과 요약] 답변 AI 가 행 수를 잘못 세지 않도록 서버가 센 값과,
+                # 모든 행이 비어 있거나 0 인 열(해당 연도에 없는 전형 등)을 알려 줌
+                if is_query_request:
+                    summary_rows = full_data_rows or []
+                    result_cols = list(summary_rows[0].keys()) if summary_rows else []
+                    null_cols = [col for col in result_cols if all(r.get(col) in (None, "") for r in summary_rows)] if summary_rows else []
+                    zero_cols = [col for col in result_cols if col not in null_cols
+                                 and all(r.get(col) in (None, "", 0, 0.0) for r in summary_rows)] if summary_rows else []
+                    sql_context += (f"\n[실행 결과 요약 (서버가 직접 센 값 — 답변의 행 수·열 수는 반드시 이 값을 그대로 쓸 것)]\n"
+                                    f"- 결과 행 수: {len(summary_rows)}행 / 결과 열 수: {len(result_cols)}개\n")
+                    if null_cols:
+                        sql_context += (f"- 모든 행이 NULL(값 없음)인 열: {null_cols} → 해당 조건(연도·모집구분 등)에 모집이나 데이터 자체가 없는 값일 수 있음. "
+                                        f"답변에 이 사실을 적고, 필요 없으면 SSMS 에서 그 열(CASE 블록)을 지우면 된다고 안내할 것\n")
+                    if zero_cols:
+                        sql_context += f"- 모든 행이 0 인 열: {zero_cols} → 데이터는 있으나 값이 0 (예: 모집은 있으나 해당 지원자 0명)\n"
+                    # [비율 100% 초과] 백분율 열이 100 을 넘으면 분자·분모 기준이 서로 다를 가능성 (예: 충원 포함 등록 ÷ 최초합격)
+                    def is_pct_col(col):
+                        if ratio_cols:
+                            return any(col == r or col.endswith("_" + r) for r in ratio_cols)
+                        return bool(re.search(r"(율|률|비율|%)$", col)) and not re.search(r"경쟁|배수|대1", col)
+                    over = []
+                    for col in result_cols:
+                        if is_pct_col(col):
+                            vals = [r.get(col) for r in summary_rows if isinstance(r.get(col), (int, float)) and r.get(col) > 100]
+                            if vals:
+                                over.append(f"{col} {len(vals)}행 (최대 {max(vals)})")
+                    if over:
+                        sql_context += (f"- ⚠️ 비율 100% 초과: {over} → 분자와 분모의 기준(최초/최종 합격, 전체/최초합격자 중 등록 등)이 서로 맞는지 "
+                                        f"확인하라는 경고를 답변의 '가정한 내용' 앞에 반드시 적을 것\n")
+                        print(f" ├─ MS-SQL: ⚠️ 비율 100% 초과 {over}")
+                    print(f" ├─ MS-SQL: 결과 요약 {len(summary_rows)}행 × {len(result_cols)}열, NULL 열 {null_cols[:5]}, 0 열 {zero_cols[:5]}")
+
                 # [NEW] 조회된 컬럼에 대한 관리자 힌트를 sql_context에 추가
                 if columns_used_set:
                     try:
@@ -1587,11 +2618,46 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 # [Step 3 MS-SQL 실행 결과]
                 data_lines = [line for line in sql_context.split('\n') if "추출 데이터" in line or "데이터가 너무 많아" in line]
                 match_cnt = total_sql_count if total_sql_count is not None else len(data_lines)
-                print(f" ├─ MS-SQL: 쿼리 실행 완료 (총 {match_cnt:,}건 레코드 매칭)")
+                print(f" ├─ MS-SQL: 쿼리 실행 완료 (총 {match_cnt:,}건 레코드 매칭, {query_runner.used})")
+            except db_access.QueryBlocked as blocked:
+                # 실행하지 않은 쿼리는 답변 AI 에게도 주지 않음 (지어낸 테이블·조건이 답변 방향을 틀지 않도록)
+                print(f" ├─ MS-SQL: ⛔ 쿼리 실행 안 함 ({blocked}) → 쿼리 없이 진행")
+                sql_context = ""
+                if is_query_request:
+                    sql_context = f"\n[쿼리 실행 안 함 (보안 검사)]\n{blocked}\n[요청된 쿼리]\n{formatted_sql}\n"
+                failed_sql = sql_query
+                sql_query = "NONE" if request.user_role == "student" else sql_query
+                formatted_sql = "NONE" if request.user_role == "student" else formatted_sql
             except Exception as db_err:
                 print(f" ├─ MS-SQL: 쿼리 실행 오류 ({db_err})")
+                if is_query_request:
+                    sql_context += f"\n[쿼리 실행 오류 (자동 수정 후에도 실패)]\n{db_err}\n[실패한 쿼리]\n{formatted_sql}\n"
+                else:
+                    # 실패한 쿼리의 조건(지어낸 테이블·조건 등)이 답변 AI 의 판단을 틀지 않도록 쿼리 원문을 빼고 진행
+                    sql_context = ""
+                failed_sql = sql_query
+            finally:
+                if 'query_runner' in locals():
+                    query_runner.close()
+            # [문서를 테이블로 착각한 쿼리] 라우터가 문서 제목을 테이블 이름으로 쓴 경우, 그 문서를 문서 검색어에 넣어 내용이 빠지지 않게 함
+            if 'failed_sql' in locals() and not is_query_request:
+                doc_titles = docs_named_as_tables(conn, failed_sql)
+                if doc_titles:
+                    existing = norm_doc_name(rag_query or "") if need_rag else ""
+                    add = [t for t in doc_titles if norm_doc_name(t) not in existing]
+                    if add:
+                        rag_query = ", ".join(([rag_query] if need_rag and rag_query else []) + add)
+                        need_rag = True
+                        print(f" ├─ MS-SQL: 쿼리의 테이블 이름이 문서 제목이라 문서 검색어에 추가 → {add}")
         else:
             print(f" ├─ MS-SQL: 쿼리 없음 (건너뜀)")
+        if metric_notes:
+            sql_context += ("\n[지표 사전 사용 (관리자가 등록한 지표 정의로 시스템이 쿼리를 조립함 — 답변의 '가정한 내용'에 이 내용을 적을 것. "
+                            "'계산 기준:' 줄은 괄호 안의 근거(저장된 기본값·질문에서 지정 등)와 '다른 정의'까지 글자 그대로 옮겨, 사용자가 다른 정의로 다시 요청할 수 있게 할 것)]\n"
+                            + "\n".join(f"- {n}" for n in metric_notes) + "\n")
+        if value_notes and request.user_role != "student":  # 학생 답변에는 내부 보정 안내(DB 값 대조)를 넣지 않음
+            sql_context += ("\n[조건 값 보정 (서버가 실제 DB 값과 대조한 결과 — 답변에 이 해석을 한 줄로 밝힐 것)]\n"
+                            + "\n".join(f"- {n}" for n in value_notes) + "\n")
 
         # =======================================================
         # [Step 3-2] 비정형 DB (ChromaDB) 검색 (Rule + Ref 모두 탐색)
@@ -1602,40 +2668,44 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         final_rules = []
         final_refs = []
 
-        # [AI 기반 스마트 라우팅 적용]
-        if not request.scraped_context and not need_rag:
-            print(f" ├─ ChromaDB RAG: 검색 생략 (스마트 라우팅에 의해 불필요 판단)")
+        # [AI 기반 스마트 라우팅 적용] (+ 사용자가 정형 DB로 한정한 경우 스크랩 문서가 있어도 문서 검색 생략)
+        if (not request.scraped_context and not need_rag) or (db_only_reason and not explicit_docs):
+            print(f" ├─ ChromaDB RAG: 검색 생략 ({'사용자 DB 한정 지시' if db_only_reason else '스마트 라우팅에 의해 불필요 판단'})")
         else:
             # [최적화] CSV 등 텍스트 더미가 쿼리에 섞여 코사인 유사도를 망치지 않도록,
             # RAG 임베딩 검색 시에는 scraped_context를 생략하고 오직 자연어 질문(rag_query)만 쿼리로 사용합니다.
             chroma_query = rag_query
             
-            # [스마트 RAG 키워드 확장]
-            # 사용자 질문에 없더라도, 스크랩/첨부된 문서(scraped_context) 내에 규정 검토에 핵심적인 키워드가 발견되면
-            # ChromaDB 검색 시 관련 규정 문서가 확실히 끌려오도록 검색 쿼리를 콤마로 결합해 확장합니다.
-            if request.scraped_context:
-                extra_keywords = []
-                scraped_lower = request.scraped_context.lower()
-                
-                # 핵심 검토 도메인 키워드 매핑 (오매칭 및 토큰 낭비 방지를 위해 검색 필터 정교화)
-                keyword_mappings = {
-                    "학교폭력": ["학교폭력", "학폭"],  # '감점', '퇴학', '전학', '조치사항' 등 다른 문서에서도 흔한 단어는 오매칭 방지를 위해 제외
-                    "위임전결": ["위임전결", "결재권", "전결"],  # '결재선' 등 흔한 일반 단어 제외
-                    "문서보존": ["보존기한", "보존기간", "문서보존"],  # '문서보관', '보존기 간' 등 모호한 단어 제외
-                    "예산": ["예산계획", "기안 금액", "부서 운영 계획"]  # 단독 '예산', '계획서'는 너무 흔한 일반 단어이므로 복합어로 정교화
-                }
-                
-                for key_query, synonyms in keyword_mappings.items():
-                    if any(syn in scraped_lower for syn in synonyms):
-                        extra_keywords.append(key_query)
-                        
-                if extra_keywords:
-                    chroma_query += "," + ",".join(extra_keywords)
-                    print(f"[RAG 스마트 확장] 스크랩 문서 내 핵심 키워드가 발견되어 쿼리를 확장합니다: {extra_keywords}")
+            # [첨부 문서에 적힌 규정명 확장]
+            # 스크랩/첨부 문서 본문에 등록된 문서의 제목(예: '○○ 규정에 따라')이 그대로 적혀 있으면 그 문서를 검색어에 추가합니다.
+            # 업무 키워드를 코드에 적지 않고, 문서 목록(Sys_DocumentCatalog)의 제목만 대조합니다.
+            # (어떤 규정이 필요한지에 대한 판단은 라우터 규칙 9번 '검토 대상 문서의 쟁점별 규정 포함'이 담당)
+            if request.scraped_context and conn:
+                try:
+                    scraped_norm = norm_doc_name(request.scraped_context)
+                    have = norm_doc_name(chroma_query or "")
+                    t_cursor = conn.cursor()
+                    t_cursor.execute("SELECT title FROM Sys_DocumentCatalog WHERE is_active = 'Y' AND title IS NOT NULL"
+                                     + (" AND is_public = 'Y'" if request.user_role == "student" else ""))
+                    extra_titles = []
+                    for (title,) in t_cursor.fetchall():
+                        t_norm = norm_doc_name(title)
+                        # 4글자 이상 제목만 (짧은 제목은 우연히 겹치기 쉬움), 이미 검색어에 있으면 제외
+                        if len(t_norm) >= 4 and t_norm in scraped_norm and t_norm not in have:
+                            extra_titles.append(re.sub(r"\s*,\s*", " ", title))
+                    if extra_titles:
+                        extra_titles = extra_titles[:5]
+                        chroma_query = ",".join(([chroma_query] if chroma_query else []) + extra_titles)
+                        print(f"[RAG 확장] 첨부 문서 본문에 적힌 문서명을 검색어에 추가: {extra_titles}")
+                except Exception as x_err:
+                    print(f"[RAG 확장] 문서명 대조 오류: {x_err}")
 
             try:
                 # 쉼표(,)를 기준으로 쿼리 분할
-                queries = [q.strip() for q in chroma_query.split(",") if q.strip()]
+                queries = [q.strip()[:RAG_QUERY_MAX_LEN] for q in chroma_query.split(",") if q.strip()]
+                if len(queries) > RAG_QUERY_MAX_COUNT:
+                    print(f" ├─ [검색어 제한] {len(queries)}개 → 앞 {RAG_QUERY_MAX_COUNT}개만 사용")
+                    queries = queries[:RAG_QUERY_MAX_COUNT]
                 if not queries:
                     print("=== [스마트 RAG] 검색 키워드가 비어 있어 비정형 문서(RAG) 검색을 생략합니다 ===")
                     raise Exception("RAG 검색 쿼리가 비어 있습니다.")
@@ -1770,12 +2840,113 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 except Exception as q_err:
                     print(f"Reference DB query error: {q_err}")
 
+                # [문서명 직접 지정 보완] 검색어가 문서명(파일명)과 일치하면 벡터 검색 결과에 없어도 그 문서를 직접 가져옴
+                # (벡터 검색은 근사 검색이라 실행 중인 서버에서 정확히 이름을 댄 문서가 빠지는 경우가 있음 — Log #492)
+                try:
+                    # 교직원이 대상 문서를 지정한 경우는 위 검색에서 이미 그 문서로만 좁혔으므로 건너뜀
+                    if conn and not (target_documents and request.user_role != "student"):
+                        n_cursor = conn.cursor()
+                        n_cursor.execute("SELECT filename, doc_type, year, title FROM Sys_DocumentCatalog WHERE is_active = 'Y'"
+                                         + (" AND is_public = 'Y'" if request.user_role == "student" else ""))
+                        catalog_docs = n_cursor.fetchall()
+                        year_ok = (lambda y: True) if (not rag_year_filter or rag_year_filter == "ALL") else (
+                            lambda y: y == "ALL" or y in (rag_year_filter if isinstance(rag_year_filter, list) else [rag_year_filter]))
+
+                        def names_match(q_norm, doc_norm):
+                            # 문서명이 검색어 안에 통째로 있거나, 검색어(8글자 이상)가 문서명의 일부
+                            return bool(q_norm and doc_norm) and (doc_norm in q_norm or (len(q_norm) >= 8 and q_norm in doc_norm))
+
+                        for q_idx, q_str in enumerate(queries):
+                            q_norm = norm_doc_name(q_str)
+                            for fname, d_type, d_year, d_title in catalog_docs:
+                                # 파일명과 제목(대시보드에 적은 공식 문서명) 둘 다 대조 — 라우터는 목록의 제목을 보고 검색어를 씀
+                                if not (names_match(q_norm, norm_doc_name(fname)) or names_match(q_norm, norm_doc_name(d_title))):
+                                    continue
+                                if fname in docs_per_query[q_idx]:
+                                    docs_per_query[q_idx][fname]["distance"] = min(docs_per_query[q_idx][fname]["distance"], 0.1)
+                                    continue
+                                is_rule = d_type == "rule"
+                                if not is_rule and not year_ok(str(d_year)):  # 참조 문서는 연도 필터 유지 (규정은 연도 무관)
+                                    continue
+                                got = (rule_db if is_rule else reference_db).get(where={"filename": fname}, include=["documents", "metadatas"])
+                                if got and got.get("documents"):
+                                    docs_per_query[q_idx][fname] = {"doc_text": "\n".join(d or "" for d in got["documents"]),
+                                                                    "meta": got["metadatas"][0], "distance": 0.1,
+                                                                    "source": "rule" if is_rule else "ref"}
+                                    print(f" ├─ [문서명 직접 지정] 검색어 '{q_str[:30]}' ↔ {fname} (벡터 검색에 없어 직접 포함)")
+                except Exception as n_err:
+                    print(f"문서명 직접 지정 보완 오류: {n_err}")
+
+                # =======================================================
+                # [관련성 필터 - 교직원] 파일명·제목이 검색어와 매칭된 문서만 선발합니다.
+                # (영어 임베딩의 한글 유사도는 신뢰도가 낮아, 의미 검색으로만 뽑힌 큰 문서가 끼어드는 문제 방지)
+                # 매칭이 하나도 없으면 한글 2글자 겹침 점수(0.6 이상, 최대 3건)로 보완합니다.
+                # =======================================================
+                title_matched_docs = []  # 공문 제목 기반 보완 선발 문서 (선발 개수 제한과 무관하게 포함)
+                if request.user_role != "student":
+                    filtered_per_query = {q_idx: {} for q_idx in range(len(queries))}
+                    for q_idx in range(len(queries)):
+                        q_norm = norm_doc_name(queries[q_idx])
+                        for fname, doc in docs_per_query[q_idx].items():
+                            t_norm = norm_doc_name(doc["meta"].get("title", ""))
+                            title_hit = len(t_norm) >= 2 and (t_norm in q_norm or (len(q_norm) >= 4 and q_norm in t_norm))
+                            if doc["distance"] <= 0.1 or title_hit:  # distance 0.1 = 기존 파일명 매칭 보정
+                                doc["distance"] = min(doc["distance"], 0.1)
+                                filtered_per_query[q_idx][fname] = doc
+
+                    if not any(filtered_per_query.values()):
+                        scored = []
+                        for q_idx in range(len(queries)):
+                            for fname, doc in docs_per_query[q_idx].items():
+                                name = doc["meta"].get("title") or fname
+                                score = max(name_bigram_score(queries[q_idx], name), name_bigram_score(queries[q_idx], fname))
+                                if score >= 0.6:
+                                    scored.append((score, q_idx, fname, doc))
+                        seen = set()
+                        for score, q_idx, fname, doc in sorted(scored, key=lambda x: -x[0]):
+                            if fname in seen or len(seen) >= 3:
+                                continue
+                            seen.add(fname)
+                            doc["distance"] = 1.0 - score
+                            filtered_per_query[q_idx][fname] = doc
+                        print(f" ├─ [관련성 필터] 파일명 매칭 없음 → 글자 겹침 보완 선발 {len(seen)}건")
+
+                    dropped = {f for q in docs_per_query.values() for f in q} - {f for q in filtered_per_query.values() for f in q}
+                    print(f" ├─ [관련성 필터] 파일명/제목 매칭 외 후보 {len(dropped)}건 제외")
+
+                    # [공문 제목 기반 보완 선발] 라우터가 문서명을 빠뜨려도, 공문 제목과 문서 제목이 크게 겹치면(2글자 조각 60% 이상) 포함
+                    # (예: 공문 '근로장학금 지급 요청' ↔ 문서 '장학금 지급 규정'). 특정 문서명을 하드코딩하지 않는 범용 비교입니다.
+                    doc_title = extract_doc_title(request.scraped_context)
+                    if doc_title:
+                        already = {f for q in filtered_per_query.values() for f in q}
+                        seen_title_docs = set()
+                        for q_docs in docs_per_query.values():
+                            for fname, doc in q_docs.items():
+                                if fname in already or fname in seen_title_docs:
+                                    continue
+                                name = doc["meta"].get("title") or fname
+                                score = max(name_bigram_score(doc_title, name), name_bigram_score(doc_title, fname))
+                                if score >= 0.6:
+                                    seen_title_docs.add(fname)
+                                    doc["distance"] = 0.1
+                                    title_matched_docs.append(doc)
+                                    print(f" ├─ [공문 제목 보완] '{doc_title[:30]}' ↔ {fname} (겹침 {score:.0%}) → 포함")
+
+                    docs_per_query = filtered_per_query
+
+                    # [명시 지정 문서] 'OOO에서/만/기준' 처럼 한정했다면 다른 문서는 모두 빼고 지정 문서만 사용
+                    if explicit_docs and explicit_doc_only:
+                        docs_per_query = {q_idx: {} for q_idx in range(len(queries))}
+                        print(f" ├─ [사용자 지정] 지정 문서만 사용 → 검색 후보 전체 제외")
+
                 # [NEW] 조회된 문서들의 관리자 힌트(description)와 공개여부(is_public)를 DB에서 가져와 맵핑
                 # docs_per_query 에 모인 모든 파일명을 추출합니다.
                 all_raw_files = set()
                 for q_idx in range(len(queries)):
                     for fname in docs_per_query[q_idx].keys():
                         all_raw_files.add(fname)
+                for d in explicit_docs + title_matched_docs:
+                    all_raw_files.add(d["meta"].get("filename", "이름없음"))
                 all_raw_files_list = list(all_raw_files)
 
                 doc_hints = {}
@@ -1805,7 +2976,10 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 
                 # [개선] 라운드 로빈(Round-Robin) 방식으로 각 쿼리별 1등 문서를 공평하게 선발
                 chunk_limit = 5 if request.user_role == "student" else 7
-                
+                # 라우터가 문서명을 정확히 댄 문서(거리 0.1 이하)는 더 넉넉히 포함 (작은 표 문서가 개수 제한에 밀려 빠지지 않도록).
+                # 이름이 맞지 않는 의미 검색 문서는 기존 개수(chunk_limit)까지만. 학생은 아래 문서 예산(토큰)으로 다시 한 번 제한됨
+                named_limit = app_config.get("STUDENT_NAMED_DOC_LIMIT") if request.user_role == "student" else chunk_limit
+
                 sorted_docs_per_query = {}
                 for q_idx in range(len(queries)):
                     sorted_docs_per_query[q_idx] = sorted(docs_per_query[q_idx].values(), key=lambda x: x["distance"])
@@ -1816,19 +2990,163 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 
                 for rank in range(max_docs_in_a_query):
                     for q_idx in range(len(queries)):
-                        if len(all_matched) >= chunk_limit:
+                        if len(all_matched) >= named_limit:
                             break
-                        
+
                         docs = sorted_docs_per_query[q_idx]
                         if rank < len(docs):
                             doc = docs[rank]
                             fname = doc["meta"].get("filename", "이름없음")
-                            if fname not in all_matched_files_set:
+                            limit = named_limit if doc["distance"] <= 0.1 else chunk_limit
+                            if fname not in all_matched_files_set and len(all_matched) < limit:
                                 all_matched_files_set.add(fname)
                                 all_matched.append(doc)
-                                
-                    if len(all_matched) >= chunk_limit:
+
+                    if len(all_matched) >= named_limit:
                         break
+
+                # [공문 제목 보완 문서 병합] 선발 개수 제한과 무관하게 포함 (비활성 문서 제외, 사용자가 문서를 한정한 경우는 제외)
+                if title_matched_docs and not (explicit_docs and explicit_doc_only):
+                    matched_names = {d["meta"].get("filename") for d in all_matched}
+                    for d in title_matched_docs:
+                        fname = d["meta"].get("filename", "이름없음")
+                        if fname in public_status and fname not in matched_names:
+                            all_matched.insert(0, d)
+                            matched_names.add(fname)
+
+                # [명시 지정 문서 병합] 선발 개수 제한(chunk_limit)과 무관하게 맨 앞에 포함 (비활성 문서는 제외)
+                explicit_names = set()
+                for d in explicit_docs:
+                    fname = d["meta"].get("filename", "이름없음")
+                    if fname in public_status and fname not in explicit_names:
+                        explicit_names.add(fname)
+                if explicit_names:
+                    explicit_unique = []
+                    for d in explicit_docs:
+                        fname = d["meta"].get("filename", "이름없음")
+                        if fname in explicit_names and fname not in {x["meta"].get("filename") for x in explicit_unique}:
+                            explicit_unique.append(d)
+                    all_matched = explicit_unique + [d for d in all_matched if d["meta"].get("filename", "이름없음") not in explicit_names]
+
+                # =======================================================
+                # [학생 · Claude 문서 예산] 학생에게는 큰 문서 확인을 묻지 않으므로, 관련도 순으로 STUDENT_DOC_TOKENS 까지만 넣음
+                # (넘치는 문서는 건너뜀 → 10만 토큰 한도 취소·장문 5배 단가 방지. Gemini 는 해당 없음)
+                # =======================================================
+                if request.user_role == "student" and llm_client.is_claude(request.model_name) and all_matched:
+                    doc_budget = app_config.get("STUDENT_DOC_TOKENS")
+                    kept, used_tok = [], 0
+                    for d in all_matched:
+                        fname = d["meta"].get("filename", "이름없음")
+                        n_chars = len(d["doc_text"])
+                        # 작은 문서는 글자 수로 넉넉히 어림 (한글은 대략 글자 수 이하), 큰 문서만 토큰 계산 API(무료) 호출
+                        tok = n_chars if n_chars < 5000 else llm_client.count_tokens(request.model_name, chat_api_key, d["doc_text"])
+                        if used_tok + tok > doc_budget:
+                            print(f" │   ├─ [학생 문서 예산] {fname} ({tok:,} 토큰) 제외 — 누적 {used_tok:,} / 예산 {doc_budget:,}")
+                            continue
+                        kept.append(d)
+                        used_tok += tok
+                    all_matched = kept
+                    print(f" │   ├─ [학생 문서 예산] {len(kept)}건 사용, 약 {used_tok:,} 토큰 (예산 {doc_budget:,})")
+
+                # =======================================================
+                # [큰 문서 확인 게이트] LARGE_DOC_TOKENS 를 넘는 문서는 최종 AI 호출 전에 사용자에게 포함 여부를 묻습니다.
+                # - 교직원만 적용, 사용자가 직접 지정한 문서(target_documents)는 묻지 않음
+                # - "제외"를 선택하면 해당 문서만 빼고 빈자리는 채우지 않음
+                # =======================================================
+                if request.user_role != "student" and request.large_doc_decision != "include" and all_matched:
+                    targets = target_documents.split(",") if isinstance(target_documents, str) else (target_documents or [])
+                    clean_name = lambda s: re.sub(r'[^a-zA-Z0-9가-힣]', '', re.sub(r'\.[a-zA-Z0-9]+$', '', str(s))).lower()
+                    target_clean = [clean_name(t) for t in targets if clean_name(t)]
+
+                    large_docs = []
+                    large_doc_limit = app_config.get("LARGE_DOC_TOKENS")  # 환경설정 '큰 문서 확인 기준'
+                    for d in all_matched:
+                        fname = d["meta"].get("filename", "이름없음")
+                        f_clean = clean_name(fname)
+                        if fname in explicit_names or any(t in f_clean or f_clean in t for t in target_clean):
+                            continue  # 사용자가 지정한 문서 (질문에 문서명 직접 기재 또는 라우터 target_documents)
+                        if len(d["doc_text"]) * 3 < large_doc_limit:
+                            continue  # 글자 수가 작아 기준 초과 가능성 없음 → 토큰 계산 생략
+                        tok = llm_client.count_tokens(request.model_name, chat_api_key, d["doc_text"])
+                        print(f" │   ├─ [큰 문서 후보] {fname}: {len(d['doc_text']):,}자 / {tok:,} 토큰")
+                        if tok > large_doc_limit:
+                            large_docs.append((d, tok))
+
+                    if large_docs:
+                        large_ids = {id(d) for d, _ in large_docs}
+                        if resume_state and request.large_doc_decision == "exclude":
+                            all_matched = [d for d in all_matched if id(d) not in large_ids]
+                            for d, tok in large_docs:
+                                print(f" │   ├─ [큰 문서 제외] {d['meta'].get('filename', '이름없음')} ({tok:,} 토큰)")
+                        else:
+                            # 큰 문서를 뺀 나머지 입력 토큰은 큰 문서의 글자당 토큰 비율로 근사 (프롬프트 양식 약 3,000 토큰 가산)
+                            large_chars = sum(len(d["doc_text"]) for d, _ in large_docs) or 1
+                            large_tokens = sum(tok for _, tok in large_docs)
+                            ratio = large_tokens / large_chars
+                            other_chars = sum(len(d["doc_text"]) for d in all_matched if id(d) not in large_ids)
+                            other_chars += len(request.scraped_context or "") + len(request.question or "") + len(sql_context or "")
+                            base_tokens = int(other_chars * ratio) + 3000
+                            include_tokens = base_tokens + large_tokens
+
+                            is_claude_model = llm_client.is_claude(request.model_name)
+                            def cost_str(tokens):
+                                if not is_claude_model:
+                                    return ""
+                                krw = llm_client.estimate_cost_krw(request.model_name, llm_client.LLMResult(text="", in_tokens=tokens))
+                                return f" (입력 비용 약 ₩{krw:,.1f})"
+
+                            lines = ["📚 **AI가 아래 큰 문서를 참고하려 합니다.**"]
+                            for d, tok in large_docs:
+                                lines.append(f"- {d['meta'].get('filename', '이름없음')}: 약 {tok:,} 토큰")
+                            lines.append("")
+                            include_line = f"- 포함하면: 입력 약 {include_tokens:,} 토큰{cost_str(include_tokens)}"
+                            if is_claude_model and include_tokens > llm_client.MAX_PROMPT_TOKENS:
+                                include_line += f" ⚠️ 한도 {llm_client.MAX_PROMPT_TOKENS:,} 토큰을 넘어 취소될 수 있습니다"
+                            lines.append(include_line)
+                            lines.append(f"- 제외하면: 입력 약 {base_tokens:,} 토큰{cost_str(base_tokens)}")
+                            lines.append("")
+                            lines.append("이 문서가 검토에 꼭 필요한지 선택해 주세요. (토큰 수는 추정치이며, 출력 비용은 별도입니다)")
+
+                            pending_id = uuid.uuid4().hex
+                            # [확인 대기 로그] 지금까지 쓴 라우터 비용을 먼저 기록 (확인 없이 끝나도 비용이 로그에 남도록)
+                            interim_log_id = insert_interim_audit_log(
+                                conn, user_role=request.user_role, question=("[테스트] " if is_test_request else "") + f"[큰 문서 확인 대기] {request.question}",
+                                scraped_context=request.scraped_context, sql_query=sql_query, rag_query=rag_query,
+                                answer="\n".join(lines), latency_ms=int((time.time() - start_time) * 1000),
+                                model_name=request.model_name, router_model_name=used_router_model,
+                                router_in=router_in_tokens, router_out=router_out_tokens,
+                                rag_documents="\n".join(f"{i}) {d['meta'].get('filename', '이름없음')} (약 {tok:,} 토큰, 확인 대기)" for i, (d, tok) in enumerate(large_docs, 1)),
+                                router_latency_ms=int((time_router_end - start_time) * 1000),
+                                router_mode=llm_client.mode_label(used_router_model, router_effort, router_thinking_off),
+                                chat_mode="확인 대기 (최종 AI 미호출)")
+                            PENDING_ROUTER[pending_id] = {
+                                "created_at": time.time(),
+                                "sql_query": sql_query,
+                                "need_rag": need_rag,
+                                "rag_query": rag_query,
+                                "rag_year_filter": rag_year_filter,
+                                "target_documents": target_documents,
+                                "used_router_model": used_router_model,
+                                "router_in_tokens": router_in_tokens,
+                                "router_out_tokens": router_out_tokens,
+                                "log_id": interim_log_id,
+                                "metric_notes": metric_notes,
+                                "faq_topics": faq_topics,
+                                "faq_years": faq_years,
+                            }
+                            print(f" └─ ✋ 큰 문서 {len(large_docs)}건 발견 → 최종 AI 호출 전 사용자 확인 대기 (pending_id={pending_id[:8]}...)")
+                            return {
+                                "status": "confirm_large_docs",
+                                "pending_id": pending_id,
+                                "log_id": interim_log_id,
+                                "large_docs": [
+                                    {"filename": d["meta"].get("filename", "이름없음"), "tokens": tok}
+                                    for d, tok in large_docs
+                                ],
+                                "base_tokens": base_tokens,
+                                "include_tokens": include_tokens,
+                                "message": "\n".join(lines)
+                            }
 
                 # 다시 Rule과 Reference로 분리 (아래쪽 출력 및 포맷팅 로직 호환성 유지)
                 final_rules = [d for d in all_matched if d["source"] == "rule"]
@@ -1873,13 +3191,48 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         # [Step 4] 최종 AI 답변 생성
         # =======================================================
         print(f"\n[Step 4] 🤖 최종 AI 답변 생성 중... (사용 모델: {request.model_name})")
-        final_model = genai.GenerativeModel(model_name=request.model_name, system_instruction=get_system_prompt(request.user_role))
+        final_system_prompt = get_system_prompt(request.user_role)
+        chat_usage = None  # 최종 답변 호출의 토큰 사용량 (llm_client.LLMResult)
+
+        # [호출 설정 기록] 감사 로그에 남길 라우터/최종 답변의 effort·추론 설정
+        staff_effort = llm_client.resolve_effort(request.effort)
+        router_mode = llm_client.mode_label(used_router_model, router_effort, router_thinking_off)
+        if request.user_role == "student":
+            chat_mode = llm_client.mode_label(request.model_name, app_config.get("STUDENT_EFFORT"))
+        else:
+            chat_mode = llm_client.mode_label(request.model_name, staff_effort)
+        print(f" ├─ 호출 설정: 라우터 [{router_mode or '사용 안함'}] / 최종 답변 [{chat_mode}]")
 
 
+
+        # [입학처 Q&A] 고른 Q&A 가 있을 때만 프롬프트에 넣음
+        faq_prompt_block = (
+            "\n<입학처 Q&A (입학처가 등록한 질문별 공식 답변)>\n"
+            "(질문이 아래 주제에 해당하면 이 답변을 우선 기준으로 안내하세요. [공통]은 매년 같은 답변이고, [OOOO학년도]는 그 학년도 입시에 대한 답변입니다.)\n"
+            f"{faq_context}\n"
+            "</입학처 Q&A>\n") if faq_context else ""
+
+        # [테이블 지정 질문] 교직원이 테이블 이름을 적어 물으면 그 테이블의 실제 열 정보를 최종 AI 에게도 줌
+        table_schema_block = ""
+        if request.user_role != "student":
+            _blocks = schema_blocks_for_question(dynamic_schema, request.question)
+            if _blocks:
+                table_schema_block = (
+                    "\n<질문에 나온 테이블의 실제 구조>\n"
+                    "(SQL 초안(INSERT·UPDATE·SELECT 등)을 쓸 때는 아래 테이블 이름·열 이름·자료형과 '실제 값' 표기를 글자 그대로 쓰고, "
+                    "없는 열을 지어내지 마세요. 자료형이 문자형(nvarchar 등)인 열은 숫자도 따옴표로 감싸세요. "
+                    "자동으로 채워지는 열(id, created_at 등)은 넣지 말고, 그렇게 가정했다고 적으세요. 초안은 실행하지 않습니다.)\n"
+                    f"{_blocks}\n"
+                    "</질문에 나온 테이블의 실제 구조>\n")
+                print(f" ├─ [테이블 지정 질문] 최종 AI 에 스키마 전달: {len(_blocks):,}자")
 
         if request.user_role == "student":
+            # [개인정보 안내] 질문에서 실제로 개인정보를 가린 경우에만 안내 규칙을 넣음 (조건부 규칙은 AI 가 잘못 적용할 수 있음)
+            pii_rule = ("4. **[개인정보 보호 안내 의무]**: 사용자의 질문에 있던 개인정보(전화번호·주민등록번호)는 시스템이 마스킹했습니다. 답변의 최상단에 **'⚠️ 개인정보 보호를 위해 입력하신 정보는 시스템에 의해 안전하게 마스킹 처리되었습니다. 추가적인 개인정보 입력은 자제해 주시기 바랍니다.'** 라는 안내 문구를 반드시 포함하여 답변해."
+                        if pii_masked else "4. (개인정보 안내 없음: 이 질문에는 가린 개인정보가 없으므로 개인정보 관련 안내 문구를 쓰지 마.)")
             prompt = f"""
 너는 대동대학교 입학처의 친절하고 정확한 공식 입시 AI 챗봇이야.
+{today_line()}
 아래의 정보들을 읽고, 수험생의 질문에 빠르고 정확하게 답변해줘.
 
 <시스템 DB 및 규정 문서 팩트>
@@ -1887,6 +3240,11 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 {chroma_context if chroma_context else ""}
 </시스템 DB 및 규정 문서 팩트>
 
+<입학처 등록 지침 (사전지식 중 학생·공통 대상)>
+(입학처가 등록한 해석·계산 규칙입니다. 문서 해석과 성적 산출 시 반드시 따르세요.)
+{supplemental_context if supplemental_context else "등록된 지침 없음"}
+</입학처 등록 지침 (사전지식 중 학생·공통 대상)>
+{faq_prompt_block}
 <이전 대화 기록>
 {history_context}
 </이전 대화 기록>
@@ -1899,36 +3257,19 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 1. 위 <시스템 DB 및 규정 문서 팩트>에 기재된 수치, 표, 내용을 바탕으로 질문에 직접적이고 명쾌하게 대답해.
 2. 학생이 한눈에 이해하기 쉽게, 길게 나열하지 말고 요점만 간단하게(단답형이나 짧은 문장으로) 정리해서 답변해.
 3. 표에 나와있는 경쟁률, 후보 순위, 등급 등의 팩트는 주저하지 말고 확신을 가지고 대답해.
-4. **[빠른 답변(Fail-Fast) 의무]**: 만약 위 팩트 정보들에 질문과 관련된 데이터가 존재하지 않는다면(예: 없는 기숙사를 묻는 경우 등), 절대 억지로 고민하거나 지어내지 마. 즉시 "죄송합니다. 해당 질문에 관련된 정보를 찾을 수 없습니다."라고 짧게 답변을 끝내고 즉각 종료해.
-5. **[개인정보 보호 안내 의무]**: 만약 사용자의 질문에 마스킹 처리된 개인정보(예: `010-****-7001`, `900101-1******` 등)가 포함되어 있다면, 답변의 최상단에 **'⚠️ 개인정보 보호를 위해 입력하신 정보는 시스템에 의해 안전하게 마스킹 처리되었습니다. 추가적인 개인정보 입력은 자제해 주시기 바랍니다.'** 라는 안내 문구를 반드시 포함하여 답변해.
-6. **[정보 임의 생성 엄격 금지]**: <시스템 DB 및 규정 문서 팩트>에 명시적으로 기재되어 있지 않은 대동대학교 입학처 전화번호, 홈페이지 링크, 부서명 등을 절대로 임의로 지어내서 안내하지 마. 모르는 연락처는 아예 적지 마.
-7. 💡 **[비정형 문서 기호/단어 의미 규칙]**: 문서 표에서 하이픈(`-`) 기호는 '데이터 값이 존재하지 않음(해당 전형으로 모집하지 않음)'을 의미하여 숫자 0과 같고, 그 외 텍스트로 모집 인원이 기재되어 있다면 해당 문구의 문맥(예: 무제한 모집 등)을 그대로 반영해.
-9. 🚨 **[특수문자 및 수식 규정(LaTeX 절대 금지)]**: 어떠한 경우에도 LaTeX 수학 기호나 수식 블록(예: `$`, `$$`, `\text{{}}`, `\times`, `\rightarrow`)을 절대로 사용하지 마. (❌ 잘못된 예: `$12,600\text{{원}} \times 12\text{{부}} = 151,200\text{{원}}$` ➡️ 🟢 올바른 예: `12,600원 x 12부 = 151,200원`). 화살표는 반드시 유니코드(→)를 사용해.
-10. 🧮 **[정밀 수치 연산 및 누적 덧셈 절대 규칙 (CoT 강제)]**:
+{pii_rule}
+5. **[정보 임의 생성 엄격 금지]**: <시스템 DB 및 규정 문서 팩트>에 명시적으로 기재되어 있지 않은 대동대학교 입학처 전화번호, 홈페이지 링크, 부서명 등을 절대로 임의로 지어내서 안내하지 마. 모르는 연락처는 아예 적지 마.
+6. 💡 **[입학처 등록 지침 준수]**: 문서 표 기호 해석, 성적 환산·석차등급 계산, 고교 유형별 반영 등은 위 <입학처 등록 지침>을 그대로 따라.
+7. 🚨 **[특수문자 및 수식 규정(LaTeX 절대 금지)]**: 어떠한 경우에도 LaTeX 수학 기호나 수식 블록(예: `$`, `$$`, `\text{{}}`, `\times`, `\rightarrow`)을 절대로 사용하지 마. (❌ 잘못된 예: `$12,600\text{{원}} \times 12\text{{부}} = 151,200\text{{원}}$` ➡️ 🟢 올바른 예: `12,600원 x 12부 = 151,200원`). 화살표는 반드시 유니코드(→)를 사용해.
+8. 🧮 **[정밀 수치 연산 및 누적 덧셈 절대 규칙 (CoT 강제)]**:
     - 학생부 성적, 이수단위, 환산값, 점수 합계 등 다항목의 곱셈 및 누적 덧셈을 수행할 때, 절대 중간 과정 없이 최종 합계 수치만 단답형으로 작성하지 마.
     - 과목별 환산값(단위 x 등급)을 모두 나열한 후, 학기별 총 환산값을 산출할 때는 반드시 `24 + 28 + 28 + 12 + 8 + 28 + 2 + 12 = 142`와 같이 **모든 과목의 값을 빠짐없이 덧셈 기호(+)로 1:1 연결한 전체 산식을 먼저 노출**해.
     - 동일한 숫자(예: 28, 28 등)가 여러 번 반복 등장할 경우, 수식에 포함된 항의 개수가 실제 과목 수와 일치하는지 자체 대조(Cross-Check)하여 토큰 누락을 원천 차단해.
-11. 🎯 **[성적 환산점수 산출 절대 규칙 (환산표 체계 준수)]**:
-    - 교과성적, 출석성적, 검정고시 성적의 환산점수를 계산할 때는 **임의로 비례식을 사용하거나 백분율을 곱해서 계산하는 것을 절대 금지**해.
-    - 반드시 모집요강에 명시된 **[학생부 등급비율 및 환산점수표]**, **[학생부 출석성적 환산점수표]**, **[검정고시 합격자 성적 환산점수표]**의 기준과 등급 간 차감 점수(급간) 체계에 철저히 의거하여 점수를 도출해.
-12. 📐 **[총 석차등급 단계별 반올림(소수점 5째 자리) 강제 규칙]**:
-    - 교과성적 총 석차등급을 산출할 때는 한 번에 수식을 계산한 뒤 마지막에만 반올림하는 방식을 절대 금지해. 반드시 아래의 **[단계별 반올림 프로세스]**를 순서대로 엄격히 수행하여 매 단계마다 확정된(반올림된) 숫자로 다음 계산을 이어가:
-      * **1단계 (학기별 석차등급)**: `과목별 환산값의 합 ÷ 총 이수단위` ➔ **소수점 6째 자리에서 반올림하여 소수점 5째 자리까지 확정** (예: `5.43478`)
-      * **2단계 (학년별 석차등급)**: `(1학기 석차등급 + 2학기 석차등급) ÷ 2` ➔ **소수점 6째 자리에서 반올림하여 소수점 5째 자리까지 확정** (예: `5.19643`)
-      * **3단계 (총 석차등급)**: 학년별 반영비율(예: 1학년 40% + 2학년 60%)을 각각 곱하여 합산 ➔ **소수점 6째 자리에서 반올림하여 소수점 5째 자리까지 확정**
-      * **4단계 (환산점수 도출)**: 3단계에서 확정된 총 석차등급(소수점 5째 자리)이 속한 등급 구간(예: 4.00000 ~ 4.99999 등)을 판별한 후, 모집요강 환산점수표의 해당 등급 점수를 1:1로 정확히 적용해.
-13. 🏫 **[출신고교구분(고교 유형)별 맞춤 성적 반영비율 적용 절대 규칙]**:
-    - **고교 유형 7대 코드 식별**: `1: 일반고`, `2: 특성화고`, `3: 검정고시`, `4: 특수목적고`, `5: 공고2+1`, `6: 일반고위탁`, `7: 외국고`
-    - **지원자 고교 유형 우선 탐색**: 성적 산출 전, 첨부된 서류(학생부, 원서 등)나 학생의 질문에서 지원자의 출신고교 유형(예: 일반고위탁, 공고2+1, 특성화고, 검정고시 등)이 명시되어 있는지 가장 먼저 확인해.
-    - **고교 유형별 모집요강 예외 규정 100% 준수**:
-      * **일반고위탁 / 공고2+1**: 직업과정 위탁생이나 현장실습생의 경우, 3학년 성적을 제외하고 1~2학년 성적만 반영하거나 특정 학기를 제외하는 등 모집요강의 고교유형별 특수 반영 규정을 찾아 정확히 적용해.
-      * **검정고시 합격자**: 학생부 석차등급 계산을 생략하고, 전 과목 평균 점수를 모집요강의 [검정고시 합격자 성적 환산점수표]에 1:1 대조하여 환산점수를 산출해.
-      * **외국고 출신자**: 국내 학생부 체계가 없으므로 모집요강의 외국고 성적 처리 기준(최저점 부여 또는 면접 점수 환산 등)을 적용해.
-    - **고교 유형 미특정 시 표준 적용 및 조건부 안내**: 만약 첨부 서류나 질문에 고교 유형이 특정되지 않은 일반 학생부인 경우, '일반고' 기준을 기본값으로 산출하되, **"※ 본 산출 결과는 일반고 기준이며, 지원자가 특성화고, 일반고위탁, 공고2+1, 검정고시 등 다른 출신고교 유형일 경우 반영 학기 및 비율이 달라질 수 있습니다."**라는 안내 문구를 반드시 명시해.
 """
         else:
             prompt = f"""
 너는 대동대학교 입시처 행정 검토 전문 AI 아키텍트야.
+{today_line()}
 아래의 XML 태그로 구분된 정보들을 읽고, <사용자 지시사항>에 따라 정확하고 명쾌한 답변을 제공해.
 
 <검토 대상 문서 (선택)>
@@ -1950,7 +3291,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 (과거 규정/조직 문서(판단 기준 2)에 기재된 정보보다 우선하여 적용할 실시간 변경 팩트 및 예외 규정입니다. 대조 대상 문서 내 인명이나 결재선 정보가 아래 팩트와 상충할 경우, 반드시 아래 팩트를 기준으로 최종 정합성을 판단하세요.)
 {supplemental_context if supplemental_context else "등록된 실시간 보완 지식 없음"}
 </판단 기준 3: 실시간 보완 지식 (최신 인사 정보 및 행정 예외 정책)>
-
+{faq_prompt_block}{table_schema_block}
 <이전 대화 기록>
 (사용자와 주고받은 최근 대화 맥락입니다. 질문의 대명사나 지칭 대상이 모호할 경우 이 맥락을 바탕으로 이해하세요.)
 {history_context}
@@ -1970,60 +3311,46 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 7. 💡 **[표 병합 패턴 기반 누락 탐지]**: 통계 표 대조 시, 엑셀 문서 내 인접한 모집단위(학과)들 간의 전형 패턴을 비교하여 통째로 누락된 '이빨 빠진 패턴'이 식별된다면 병합 특성으로 인한 명백한 누락으로 지적하십시오.
 8. 💡 **[빈칸/누락 정밀 지적]**: 통계 대조 결과 누락이 발견되면 무조건 '100% 일치'한다고 넘기지 말고 반드시 누락된 학과와 전형을 리스트업하여 지적하십시오.
 9. **[근거 규정 출처 표기 필수]:** <판단 기준 2>에서 제공된 정보 및 규정을 인용하거나 검토 의견을 제시할 때, 반드시 근거 문서의 명칭을 명시하세요. (예: "(근거 문서: 2027학년도 수시 전형문서)")
-10. **[정원내/외 비교 및 정합성 검토 원칙]:**
-    - 시스템 DB 최종등록자 수와 입학정원을 대조할 때, **정원내 전형 최종등록자만 입학정원과 비교**해야 합니다. 정원외 전형은 초과등록이 가능하므로 "입학정원 초과 학칙 위반"이라고 오판하지 마십시오.
-    - 대조 시 **[정원내 최종등록자 수]**와 **[정원외 최종등록자 수]**를 명확하게 구분하여 기재하십시오.
-11. **[신입생 및 편입생 동시 분석]:** 신입생 모집 결과 뿐만 아니라 편입생 모집 결과도 정형 DB를 참고하여 양쪽 모두 누락 없이 분석하십시오.
-12. 🚨 **[관리자 힌트 절대 우선 적용]**: <판단 기준 2>의 문서 내용 중에 `(관리자 힌트: ...)`가 적혀 있다면, 이는 일반적인 상식이나 당신의 자체적인 회계/판단 기준보다 무조건 앞서는 최우선 절대 규칙입니다. 사용자가 올린 문서의 데이터를 검토할 때, 당신의 기준에 비추어 오류처럼 보이더라도 관리자 힌트의 지시사항(예: "예산금액에는 편성예산이 아닌 신청금액을 기재하라")과 부합한다면 절대 오류로 지적하지 말고 정상으로 처리하십시오.
-13. **[답변 구성 최우선순위 지침]**:
+10. **[업무 규칙은 사전지식 우선]:** 정원내/외 구분, 신입/편입 분석 범위, 학년도 해석, 성적 환산·석차등급 반올림·출신고교 유형별 반영 등 업무 규칙은 <판단 기준 3>의 사전지식을 그대로 따르십시오.
+11. 🚨 **[관리자 힌트 절대 우선 적용]**: <판단 기준 2>의 문서 내용 중에 `(관리자 힌트: ...)`가 적혀 있다면, 이는 일반적인 상식이나 당신의 자체적인 회계/판단 기준보다 무조건 앞서는 최우선 절대 규칙입니다. 사용자가 올린 문서의 데이터를 검토할 때, 당신의 기준에 비추어 오류처럼 보이더라도 관리자 힌트의 지시사항(예: "예산금액에는 편성예산이 아닌 신청금액을 기재하라")과 부합한다면 절대 오류로 지적하지 말고 정상으로 처리하십시오.
+12. **[답변 구성 최우선순위 지침]**:
     - 문서에 통계 수치가 기재되어 있어 통계 대조를 수행한 경우, **통계 일치 여부 판별 결과를 가장 먼저(최상단에) 상세히 노출**한 뒤 규정 검토 의견을 서술하십시오.
     - 품의서 등 통계가 없는 일반 행정 문서인 경우, 억지로 통계를 대조하지 말고 즉시 **규정 검토(결재선, 보존기간 등)를 최상단에 배치**하십시오.
-14. **[통계 대조 성립 시 1:1 일치여부 표기 강제]**:
+13. **[통계 대조 성립 시 1:1 일치여부 표기 강제]**:
     - 통계 대조를 수행할 경우에 한하여, 학과별 통계 대조 시 개별 라인마다 `[일치]`, `[불일치 - 서류: O명, DB: O명]`, `[불일치 - 서류 미기재]` 와 같이 상태를 1:1로 정밀하게 명시하십시오.
     - `[일치]` 판정을 받은 학과라도 절대 임의로 요약하거나 일부 전형만 예시로 출력하지 마십시오. 괄호 `()` 안에 해당 학과에 배정된 모든 개별 전형명과 그 데이터(숫자 또는 문자 등 형태 무관)를 하나도 빠짐없이 100% 나열하여, 관리자가 모든 컬럼이 누락 없이 대조되었음을 시각적으로 확인할 수 있게 하십시오.
     - 서류 데이터가 존재하지 않는 학과는 `[불일치 - 서류 미기재]`로 표시하되, 최상단에 거창한 경고 안내문을 띄우지 마십시오.
-15. **[실시간 보완 지식 한정 변호 금지 및 상세 분석 조절]**:
+14. **[실시간 보완 지식 한정 변호 금지 및 상세 분석 조절]**:
     - <판단 기준 3>에 등재된 예외 정책에 의하여 참작된 건에 대해서만 구구절절한 변호 문구를 서술하지 말고 생략하십시오.
     - 사용자가 "상세히", "빠짐없이" 분석해 달라고 요청한 경우에만 문서를 처음부터 끝까지 생략 없이 구체적으로 리포트하십시오.
-16. **[실시간 지식 업데이트 성공 시 피드백 알림 강제]**: <지식 업데이트 반영 내역>에 저장/삭제 완료 알림 메시지가 있다면 답변 최상단에 마크다운 인용구 형태로 100% 원문 그대로 노출하십시오.
-17. 💡 **[RAG 검색 한계 인지 및 오판 방지]**: RAG로 인출된 텍스트 조각이 문서의 전체 표나 세부 조항을 완벽히 포함하지 않을 수 있습니다. 텍스트 조각에 특정 수치나 세부 조항이 명시적으로 보이지 않더라도, 섣불리 오답이나 누락이라고 단정짓지 말고 '관련 규정의 전체 원문을 재확인해야 합니다'와 같이 유보적으로 답변하십시오.
-18. **[학생 전용 빠른 답변(Fail-Fast) 의무 (엄격 적용)]**: 질문과 관련된 데이터가 단 한 줄도 존재하지 않을 경우, 억지로 추론하지 말고 "죄송합니다. 해당 질문에 관련된 정보를 찾을 수 없습니다."라고 한 문장으로 답변을 끝내십시오.
-19. 💡 **[비정형 문서 기호/단어 의미 규칙]**: 비정형 문서 표에서 하이픈(`-`) 기호는 '데이터 값이 존재하지 않음(해당 전형으로 모집하지 않음)'을 의미하므로 특별한 지시가 없다면 숫자 `0`과 동일하게 취급하십시오. 또한 모집 인원이 숫자가 아닌 텍스트로 기재되어 있다면 해당 문구의 의미(예: 인원 무제한 등)를 그대로 문맥에 맞게 해석하십시오.
-20. 💡 **[데이터 충돌 시 우선순위 규칙]**: 만약 <판단 기준 1: 시스템 DB 최신 팩트>와 <판단 기준 2: 사내 규정 및 과거 문서>의 내용이 서로 상이하거나 충돌할 경우, 최신 통계 데이터인 **<판단 기준 1: 시스템 DB>의 값을 최우선으로 참고**하여 답변하십시오.
-21. 💡 **[PDF 표 병합(빈칸) 추론 절대 지침]**: <판단 기준 2: 사내 규정(RAG)> 내 문서의 표에 특정 칸이 비어있다면, 무조건 '해당 없음'이나 '모집 안함'으로 단정짓지 마십시오. PDF 변환 특성상 **윗칸의 텍스트가 병합되어 생략(빈칸) 처리된 것일 확률이 99%**입니다. 따라서 <검토 대상 문서(스크랩)>에는 글자가 채워져 있고 PDF 기준 문서에는 빈칸일 경우, "스크랩이 틀렸다"고 절대 오진하지 말고 윗칸 문맥을 이어붙여 정상 병합된 팩트로 인정하십시오.
-22. 🚨 **[특수문자 및 수식 규정(LaTeX 절대 금지)]**: 어떠한 경우에도 LaTeX 수학 기호나 수식 블록(예: `$`, `$$`, `\text{{}}`, `\times`, `\rightarrow`)을 절대로 사용하지 마십시오. (❌ 잘못된 예: `$12,600\text{{원}} \times 12\text{{부}} = 151,200\text{{원}}$` ➡️ 🟢 올바른 예: `12,600원 x 12부 = 151,200원`). 화살표는 반드시 유니코드(→)를 사용하십시오.
-23. 🧮 **[정밀 수치 연산 및 누적 덧셈 절대 규칙 (CoT 강제)]**:
+15. **[실시간 지식 업데이트 성공 시 피드백 알림 강제]**: <지식 업데이트 반영 내역>에 저장/삭제 완료 알림 메시지가 있다면 답변 최상단에 마크다운 인용구 형태로 100% 원문 그대로 노출하십시오.
+16. 💡 **[PDF 표 병합(빈칸) 추론 절대 지침]**: <판단 기준 2: 사내 규정(RAG)> 내 문서의 표에 특정 칸이 비어있다면, 무조건 '해당 없음'이나 '모집 안함'으로 단정짓지 마십시오. PDF 변환 특성상 **윗칸의 텍스트가 병합되어 생략(빈칸) 처리된 것일 확률이 99%**입니다. 따라서 <검토 대상 문서(스크랩)>에는 글자가 채워져 있고 PDF 기준 문서에는 빈칸일 경우, "스크랩이 틀렸다"고 절대 오진하지 말고 윗칸 문맥을 이어붙여 정상 병합된 팩트로 인정하십시오.
+17. 🚨 **[특수문자 및 수식 규정(LaTeX 절대 금지)]**: 어떠한 경우에도 LaTeX 수학 기호나 수식 블록(예: `$`, `$$`, `\text{{}}`, `\times`, `\rightarrow`)을 절대로 사용하지 마십시오. (❌ 잘못된 예: `$12,600\text{{원}} \times 12\text{{부}} = 151,200\text{{원}}$` ➡️ 🟢 올바른 예: `12,600원 x 12부 = 151,200원`). 화살표는 반드시 유니코드(→)를 사용하십시오.
+18. 🧮 **[정밀 수치 연산 및 누적 덧셈 절대 규칙 (CoT 강제)]**:
     - 학생부 성적, 이수단위, 환산값, 예산안 등 다항목의 곱셈 및 누적 덧셈을 수행할 때, 절대 중간 과정 없이 최종 합계 수치만 단답형으로 작성하지 마십시오.
     - 과목별 환산값(단위 x 등급)을 모두 나열한 후, 학기별 총 환산값을 산출할 때는 반드시 `24 + 28 + 28 + 12 + 8 + 28 + 2 + 12 = 142`와 같이 **모든 과목의 값을 빠짐없이 덧셈 기호(+)로 1:1 연결한 전체 산식을 먼저 노출**하십시오.
     - 동일한 숫자(예: 28, 28 등)가 여러 번 반복 등장할 경우, 수식에 포함된 항의 개수가 실제 과목 수와 일치하는지 반드시 자체 대조(Cross-Check)하여 토큰 누락을 원천 차단하십시오.
-24. 🎯 **[성적 환산점수 산출 절대 규칙 (환산표 체계 준수)]**:
-    - 교과성적, 출석성적, 검정고시 성적의 환산점수를 계산할 때는 **임의로 비례식을 사용하거나 백분율을 곱해서 계산하는 것을 절대 금지**합니다.
-    - 반드시 모집요강에 명시된 **[학생부 등급비율 및 환산점수표]**, **[학생부 출석성적 환산점수표]**, **[검정고시 합격자 성적 환산점수표]**의 기준과 등급 간 차감 점수(급간) 체계에 철저히 의거하여 점수를 도출하십시오.
-25. 📐 **[총 석차등급 단계별 반올림(소수점 5째 자리) 강제 규칙]**:
-    - 교과성적 총 석차등급을 산출할 때는 한 번에 수식을 계산한 뒤 마지막에만 반올림하는 방식을 절대 금지합니다. 반드시 아래의 **[단계별 반올림 프로세스]**를 순서대로 엄격히 수행하여 매 단계마다 확정된(반올림된) 숫자로 다음 계산을 이어가십시오:
-      * **1단계 (학기별 석차등급)**: `과목별 환산값의 합 ÷ 총 이수단위` ➔ **소수점 6째 자리에서 반올림하여 소수점 5째 자리까지 확정** (예: `5.43478`)
-      * **2단계 (학년별 석차등급)**: `(1학기 석차등급 + 2학기 석차등급) ÷ 2` ➔ **소수점 6째 자리에서 반올림하여 소수점 5째 자리까지 확정** (예: `5.19643`)
-      * **3단계 (총 석차등급)**: 학년별 반영비율(예: 1학년 40% + 2학년 60%)을 각각 곱하여 합산 ➔ **소수점 6째 자리에서 반올림하여 소수점 5째 자리까지 확정**
-      * **4단계 (환산점수 도출)**: 3단계에서 확정된 총 석차등급(소수점 5째 자리)이 속한 등급 구간(예: 4.00000 ~ 4.99999 등)을 판별한 후, 모집요강 환산점수표의 해당 등급 점수를 1:1로 정확히 적용.
-26. 🏫 **[출신고교구분(고교 유형)별 맞춤 성적 반영비율 적용 절대 규칙]**:
-    - **고교 유형 7대 코드 식별**: `1: 일반고`, `2: 특성화고`, `3: 검정고시`, `4: 특수목적고`, `5: 공고2+1`, `6: 일반고위탁`, `7: 외국고`
-    - **지원자 고교 유형 우선 탐색**: 성적 산출 전, 첨부된 서류(학생부, 원서 등)나 사용자의 질문에서 지원자의 출신고교 유형(예: 일반고위탁, 공고2+1, 특성화고, 검정고시 등)이 명시되어 있는지 가장 먼저 탐색하십시오.
-    - **고교 유형별 모집요강 예외 규정 100% 준수**:
-      * **일반고위탁 / 공고2+1**: 직업과정 위탁생이나 현장실습생의 경우, 3학년 성적을 제외하고 1~2학년 성적만 반영하거나 특정 학기를 제외하는 등 모집요강의 고교유형별 특수 반영 규정을 찾아 정확히 적용하십시오.
-      * **검정고시 합격자**: 학생부 석차등급 계산을 생략하고, 전 과목 평균 점수를 모집요강의 [검정고시 합격자 성적 환산점수표]에 1:1 대조하여 환산점수를 산출하십시오.
-      * **외국고 출신자**: 국내 학생부 체계가 없으므로 모집요강의 외국고 성적 처리 기준(최저점 부여 또는 면접 점수 환산 등)을 적용하십시오.
-    - **고교 유형 미특정 시 표준 적용 및 조건부 안내**: 만약 첨부 서류나 질문에 고교 유형이 특정되지 않은 일반 학생부인 경우, '일반고' 기준을 기본값으로 산출하되, **"※ 본 산출 결과는 일반고 기준이며, 지원자가 특성화고, 일반고위탁, 공고2+1, 검정고시 등 다른 출신고교 유형일 경우 반영 학기 및 비율이 달라질 수 있습니다."**라는 안내 문구를 반드시 명시하십시오.
 
 <지식 업데이트 반영 내역>
 {k_feedback_msg if k_feedback_msg else "수행된 업데이트 내역 없음"}
 </지식 업데이트 반영 내역>
 """
-        def print_token_receipt(prompt_text, answer_text, chat_model_name, r_model, r_in, r_out, skip_api=False):
+            if is_query_request:
+                # [쿼리 요청] 사용자가 SSMS 에서 직접 수정·실행할 SQL 을 원함 → 실제로 실행에 성공한 쿼리를 그대로 보여 줌
+                prompt += """
+[🧾 쿼리 요청 답변 형식 (위 지침보다 우선)]
+사용자가 SQL 문 자체를 요청했습니다. 답변은 아래 순서로만 작성하십시오.
+1. **실행한 SQL**: 위 <판단 기준 1: 시스템 DB 최신 팩트>의 [시스템이 데이터를 추출할 때 사용한 조건(쿼리)] 원문을 ```sql 코드 블록에 그대로 옮기십시오. 임의로 고쳐 쓰지 마십시오. (실행 오류가 났다면 실패한 쿼리와 오류 메시지를 보여 주고 원인을 한 줄로 설명)
+2. **실행 결과**: 결과 행 수와 앞부분 몇 줄을 간단한 표로 보여 주십시오.
+3. **가정한 내용**: 쿼리에 들어간 조건과 계산 기준을 항목별로 적으십시오. (학년도·모집구분·신입/편입 조건, 비율 계산식과 0 나누기 처리, '제한없음' 등 숫자 아닌 값 처리, 합산한 구분 등) 사용자가 SSMS 에서 고칠 수 있도록 어느 부분을 바꾸면 되는지도 짧게 적으십시오.
+4. 더 나은 쿼리가 필요하다고 판단되면 '수정 제안'으로 덧붙이되, 실행해 보지 않은 쿼리임을 분명히 적으십시오.
+"""
+        def print_token_receipt(prompt_text, answer_text, chat_model_name, r_model, r_in, r_out, skip_api=False, chat_usage=None):
             try:
                 c_in, c_out = 0, 0
-                if not skip_api:
-                    c_in = final_model.count_tokens(prompt_text).total_tokens
-                    c_out = final_model.count_tokens(answer_text).total_tokens
+                if not skip_api and chat_usage:
+                    c_in = chat_usage.in_tokens
+                    c_out = chat_usage.out_tokens
                 
                 doc_texts_len = {}
                 for d in final_rules + final_refs:
@@ -2032,17 +3359,21 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     
                 total_doc_chars = sum(doc_texts_len.values()) or 1
                 
-                def calc_cost(in_tok, out_tok, m_name):
-                    if "3.5" in m_name.lower():
-                        return (in_tok * 0.002415) + (out_tok * 0.009660)
+                # 원화 예상 비용 (부가세 포함). Claude 는 llm_client 단가표, Gemini 는 기존 원/토큰 단가에 부가세를 더합니다.
+                def calc_cost(in_tok, out_tok, m_name, cache_read=0):
+                    vat = 1 + llm_client.VAT_RATE
+                    if llm_client.is_claude(m_name):
+                        return llm_client.estimate_cost_krw(m_name, llm_client.LLMResult(text="", in_tokens=in_tok, out_tokens=out_tok, cache_read_tokens=cache_read))
+                    elif "3.5" in m_name.lower():
+                        return ((in_tok * 0.002415) + (out_tok * 0.009660)) * vat
                     elif "lite" in m_name.lower() or "8b" in m_name.lower():
-                        return (in_tok * 0.000139) + (out_tok * 0.000556)
+                        return ((in_tok * 0.000139) + (out_tok * 0.000556)) * vat
                     elif m_name == "NONE":
                         return 0.0
                     else:
-                        return (in_tok * 0.000470) + (out_tok * 0.001880)
+                        return ((in_tok * 0.000470) + (out_tok * 0.001880)) * vat
 
-                chat_cost = calc_cost(c_in, c_out, chat_model_name)
+                chat_cost = calc_cost(c_in, c_out, chat_model_name, chat_usage.cache_read_tokens if chat_usage else 0)
                 router_cost = calc_cost(r_in, r_out, r_model)
                 total_cost = chat_cost + router_cost
                 total_tok = r_in + r_out + c_in + c_out
@@ -2053,7 +3384,9 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     est_tokens = int(c_in * ratio)
                     line_str = f"{idx+1}) {fname} (약 {est_tokens:,} 토큰 / {ratio*100:.1f}%)"
                     formatted_docs_list.append(line_str)
-                    
+                if faq_selected:
+                    formatted_docs_list.append("Q&A) " + ", ".join(f"#{i} {t} ({faq_year_label(y)})" for i, t, _, y in faq_selected))
+
                 rag_docs_formatted = "\n".join(formatted_docs_list) if formatted_docs_list else None
                 return (r_model, r_in, r_out, c_in, c_out, total_tok, total_cost, rag_docs_formatted)
             except Exception as token_err:
@@ -2067,7 +3400,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 print(f" ├─ 토큰 사용량: 라우터 {t_data[1]+t_data[2]:,} + 답변 {t_data[3]+t_data[4]:,} = 총 {t_data[5]:,} Tokens")
             else:
                 print(f" ├─ 토큰 사용량: 답변 {t_data[3]+t_data[4]:,} Tokens (총 {t_data[5]:,} Tokens)")
-            print(f" ├─ 예상 비용: 약 {t_data[6]:.2f} 원")
+            print(f" ├─ 예상 비용: 약 {t_data[6]:.2f} 원 (부가세 {llm_client.VAT_RATE:.0%} 포함)")
             print(f" └─ 감사 로그: #{log_id if log_id else '기록완료'} DB 저장 완료")
             print("=" * 70 + "\n", flush=True)
 
@@ -2086,20 +3419,15 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             import json
             
             if short_circuit_text:
-                class MockChunk:
-                    def __init__(self, text):
-                        self.text = text
-                response = [MockChunk(short_circuit_text)]
+                response = [short_circuit_text]
             else:
-                # [NEW] 학생용 분기 - 실시간 스트리밍 모드
+                # [NEW] 학생용 분기 - 실시간 스트리밍 모드 (llm_client.LLMStream: 텍스트 조각 str 을 순서대로 방출)
                 max_retries = 3
                 for attempt in range(max_retries):
                     try:
-                        response = final_model.generate_content(
-                            prompt, 
-                            request_options={"timeout": timeout_sec, "retry": no_retry},
-                            stream=True
-                        )
+                        # 학생 답변 추론 강도 (.env STUDENT_EFFORT, 기본 low · Claude 에만 적용)
+                        response = llm_client.stream(request.model_name, chat_api_key, prompt, system=final_system_prompt,
+                                                     effort=app_config.get("STUDENT_EFFORT"), timeout=timeout_sec)
                         break
                     except Exception as e:
                         err_msg = str(e)
@@ -2117,17 +3445,13 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             def generate_stream():
                 full_text = ""
                 try:
-                    for chunk in response:
-                        try:
-                            text = chunk.text
-                            if text:
-                                full_text += text
-                                # 프론트엔드로 조각 즉시 방출
-                                yield f"data: {json.dumps({'chunk': text}, ensure_ascii=False)}\n\n"
-                        except ValueError:
-                            # 마지막 청크 등 텍스트 파트가 없는 경우(finish_reason=1) 무시
-                            continue
-                    
+                    for text in response:
+                        if text:
+                            full_text += text
+                            # 프론트엔드로 조각 즉시 방출
+                            yield f"data: {json.dumps({'chunk': text}, ensure_ascii=False)}\n\n"
+                    stream_usage = getattr(response, "result", None)
+
                     time_final_end = time.time()
                     
                     latency_ms = int((time.time() - start_time) * 1000)
@@ -2138,13 +3462,13 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     try:
                         # [NEW] 영수증 출력 및 토큰 데이터 확보
                         is_short = bool(short_circuit_text)
-                        t_data = print_token_receipt(prompt, full_text, request.model_name, used_router_model, router_in_tokens, router_out_tokens, skip_api=is_short)
+                        t_data = print_token_receipt(prompt, full_text, request.model_name, used_router_model, router_in_tokens, router_out_tokens, skip_api=is_short, chat_usage=stream_usage)
                         
                         if conn_for_stream:
                             cursor = conn_for_stream.cursor()
                             def safe_str(txt):
                                 if not txt: return ""
-                                return str(txt).encode('cp949', errors='ignore').decode('cp949')
+                                return cp949_safe(txt)
 
                             cursor.execute("""
                                 INSERT INTO Sys_AIAuditLog (
@@ -2152,15 +3476,17 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                                     sql_query, rag_query, answer, latency_ms,
                                     router_model_name, router_in_tokens, router_out_tokens,
                                     chat_in_tokens, chat_out_tokens, total_tokens, estimated_cost,
-                                    rag_documents, router_latency_ms, db_latency_ms, chat_latency_ms
-                                ) 
+                                    rag_documents, router_latency_ms, db_latency_ms, chat_latency_ms,
+                                    router_mode, chat_mode
+                                )
                                 OUTPUT INSERTED.id
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """, (
-                                safe_str(request.user_role), safe_str(request.model_name), safe_str(request.question), safe_str(request.scraped_context),
+                                safe_str(request.user_role), safe_str(request.model_name), safe_str(("[테스트] " if is_test_request else "") + log_question), safe_str(request.scraped_context),
                                 safe_str(sql_query), safe_str(rag_query), safe_str(full_text), latency_ms,
                                 t_data[0], t_data[1], t_data[2], t_data[3], t_data[4], t_data[5], t_data[6],
-                                safe_str(t_data[7]), router_lat, db_lat, chat_lat
+                                safe_str(t_data[7]), router_lat, db_lat, chat_lat,
+                                safe_str(router_mode), safe_str("" if is_short else chat_mode)
                             ))
                             inserted_row = cursor.fetchone()
                             log_id = inserted_row[0] if inserted_row else None
@@ -2200,7 +3526,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 max_retries = 3
                 for attempt in range(max_retries):
                     try:
-                        response = final_model.generate_content(prompt, request_options={"timeout": timeout_sec, "retry": no_retry})
+                        response = llm_client.generate(request.model_name, chat_api_key, prompt, system=final_system_prompt, effort=staff_effort, timeout=timeout_sec)
+                        chat_usage = response
                         break
                     except Exception as e:
                         err_msg = str(e)
@@ -2216,7 +3543,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             
             # [NEW] 영수증 출력 및 토큰 데이터 확보
             is_short = bool(short_circuit_text)
-            t_data = print_token_receipt(prompt, response.text, request.model_name, used_router_model, router_in_tokens, router_out_tokens, skip_api=is_short)
+            t_data = print_token_receipt(prompt, response.text, request.model_name, used_router_model, router_in_tokens, router_out_tokens, skip_api=is_short, chat_usage=chat_usage)
             
             latency_ms = int((time.time() - start_time) * 1000)
             router_lat = int((time_router_end - start_time) * 1000)
@@ -2230,7 +3557,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     # cp949 인코딩 에러 방지를 위해 호환되지 않는 특수문자/이모지 제거
                     def safe_str(txt):
                         if not txt: return ""
-                        return str(txt).encode('cp949', errors='ignore').decode('cp949')
+                        return cp949_safe(txt)
 
                     cursor.execute("""
                         INSERT INTO Sys_AIAuditLog (
@@ -2238,15 +3565,17 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                             sql_query, rag_query, answer, latency_ms,
                             router_model_name, router_in_tokens, router_out_tokens,
                             chat_in_tokens, chat_out_tokens, total_tokens, estimated_cost,
-                            rag_documents, router_latency_ms, db_latency_ms, chat_latency_ms
-                        ) 
+                            rag_documents, router_latency_ms, db_latency_ms, chat_latency_ms,
+                            router_mode, chat_mode
+                        )
                         OUTPUT INSERTED.id
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
-                        safe_str(request.user_role), safe_str(request.model_name), safe_str(request.question), safe_str(request.scraped_context),
+                        safe_str(request.user_role), safe_str(request.model_name), safe_str(("[테스트] " if is_test_request else "") + log_question), safe_str(request.scraped_context),
                         safe_str(sql_query), safe_str(rag_query), safe_str(response.text), latency_ms,
                         t_data[0], t_data[1], t_data[2], t_data[3], t_data[4], t_data[5], t_data[6],
-                        safe_str(t_data[7]), router_lat, db_lat, chat_lat
+                        safe_str(t_data[7]), router_lat, db_lat, chat_lat,
+                        safe_str(router_mode), safe_str("" if is_short else chat_mode)
                     ))
                     inserted_row = cursor.fetchone()
                     log_id = inserted_row[0] if inserted_row else None
@@ -2276,6 +3605,32 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 "fetched_sql_count": fetched_sql_count
             }
 
+    except llm_client.TokenLimitExceeded as e:
+        # [토큰 한도 초과 취소] API 호출 전 단계에서 취소되어 과금이 없으므로 감사 로그도 남기지 않습니다.
+        if request.user_role == "student":
+            # 학생 웹은 스트리밍(SSE)만 읽으므로 같은 형식으로 안내 (내부 토큰·문서 정보는 보여 주지 않음)
+            from fastapi.responses import StreamingResponse
+            import json
+            print(f"[학생] ⛔ 토큰 한도 초과로 취소 ({e.tokens:,} > {e.limit:,})")
+            msg = "죄송합니다. 질문 범위가 넓어 한 번에 답변드리기 어렵습니다. 궁금한 전형이나 학과를 조금 더 구체적으로 적어 다시 질문해 주세요. 🙏"
+            def cancelled_stream():
+                yield f"data: {json.dumps({'chunk': msg}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'status': 'done', 'log_id': None}, ensure_ascii=False)}\n\n"
+            return StreamingResponse(cancelled_stream(), media_type="text/event-stream")
+        local_vars = locals()
+        doc_chars = {}
+        for d in (local_vars.get("final_rules") or []) + (local_vars.get("final_refs") or []):
+            fname = d["meta"].get("filename", "알수없음")
+            doc_chars[fname] = doc_chars.get(fname, 0) + len(d["doc_text"])
+        prompt_chars = len(local_vars.get("prompt") or "") + len(local_vars.get("final_system_prompt") or "")
+        return {
+            "status": "cancelled",
+            "reason": "token_limit",
+            "tokens": e.tokens,
+            "limit": e.limit,
+            "message": llm_client.token_limit_message(e, doc_chars, prompt_chars)
+        }
+
     except Exception as e:
         import traceback
         print("\n================ [에러 상세 로그] ================")
@@ -2283,10 +3638,10 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         print("==================================================\n")
         
         error_msg = str(e)
-        if "429" in error_msg or "Quota exceeded" in error_msg or "503" in error_msg or "ResourceExhausted" in error_msg:
+        if "429" in error_msg or "Quota exceeded" in error_msg or "503" in error_msg or "ResourceExhausted" in error_msg or "529" in error_msg or "overloaded" in error_msg.lower():
             raise HTTPException(
-                status_code=429, 
-                detail="현재 AI 서버 사용량이 많아 무료 API 요청 한도를 초과했습니다. 약 1분 뒤에 다시 시도해 주세요! ⏳"
+                status_code=429,
+                detail=f"현재 AI 서버({request.model_name}) 사용량이 많아 요청 한도를 초과했습니다. 약 1분 뒤에 다시 시도하거나 다른 모델로 전환해 주세요! ⏳"
             )
         else:
             raise HTTPException(status_code=500, detail=f"AI 답변 생성 중 오류 발생: {error_msg}")
@@ -2300,34 +3655,93 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 
 class AnalyticsRequest(BaseModel):
     questions: List[str]
+    model_name: str = "gemini-2.5-flash"  # "claude-"로 시작하면 Claude 로 분석
+
+# [대화 로그 필터] 반응 속도 구간 (밀리초) — 화면의 속도 배지 색과 같은 기준
+LOG_SPEED_RANGES = {"fast": (0, 10000), "mid": (10000, 30000), "slow": (30000, 60000), "vslow": (60000, None)}
+
 
 @app.get("/logs/audit")
-async def get_audit_logs():
-    """최근 대화 모니터링 로그 100건 조회"""
+async def get_audit_logs(q: str = "", month: str = "", role: str = "", model: str = "", speed: str = "",
+                         exclude_test: bool = False, page: int = 1, size: int = 10):
+    """대화 모니터링 로그 조회 (서버에서 거르고 페이지 단위로 돌려줌)
+    - q: 질문·답변 내용 검색 / month: 'YYYY-MM' / role: student|staff / model: 최종 모델명
+    - speed: fast(<10초)|mid(10~30초)|slow(30~60초)|vslow(60초 이상) / exclude_test: [테스트] 로그 제외"""
+    page = max(1, page)
+    size = min(max(1, size), 100)
+    where, params = [], []
+    if q.strip():
+        # LIKE 는 '[' '%' 가 특수문자라 CHARINDEX 로 그대로 찾음
+        where.append("(CHARINDEX(?, question) > 0 OR CHARINDEX(?, answer) > 0)")
+        params += [q.strip(), q.strip()]
+    if re.fullmatch(r"\d{4}-\d{2}", month or ""):
+        import datetime  # main.py 는 모듈 맨 위에서 datetime 을 불러오지 않음
+        start = datetime.datetime.strptime(month + "-01", "%Y-%m-%d")
+        end = (start + datetime.timedelta(days=32)).replace(day=1)
+        where.append("created_at >= ? AND created_at < ?")
+        params += [start, end]
+    if role in ("student", "staff"):
+        where.append("user_role = ?" if role == "staff" else "ISNULL(user_role, '') <> 'staff'")
+        if role == "staff":
+            params.append("staff")
+    if model.strip():
+        where.append("model_name = ?")
+        params.append(model.strip())
+    if speed in LOG_SPEED_RANGES:
+        lo, hi = LOG_SPEED_RANGES[speed]
+        where.append("latency_ms >= ?" + (" AND latency_ms < ?" if hi else ""))
+        params += [lo] + ([hi] if hi else [])
+    if exclude_test:
+        where.append("CHARINDEX(N'[테스트]', ISNULL(question, '')) = 0")
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
     conn = get_mssql_connection()
     if not conn:
         raise HTTPException(status_code=500, detail="MS-SQL 연결 실패")
     try:
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT TOP 100 id, user_role, model_name, question, scraped_context, 
+        cursor.execute(f"SELECT COUNT(*) FROM Sys_AIAuditLog {where_sql}", params)
+        total = int(cursor.fetchone()[0] or 0)
+        cursor.execute(f"""
+            SELECT id, user_role, model_name, question, scraped_context,
                    sql_query, rag_query, answer, latency_ms, user_feedback,
                    router_model_name, router_in_tokens, router_out_tokens,
                    chat_in_tokens, chat_out_tokens, total_tokens, estimated_cost,
                    rag_documents, router_latency_ms, db_latency_ms, chat_latency_ms,
+                   router_mode, chat_mode,
                    CONVERT(VARCHAR(19), created_at, 120) AS created_at
             FROM Sys_AIAuditLog
+            {where_sql}
             ORDER BY id DESC
-        """)
+            OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+        """, params + [(page - 1) * size, size])
         columns = [column[0] for column in cursor.description]
         logs = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        return {"status": "success", "data": logs}
+        return {"status": "success", "data": logs, "total": total, "page": page, "size": size}
     except Exception as e:
         print(f"Audit Log 조회 오류: {e}")
         return {"status": "error", "data": []}
     finally:
         if conn:
             conn.close()
+
+@app.get("/logs/audit/facets")
+async def get_audit_log_facets():
+    """[대화 로그 필터] 선택 목록: 로그가 있는 달, 사용된 최종 모델"""
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL 연결 실패")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""SELECT DISTINCT CONVERT(VARCHAR(7), created_at, 120) FROM Sys_AIAuditLog
+                          WHERE created_at IS NOT NULL ORDER BY 1 DESC""")
+        months = [r[0] for r in cursor.fetchall()]
+        cursor.execute("""SELECT model_name, COUNT(*) FROM Sys_AIAuditLog WHERE ISNULL(model_name, '') <> ''
+                          GROUP BY model_name ORDER BY COUNT(*) DESC""")
+        models = [{"name": r[0], "count": int(r[1])} for r in cursor.fetchall()]
+        return {"months": months, "models": models}
+    finally:
+        conn.close()
 
 class FeedbackRequest(BaseModel):
     feedback: str = None  # 'UP', 'DOWN', or None
@@ -2355,12 +3769,11 @@ async def update_log_feedback(log_id: int, req: FeedbackRequest):
 @app.post("/logs/analytics")
 def analyze_audit_logs(req: AnalyticsRequest, x_gemini_key: str = Header(None)):
     """최근 로그 기반 핵심 키워드 및 개선점 AI 추출"""
-    if not x_gemini_key:
-        raise HTTPException(status_code=401, detail="Gemini API Key가 필요합니다.")
+    api_key = llm_client.resolve_api_key(req.model_name, x_gemini_key)
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API Key가 필요합니다.")
     try:
-        genai.configure(api_key=x_gemini_key)
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        
+
         prompt = f"""
         너는 대학교 입시처의 데이터 분석가야.
         교직원들이 입시 챗봇에 최근 질문한 아래 {len(req.questions)}개의 질의 내역을 분석해서, 
@@ -2378,7 +3791,7 @@ def analyze_audit_logs(req: AnalyticsRequest, x_gemini_key: str = Header(None)):
         질문 리스트:
         {req.questions}
         """
-        resp = model.generate_content(prompt)
+        resp = llm_client.generate(req.model_name, api_key, prompt, effort="low", timeout=120)
         text = resp.text.strip().replace("```json", "").replace("```", "")
         import json
         return {"status": "success", "data": json.loads(text)}
@@ -2439,6 +3852,61 @@ async def get_table_catalog():
         conn.close()
 
 
+TOKEN_COUNT_CACHE = {}  # (종류, 이름, 글자 수) → 토큰 수 (내용이 바뀌면 글자 수가 달라져 다시 계산)
+
+
+def doc_token_count(text):
+    """문서 본문 토큰 수 (Claude Haiku 기준, 무료 토큰 계산 API). 키가 없거나 실패하면 글자 수로 근사"""
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    return llm_client.count_tokens("claude-haiku-5-5", api_key, text) if (api_key and text) else len(text or "")
+
+
+def _cached_token_count(kind, name, text):
+    """대시보드 표시용 토큰 수 (Claude Haiku 기준, 무료 토큰 계산 API). 키가 없으면 글자 수로 근사"""
+    key = (kind, name, len(text))
+    if key not in TOKEN_COUNT_CACHE:
+        api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        TOKEN_COUNT_CACHE[key] = llm_client.count_tokens("claude-haiku-5-5", api_key, text) if (api_key and text) else len(text)
+    return TOKEN_COUNT_CACHE[key]
+
+
+@app.get("/catalog/token-counts")
+def get_token_counts():
+    """
+    [대시보드 토큰 수] 비정형 문서: 참고 문서로 뽑히면 AI 입력에 들어가는 본문 토큰 /
+    정형 테이블: 매 질문 AI 에게 주는 스키마 설명(열·힌트·실제 값 목록) 토큰 (비활성 테이블은 0)
+    """
+    doc_tokens, table_tokens = {}, {}
+    conn = get_mssql_connection()
+    if conn:
+        try:
+            # 문서: 업로드 때 저장한 Sys_DocumentCatalog.token_count. 비어 있는 문서만 본문으로 계산해 저장
+            cur = conn.cursor()
+            cur.execute("SELECT doc_id, filename, doc_type, token_count FROM Sys_DocumentCatalog")
+            for doc_id, fname, d_type, n in cur.fetchall():
+                if n is None:
+                    try:
+                        g = (rule_db if d_type == "rule" else reference_db).get(ids=[doc_id], include=["documents"])
+                        text = (g["documents"] or [""])[0] or ""
+                        if text:
+                            n = doc_token_count(text)
+                            cur.execute("UPDATE Sys_DocumentCatalog SET token_count = ? WHERE doc_id = ?", (n, doc_id))
+                            conn.commit()
+                    except Exception as e:
+                        print(f"[토큰 수] {fname} 계산 오류: {e}")
+                if n is not None:
+                    doc_tokens[fname] = n
+            # 테이블: 힌트를 고치면 바뀌므로 매번 스키마 설명으로 계산 (같은 내용이면 메모리 캐시)
+            schema = get_dynamic_db_schema(conn, "staff").split("\n[현재 AI가 접근 가능한 비정형")[0]
+            for block in re.split(r"\n(?=- Table: \[)", schema):
+                m = re.match(r"- Table: \[([^\]]+)\]", block.strip())
+                if m:
+                    table_tokens[m.group(1)] = _cached_token_count("table", m.group(1), block.strip())
+        finally:
+            conn.close()
+    return {"status": "success", "documents": doc_tokens, "tables": table_tokens}
+
+
 @app.put("/tables/{table_name}")
 async def update_table(table_name: str, table_name_kr: str = Form(...), description: str = Form(None), is_active: str = Form("Y")):
     """정형 데이터(테이블/뷰) 메타데이터 수정"""
@@ -2448,7 +3916,9 @@ async def update_table(table_name: str, table_name_kr: str = Form(...), descript
         cursor = conn.cursor()
         desc_val = description if description else ""
         cursor.execute("UPDATE Sys_TableCatalog SET table_name_kr=?, description=?, is_active=? WHERE table_name=?", (table_name_kr, desc_val, is_active, table_name))
+        set_db_comment(cursor, table_name, None, " - ".join(x for x in [table_name_kr, desc_val] if x))
         conn.commit()
+        db_access.sync_student_grants(conn)  # 활성/비활성에 맞춰 학생 계정 SELECT 권한 조정
         return {"status": "success", "message": "데이터 카탈로그 정보가 수정되었습니다."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -2474,8 +3944,9 @@ async def delete_table(table_name: str):
         # 엑셀 데이터일 경우 실제 물리 테이블도 Drop
         if db_source == 'INTERNAL':
             cursor.execute(f"IF OBJECT_ID('[{table_name}]', 'U') IS NOT NULL DROP TABLE [{table_name}]")
-            
+
         conn.commit()
+        db_access.sync_student_grants(conn)  # 연동 해제한 테이블의 학생 계정 권한 회수
         return {"status": "success", "message": f"'{table_name}' 연동 해제 및 삭제 완료"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -2524,6 +3995,12 @@ class SupplementalKnowledgePayload(BaseModel):
     content: str
     author: Optional[str] = "staff"
     is_active: Optional[str] = "Y"
+    target_scope: Optional[str] = "staff"  # 적용 대상: staff(교직원 전용) / student(학생 전용) / all(공통)
+
+
+def normalize_scope(scope) -> str:
+    s = (scope or "staff").strip().lower()
+    return s if s in ("staff", "student", "all") else "staff"
 
 
 @app.get("/catalog/supplemental-knowledge")
@@ -2535,9 +4012,9 @@ async def get_supplemental_knowledge_catalog():
     try:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, category, content, is_active, 
-                   CONVERT(VARCHAR(10), created_at, 120) AS created_at, 
-                   author 
+            SELECT id, category, content, is_active,
+                   CONVERT(VARCHAR(10), created_at, 120) AS created_at,
+                   author, ISNULL(target_scope, 'staff') AS target_scope
             FROM Sys_SupplementalKnowledge
             ORDER BY id DESC
         """)
@@ -2564,9 +4041,9 @@ async def add_supplemental_knowledge(payload: SupplementalKnowledgePayload):
     try:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO Sys_SupplementalKnowledge (category, content, is_active, author)
-            VALUES (?, ?, 'Y', ?)
-        """, (payload.category, payload.content, payload.author))
+            INSERT INTO Sys_SupplementalKnowledge (category, content, is_active, author, target_scope)
+            VALUES (?, ?, 'Y', ?, ?)
+        """, (payload.category, payload.content, payload.author, normalize_scope(payload.target_scope)))
         conn.commit()
         return {"status": "success", "message": "사전지식이 성공적으로 등록되었습니다."}
     except Exception as e:
@@ -2586,9 +4063,9 @@ async def update_supplemental_knowledge(knowledge_id: int, payload: Supplemental
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE Sys_SupplementalKnowledge
-            SET category = ?, content = ?, is_active = ?
+            SET category = ?, content = ?, is_active = ?, target_scope = ?
             WHERE id = ?
-        """, (payload.category, payload.content, payload.is_active, knowledge_id))
+        """, (payload.category, payload.content, payload.is_active, normalize_scope(payload.target_scope), knowledge_id))
         conn.commit()
         return {"status": "success", "message": "사전지식이 성공적으로 수정되었습니다."}
     except Exception as e:
@@ -2619,6 +4096,323 @@ async def delete_supplemental_knowledge(knowledge_id: int):
         conn.close()
 
 
+# ==========================================
+# [기준 입시학년도] 대시보드 상단 선택 상자
+# ==========================================
+class AdmissionYearPayload(BaseModel):
+    year: str
+
+
+@app.get("/settings/admission-year")
+async def get_admission_year():
+    _SETTING_CACHE.pop("admission_year", None)
+    return {"status": "success", "year": current_admission_year(), "date_year": date_admission_year()}
+
+
+@app.put("/settings/admission-year")
+async def set_admission_year(payload: AdmissionYearPayload):
+    y = (payload.year or "").strip()
+    if not re.fullmatch(r"20\d\d", y):
+        raise HTTPException(status_code=400, detail="학년도는 4자리 숫자로 입력해 주세요. (예: 2027)")
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE Sys_SystemSetting SET setting_value = ?, updated_at = GETDATE() WHERE setting_key = 'admission_year'", (y,))
+        if cursor.rowcount == 0:
+            cursor.execute("INSERT INTO Sys_SystemSetting (setting_key, setting_value, description) VALUES ('admission_year', ?, ?)",
+                           (y, "기준 입시학년도 (Q&A·문서 등록 기본값, 학년도 없는 질문과 '올해/작년' 해석의 기준)"))
+        conn.commit()
+        _SETTING_CACHE["admission_year"] = (y, time.time())
+        print(f"[시스템 설정] 기준 입시학년도 → {y}")
+        return {"status": "success", "year": y, "date_year": date_admission_year()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"기준 학년도 저장 에러: {str(e)}")
+    finally:
+        conn.close()
+
+
+# ==========================================
+# [환경설정] 운영 설정값 (대시보드 '환경 설정' 메뉴). API 키·DB 계정은 다루지 않음 (.env 전용)
+# ==========================================
+class ConfigPayload(BaseModel):
+    value: str
+
+
+@app.get("/stats/claude")
+def get_claude_stats(unit: str = "day", role: str = "all", exclude_test: bool = False, month: str = "", year: str = ""):
+    """[Claude 사용 통계] 일별(최근 31일 또는 month='YYYY-MM' 의 그달) / 월별(최근 12개월 또는 year='YYYY' 의 1~12월)
+    건수·원화·달러, 학생/교직원 필터.
+    원화는 로그에 기록된 예상 비용(부가세 포함), 달러는 현재 환율·부가세율로 되돌린 대략값"""
+    unit = "month" if unit == "month" else "day"
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        cur = conn.cursor()
+        period = "CONVERT(VARCHAR(7), created_at, 120)" if unit == "month" else "CONVERT(VARCHAR(10), created_at, 120)"
+        # 조회 구간 [start, end) 과 표에 채울 날/달 목록
+        import datetime as _dt
+        today = _dt.date.today()
+        if unit == "month":
+            if re.fullmatch(r"\d{4}", year or ""):
+                y0 = int(year)
+                keys = [f"{y0:04d}-{m:02d}" for m in range(1, 13)]
+            else:
+                keys, y, m = [], today.year, today.month
+                for _ in range(12):
+                    keys.append(f"{y:04d}-{m:02d}")
+                    y, m = (y, m - 1) if m > 1 else (y - 1, 12)
+                keys.reverse()
+            start = _dt.date(int(keys[0][:4]), int(keys[0][5:]), 1)
+            last = _dt.date(int(keys[-1][:4]), int(keys[-1][5:]), 1)
+            end = (last + _dt.timedelta(days=32)).replace(day=1)
+        else:
+            if re.fullmatch(r"\d{4}-\d{2}", month or ""):
+                start = _dt.date(int(month[:4]), int(month[5:]), 1)
+                end = (start + _dt.timedelta(days=32)).replace(day=1)
+                keys = [(start + _dt.timedelta(days=i)).isoformat() for i in range((end - start).days)]
+            else:
+                keys = [(today - _dt.timedelta(days=i)).isoformat() for i in range(30, -1, -1)]
+                start, end = today - _dt.timedelta(days=30), today + _dt.timedelta(days=1)
+        role_cond, params = "", [_dt.datetime.combine(start, _dt.time()), _dt.datetime.combine(end, _dt.time())]
+        if role in ("student", "staff"):
+            role_cond = " AND user_role = ?"
+            params.append(role)
+        # [테스트] 시험 질문은 질문에 '[테스트]' 표시 (LIKE 의 [ ] 는 패턴 문자라 CHARINDEX 로 찾음)
+        is_test = "CHARINDEX(N'[테스트]', ISNULL(question, N'')) > 0"
+        if exclude_test:
+            role_cond += f" AND NOT ({is_test})"
+        cur.execute(f"""
+            SELECT {period} AS p, user_role, COUNT(*), ISNULL(SUM(estimated_cost), 0),
+                   SUM(CASE WHEN {is_test} THEN 1 ELSE 0 END), ISNULL(SUM(CASE WHEN {is_test} THEN estimated_cost ELSE 0 END), 0)
+            FROM Sys_AIAuditLog
+            WHERE created_at >= ? AND created_at < ? AND (model_name LIKE 'claude%' OR router_model_name LIKE 'claude%'){role_cond}
+            GROUP BY {period}, user_role ORDER BY p""", params)
+        rate, vat = app_config.get("KRW_PER_USD"), app_config.get("VAT_RATE")
+        rows = {}
+        empty = lambda p: {"period": p, "count": 0, "krw": 0.0, "student_count": 0, "staff_count": 0,
+                           "student_krw": 0.0, "staff_krw": 0.0, "test_count": 0, "test_krw": 0.0}
+        for p, r, cnt, krw, t_cnt, t_krw in cur.fetchall():
+            row = rows.setdefault(p, empty(p))
+            krw = float(krw or 0)
+            row["count"] += cnt
+            row["test_count"] += int(t_cnt or 0)
+            row["test_krw"] += float(t_krw or 0)
+            row["krw"] += krw
+            key = "student" if r == "student" else "staff"
+            row[f"{key}_count"] += cnt
+            row[f"{key}_krw"] += krw
+        # 빈 날/달도 0 으로 채움 (그래프가 끊기지 않도록)
+        out = []
+        for k in keys:
+            row = rows.get(k, empty(k))
+            row["usd"] = round(row["krw"] / (1 + vat) / rate, 4)
+            row["krw"] = round(row["krw"], 1)
+            row["test_krw"] = round(row["test_krw"], 1)
+            out.append(row)
+        total_krw = sum(r["krw"] for r in out)
+        # 선택 목록용: Claude 기록이 있는 첫 달
+        cur.execute("""SELECT CONVERT(VARCHAR(7), MIN(created_at), 120) FROM Sys_AIAuditLog
+                       WHERE model_name LIKE 'claude%' OR router_model_name LIKE 'claude%'""")
+        first_month = (cur.fetchone() or [None])[0]
+        return {"status": "success", "unit": unit, "role": role, "rows": out,
+                "month": month if unit == "day" else "", "year": year if unit == "month" else "",
+                "first_month": first_month, "this_month": today.strftime("%Y-%m"),
+                "total": {"count": sum(r["count"] for r in out), "krw": round(total_krw, 1),
+                          "usd": round(total_krw / (1 + vat) / rate, 4),
+                          "test_count": sum(r["test_count"] for r in out), "test_krw": round(sum(r["test_krw"] for r in out), 1)},
+                "exclude_test": exclude_test,
+                "krw_per_usd": rate, "vat_rate": vat}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"통계 조회 에러: {str(e)[:200]}")
+    finally:
+        conn.close()
+
+
+class CreditSyncPayload(BaseModel):
+    balance_usd: float
+
+
+@app.get("/billing/claude")
+def get_claude_billing():
+    """[Claude 크레딧] 예상 잔액 (기준 잔액 − 그 뒤 로그 예상 비용) · 오늘/이번 달 사용액"""
+    import claude_billing
+    try:
+        return claude_billing.get_summary()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"크레딧 계산 에러: {str(e)[:200]}")
+
+
+class CreditChargePayload(BaseModel):
+    paid_usd: float  # 결제 금액 (USD, 부가세 포함. 예: $5 크레딧 → 5.5)
+    paid_krw: float  # 카드에 청구된 원화
+
+
+@app.post("/billing/claude/charge")
+def charge_claude_billing(payload: CreditChargePayload):
+    """충전 기록: 실제 환율 자동 계산·저장 + 예상 잔액에 충전 크레딧 더하기"""
+    import claude_billing
+    if not (0 < payload.paid_usd <= 100000) or not (0 < payload.paid_krw <= 1000000000):
+        raise HTTPException(status_code=400, detail="결제 달러와 원화를 0보다 큰 숫자로 입력해 주세요.")
+    rate = payload.paid_krw / payload.paid_usd
+    if not (500 <= rate <= 3000):
+        raise HTTPException(status_code=400, detail=f"계산된 환율 {rate:,.0f}원이 너무 이상합니다. 달러·원화 금액을 다시 확인해 주세요.")
+    try:
+        return claude_billing.record_charge(payload.paid_usd, payload.paid_krw)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"충전 기록 에러: {str(e)[:200]}")
+
+
+@app.post("/billing/claude/sync")
+def sync_claude_billing(payload: CreditSyncPayload):
+    """콘솔에서 본 잔액으로 기준을 다시 맞춤 (지금 시각부터 로그 비용을 다시 뺌)"""
+    import claude_billing
+    if not (0 <= payload.balance_usd <= 1000000):
+        raise HTTPException(status_code=400, detail="잔액은 0 ~ 1,000,000 USD 사이로 입력해 주세요.")
+    try:
+        return claude_billing.sync_balance(payload.balance_usd)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"잔액 맞추기 에러: {str(e)[:200]}")
+
+
+@app.get("/settings/config")
+async def get_config_list():
+    return {"status": "success", "items": app_config.describe()}
+
+
+@app.put("/settings/config/{key}")
+async def set_config_value(key: str, payload: ConfigPayload):
+    if key not in app_config.SPEC:
+        raise HTTPException(status_code=404, detail="화면에서 바꿀 수 없는 설정입니다.")
+    try:
+        value = app_config.set_value(key, payload.value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"{app_config.SPEC[key][1]}: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"설정 저장 에러: {str(e)}")
+    return {"status": "success", "key": key, "value": value}
+
+
+@app.delete("/settings/config/{key}")
+async def reset_config_value(key: str):
+    """화면에서 정한 값을 지워 .env(없으면 기본값)로 되돌림"""
+    if key not in app_config.SPEC:
+        raise HTTPException(status_code=404, detail="화면에서 바꿀 수 없는 설정입니다.")
+    try:
+        app_config.set_value(key, None)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"설정 되돌리기 에러: {str(e)}")
+    return {"status": "success", "key": key}
+
+
+# ==========================================
+# [입학처 Q&A] Sys_StudentFAQ 관리 (대시보드 Q&A 탭 · 감사 로그 [답변 등록])
+# ==========================================
+class FaqPayload(BaseModel):
+    topic: str
+    answer: str
+    apply_year: Optional[str] = "ALL"  # 'ALL' = 공통, '2027' 등 = 그 학년도
+    sample_question: Optional[str] = None
+    is_active: Optional[str] = "Y"
+    source_log_id: Optional[int] = None
+
+
+def normalize_apply_year(y) -> str:
+    y = str(y or "ALL").strip()
+    return y if re.fullmatch(r"20\d\d", y) else "ALL"
+
+
+def _faq_check(payload: FaqPayload):
+    if not (payload.topic or "").strip() or not (payload.answer or "").strip():
+        raise HTTPException(status_code=400, detail="주제와 답변을 모두 입력해 주세요.")
+
+
+@app.get("/catalog/faq")
+async def get_faq_catalog():
+    """입학처 Q&A 전체 목록 (사용 안 함 포함) + 분량 정보"""
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT faq_id, topic, answer, apply_year, sample_question, is_active, source_log_id,
+                   CONVERT(VARCHAR(16), created_at, 120) AS created_at, CONVERT(VARCHAR(16), updated_at, 120) AS updated_at
+            FROM Sys_StudentFAQ ORDER BY faq_id DESC""")
+        columns = [c[0] for c in cursor.description]
+        data = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        active = [(d["faq_id"], d["topic"], d["answer"], d["apply_year"]) for d in data if d["is_active"] == "Y"]
+        return {"status": "success", "total_count": len(data), "data": data,
+                "active_tokens": faq_size(active), "all_tokens_limit": faq_all_tokens(),
+                "current_year": current_admission_year()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Q&A 조회 에러: {str(e)}")
+    finally:
+        conn.close()
+
+
+@app.post("/catalog/faq")
+async def add_faq(payload: FaqPayload):
+    """Q&A 등록 (감사 로그에서 등록하면 source_log_id·sample_question 이 함께 저장됨)"""
+    _faq_check(payload)
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO Sys_StudentFAQ (topic, answer, apply_year, sample_question, is_active, source_log_id)
+            OUTPUT INSERTED.faq_id VALUES (?, ?, ?, ?, ?, ?)""",
+            (payload.topic.strip(), payload.answer.strip(), normalize_apply_year(payload.apply_year),
+             (payload.sample_question or "").strip()[:500] or None, "N" if payload.is_active == "N" else "Y", payload.source_log_id))
+        new_id = cursor.fetchone()[0]
+        conn.commit()
+        return {"status": "success", "faq_id": new_id, "message": "Q&A 가 등록되었습니다."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Q&A 등록 에러: {str(e)}")
+    finally:
+        conn.close()
+
+
+@app.put("/catalog/faq/{faq_id}")
+async def update_faq(faq_id: int, payload: FaqPayload):
+    _faq_check(payload)
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE Sys_StudentFAQ SET topic = ?, answer = ?, apply_year = ?, sample_question = ?, is_active = ?, updated_at = GETDATE()
+            WHERE faq_id = ?""",
+            (payload.topic.strip(), payload.answer.strip(), normalize_apply_year(payload.apply_year),
+             (payload.sample_question or "").strip()[:500] or None, "N" if payload.is_active == "N" else "Y", faq_id))
+        conn.commit()
+        return {"status": "success", "message": "Q&A 가 수정되었습니다."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Q&A 수정 에러: {str(e)}")
+    finally:
+        conn.close()
+
+
+@app.delete("/catalog/faq/{faq_id}")
+async def delete_faq(faq_id: int):
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM Sys_StudentFAQ WHERE faq_id = ?", (faq_id,))
+        conn.commit()
+        return {"status": "success", "message": "Q&A 가 삭제되었습니다."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Q&A 삭제 에러: {str(e)}")
+    finally:
+        conn.close()
+
+
 @app.get("/columns/{table_name}")
 async def get_columns(table_name: str):
     """특정 테이블/뷰의 컬럼 카탈로그 정보를 반환합니다."""
@@ -2644,13 +4438,306 @@ async def update_columns(table_name: str, payload: ColumnUpdatePayload):
         for col in payload.columns:
             desc = col.ai_description if col.ai_description else ""
             cursor.execute("UPDATE Sys_ColumnCatalog SET ai_description=?, is_public=? WHERE id=?", (desc, col.is_public, col.id))
+            if desc:
+                # AI 힌트를 DB 컬럼 주석에도 반영 (엑셀 업로드 테이블만 해당, 뷰는 건너뜀)
+                cursor.execute("SELECT table_name, column_name FROM Sys_ColumnCatalog WHERE id=?", (col.id,))
+                row = cursor.fetchone()
+                if row:
+                    set_db_comment(cursor, row[0], row[1], desc)
         conn.commit()
+        db_access.sync_student_grants(conn)  # 열 공개/비공개에 맞춰 학생 계정 SELECT 권한 조정
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         cursor.close()
         conn.close()
+
+class ValueDictModePayload(BaseModel):
+    table_name: str
+    column_name: str
+    mode: str  # "Y"(항상 포함) / "N"(항상 제외) / "AUTO"(자동 판단)
+
+
+def value_dictionary_status(conn) -> dict:
+    """[실제 값 현황] 열마다 포함 여부·이유, 학년도별 값·건수, 최근 학년도에 새로 생긴/없어진 값"""
+    get_value_dictionary(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT table_name, column_name, year_value, value, row_count FROM Sys_ValueDictionary")
+    values = {}
+    for t, c, y, v, n in cur.fetchall():
+        values.setdefault((t, c), {}).setdefault(y, []).append({"value": v, "count": n})
+    cur.execute("SELECT table_name, ISNULL(table_name_kr, table_name) FROM Sys_TableCatalog")
+    kr = dict(cur.fetchall())
+    columns = []
+    for st in VALUE_DICT_CACHE["status"]:
+        by_year = values.get((st["table"], st["column"]), {})
+        years = sorted(by_year.keys(), reverse=True)
+        item = {**st, "table_kr": kr.get(st["table"], st["table"]), "years": [
+            {"year": y, "values": sorted(by_year[y], key=lambda x: x["value"])} for y in years], "new_values": [], "removed_values": []}
+        if len(years) >= 2 and years[0] != "전체":
+            latest = {x["value"] for x in by_year[years[0]]}
+            prev = {x["value"] for x in by_year[years[1]]}
+            item["new_values"], item["removed_values"] = sorted(latest - prev), sorted(prev - latest)
+        columns.append(item)
+    return {"status": "success", "refreshed_at": VALUE_DICT_CACHE["refreshed_at"], "ttl_sec": app_config.get("VALUE_DICT_TTL_SEC"), "columns": columns}
+
+
+@app.get("/value-dictionary")
+async def get_value_dictionary_status():
+    """대시보드 '실제 값 현황' 탭: 값 사전 현황 조회"""
+    conn = get_mssql_connection()
+    if not conn: raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        return value_dictionary_status(conn)
+    finally:
+        conn.close()
+
+
+@app.post("/value-dictionary/refresh")
+async def refresh_value_dictionary():
+    """값 사전을 지금 다시 읽음 (기본은 1시간마다 자동 갱신)"""
+    conn = get_mssql_connection()
+    if not conn: raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        get_value_dictionary(conn, force=True)
+        return value_dictionary_status(conn)
+    finally:
+        conn.close()
+
+
+@app.put("/value-dictionary/mode")
+async def set_value_dictionary_mode(payload: ValueDictModePayload):
+    """열을 값 사전에 항상 포함(Y) / 항상 제외(N) / 자동(AUTO)으로 지정하고 바로 다시 읽음"""
+    mode = payload.mode.strip().upper()
+    if mode not in ("Y", "N", "AUTO"):
+        raise HTTPException(status_code=400, detail="mode 는 Y, N, AUTO 중 하나")
+    conn = get_mssql_connection()
+    if not conn: raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE Sys_ColumnCatalog SET value_dict_mode=? WHERE table_name=? AND column_name=?",
+                    (None if mode == "AUTO" else mode, payload.table_name, payload.column_name))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="컬럼 카탈로그에 없는 열입니다. 정형데이터 탭에서 테이블 컬럼을 먼저 동기화해 주세요.")
+        conn.commit()
+        get_value_dictionary(conn, force=True)
+        return value_dictionary_status(conn)
+    finally:
+        conn.close()
+
+
+# =======================================================
+# [지표 사전] 대시보드 '지표 사전' 탭: 지표·구분 조회/추가/수정/사용 중지 (저장 전에 계산식·열을 실제로 실행해 검증)
+# =======================================================
+class MetricPayload(BaseModel):
+    metric_name: str
+    synonyms: Optional[str] = ""
+    table_name: str
+    expression: str
+    base_condition: Optional[str] = ""
+    value_kind: str = "count"
+    description: Optional[str] = ""
+    is_active: str = "Y"
+
+
+class DimensionPayload(BaseModel):
+    dim_name: str
+    table_name: str
+    column_name: str
+    description: Optional[str] = ""
+    is_active: str = "Y"
+
+
+_FORBIDDEN_SQL = re.compile(r";|--|/\*|\b(INSERT|UPDATE|DELETE|DROP|ALTER|EXEC|EXECUTE|CREATE|TRUNCATE|MERGE|GRANT|REVOKE|INTO)\b", re.I)
+
+
+def _validate_metric(conn, p: MetricPayload) -> str:
+    """지표 정의를 실제로 한 번 실행해 봄. 오류 문구(없으면 빈 문자열)"""
+    if not p.metric_name.strip() or not p.expression.strip():
+        return "지표명과 계산식은 필수입니다."
+    if p.value_kind not in ("count", "number", "mixed"):
+        return "종류는 count / number / mixed 중 하나입니다."
+    if p.table_name not in get_real_table_columns(conn):
+        return f"활성 테이블이 아닙니다: {p.table_name}"
+    for part in (p.expression, p.base_condition or ""):
+        if _FORBIDDEN_SQL.search(part):
+            return "계산식·조건에는 SELECT 식만 쓸 수 있습니다 (; -- INSERT·UPDATE·DELETE 등 금지)."
+    try:
+        cur = conn.cursor()
+        cond = f" WHERE {p.base_condition}" if (p.base_condition or "").strip() else ""
+        cur.execute(f"SELECT TOP 1 {p.expression} AS [v] FROM [{p.table_name}]{cond}")
+        row = cur.fetchone()
+        print(f"[지표 사전] '{p.metric_name}' 검증 실행 결과: {row[0] if row else '(0행)'}")
+    except Exception as e:
+        return f"계산식 실행 오류: {e}"
+    return ""
+
+
+def _validate_dimension(conn, p: DimensionPayload) -> str:
+    if not p.dim_name.strip():
+        return "구분명은 필수입니다."
+    cols = get_real_table_columns(conn).get(p.table_name)
+    if cols is None:
+        return f"활성 테이블이 아닙니다: {p.table_name}"
+    if p.column_name not in [c for c, _ in cols]:
+        return f"{p.table_name}에 '{p.column_name}' 열이 없습니다."
+    return ""
+
+
+@app.get("/metric-catalog")
+async def get_metric_catalog():
+    """지표·구분 전체 (사용 중지 포함) + 고를 수 있는 테이블·열 목록"""
+    conn = get_mssql_connection()
+    if not conn: raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT metric_id, metric_name, ISNULL(synonyms,''), table_name, expression, ISNULL(base_condition,''), value_kind, "
+                    "ISNULL(description,''), is_active, CONVERT(VARCHAR(19), updated_at, 120) FROM Sys_MetricCatalog ORDER BY metric_id")
+        metrics = [dict(zip(("metric_id", "metric_name", "synonyms", "table_name", "expression", "base_condition", "value_kind",
+                             "description", "is_active", "updated_at"), r)) for r in cur.fetchall()]
+        cur.execute("SELECT dim_id, dim_name, table_name, column_name, ISNULL(description,''), is_active, CONVERT(VARCHAR(19), updated_at, 120) "
+                    "FROM Sys_DimensionCatalog ORDER BY dim_name, dim_id")
+        dims = [dict(zip(("dim_id", "dim_name", "table_name", "column_name", "description", "is_active", "updated_at"), r)) for r in cur.fetchall()]
+        tables = {t: [c for c, _ in cols] for t, cols in get_real_table_columns(conn).items()}
+        return {"status": "success", "metrics": metrics, "dims": dims, "tables": tables}
+    finally:
+        conn.close()
+
+
+@app.post("/metric-catalog/metrics")
+@app.put("/metric-catalog/metrics/{metric_id}")
+async def save_metric(payload: MetricPayload, metric_id: Optional[int] = None):
+    conn = get_mssql_connection()
+    if not conn: raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        err = _validate_metric(conn, payload) if payload.is_active == "Y" else ""
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+        vals = (payload.metric_name.strip(), payload.synonyms or "", payload.table_name, payload.expression.strip(),
+                (payload.base_condition or "").strip() or None, payload.value_kind, payload.description or "", payload.is_active)
+        cur = conn.cursor()
+        if metric_id:
+            cur.execute("UPDATE Sys_MetricCatalog SET metric_name=?, synonyms=?, table_name=?, expression=?, base_condition=?, value_kind=?, "
+                        "description=?, is_active=?, updated_at=GETDATE() WHERE metric_id=?", vals + (metric_id,))
+        else:
+            cur.execute("INSERT INTO Sys_MetricCatalog (metric_name, synonyms, table_name, expression, base_condition, value_kind, description, is_active) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", vals)
+        conn.commit()
+        return {"status": "success"}
+    finally:
+        conn.close()
+
+
+@app.post("/metric-catalog/dims")
+@app.put("/metric-catalog/dims/{dim_id}")
+async def save_dimension(payload: DimensionPayload, dim_id: Optional[int] = None):
+    conn = get_mssql_connection()
+    if not conn: raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        err = _validate_dimension(conn, payload) if payload.is_active == "Y" else ""
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+        vals = (payload.dim_name.strip(), payload.table_name, payload.column_name, payload.description or "", payload.is_active)
+        cur = conn.cursor()
+        if dim_id:
+            cur.execute("UPDATE Sys_DimensionCatalog SET dim_name=?, table_name=?, column_name=?, description=?, is_active=?, updated_at=GETDATE() "
+                        "WHERE dim_id=?", vals + (dim_id,))
+        else:
+            cur.execute("INSERT INTO Sys_DimensionCatalog (dim_name, table_name, column_name, description, is_active) VALUES (?, ?, ?, ?, ?)", vals)
+        conn.commit()
+        return {"status": "success"}
+    finally:
+        conn.close()
+
+
+def _table_label_check(conn, table_name):
+    """기존 테이블 데이터의 표기 검사 (find_label_fixes) + 바꿀 행 수"""
+    real = get_real_table_columns(conn).get(table_name)
+    if not real:
+        raise HTTPException(status_code=404, detail="활성 테이블이 아닙니다.")
+    year_col = next((c for c, _ in real if "학년도" in c), None)
+    text_cols = [c for c, d in real if d in ("varchar", "nvarchar", "char", "nchar") and c != year_col]
+    cur = conn.cursor()
+    col_values, row_counts = {}, {}
+    for c in text_cols:
+        y_expr = f"CAST([{year_col}] AS NVARCHAR(20))" if year_col else "N'전체'"
+        cur.execute(f"SELECT {y_expr}, LTRIM(RTRIM([{c}])), COUNT(*) FROM [{table_name}] WHERE [{c}] IS NOT NULL AND LTRIM(RTRIM([{c}])) <> '' "
+                    f"GROUP BY {y_expr + ', ' if year_col else ''}LTRIM(RTRIM([{c}]))")  # 학년도 열이 없으면 상수로 묶을 수 없음
+        for y, v, n in cur.fetchall():
+            col_values.setdefault(c, {}).setdefault(str(y or "전체"), set()).add(v)
+            row_counts[(c, v)] = row_counts.get((c, v), 0) + n
+    checks = find_label_fixes(conn, table_name, col_values, row_counts)
+    items = []
+    for c, info in checks.items():
+        for a, b in info["fixes"].items():
+            items.append({"column": c, "ref": info["ref"], "kind": "fix", "from": a, "to": b, "rows": row_counts.get((c, a), 0)})
+        for a in info["unknown"]:
+            items.append({"column": c, "ref": info["ref"], "kind": "unknown", "from": a, "to": "", "rows": row_counts.get((c, a), 0)})
+    return items
+
+
+class LabelFixPayload(BaseModel):
+    fixes: List[dict]  # [{"column", "from", "to"}]
+
+
+@app.get("/value-dictionary/label-check/{table_name}")
+async def label_check(table_name: str):
+    """[기존 데이터 맞추기] 미리보기: 다른 테이블 표기와 공백만 다른 값(바꿀 대상)과 처음 보는 값"""
+    conn = get_mssql_connection()
+    if not conn: raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        return {"status": "success", "items": _table_label_check(conn, table_name)}
+    finally:
+        conn.close()
+
+
+@app.get("/value-dictionary/label-check-summary")
+async def label_check_summary():
+    """[기존 데이터 맞추기] 엑셀 업로드 테이블마다 아직 맞추지 않은 표기 건수 (화면에서 눌러 보지 않아도 남은 건수를 표시)"""
+    conn = get_mssql_connection()
+    if not conn: raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        out = {}
+        for t in get_real_table_columns(conn):
+            if not t.upper().startswith("EXCEL_"):
+                continue
+            try:
+                items = _table_label_check(conn, t)
+                fixes = [i for i in items if i["kind"] == "fix"]
+                out[t] = {"fix": len(fixes), "fix_rows": sum(i["rows"] for i in fixes),
+                          "unknown": sum(1 for i in items if i["kind"] == "unknown")}
+            except Exception as e:
+                out[t] = {"fix": 0, "fix_rows": 0, "unknown": 0, "error": str(e)[:200]}
+        return {"status": "success", "tables": out}
+    finally:
+        conn.close()
+
+
+@app.post("/value-dictionary/label-fix/{table_name}")
+async def label_fix(table_name: str, payload: LabelFixPayload):
+    """[기존 데이터 맞추기] 미리보기에서 확인한 값을 기준 표기로 UPDATE (엑셀 업로드 테이블만)"""
+    if not table_name.upper().startswith("EXCEL_"):
+        raise HTTPException(status_code=400, detail="엑셀 업로드 테이블(EXCEL_)만 고칠 수 있습니다.")
+    conn = get_mssql_connection()
+    if not conn: raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        allowed = {(i["column"], i["from"], i["to"]) for i in _table_label_check(conn, table_name) if i["kind"] == "fix"}
+        cur = conn.cursor()
+        done = []
+        for f in payload.fixes:
+            key = (f.get("column"), f.get("from"), f.get("to"))
+            if key not in allowed:
+                continue  # 미리보기 이후 바뀌었거나 검사 결과에 없는 값은 고치지 않음
+            cur.execute(f"UPDATE [{table_name}] SET [{key[0]}] = ? WHERE LTRIM(RTRIM([{key[0]}])) = ?", (key[2], key[1]))
+            done.append({"column": key[0], "from": key[1], "to": key[2], "rows": cur.rowcount})
+        conn.commit()
+        get_value_dictionary(conn, force=True)
+        print(f"[기존 데이터 맞추기] {table_name}: {done}")
+        return {"status": "success", "done": done}
+    finally:
+        conn.close()
+
 
 # 엑셀 자동채우기 라우터 등록 (기존 로직과 완벽히 격리)
 app.include_router(excel_autofill_router)

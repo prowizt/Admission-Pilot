@@ -2,6 +2,7 @@ fastapi
 uvicorn
 chromadb
 google-generativeai
+anthropic
 python-multipart
 pdfplumber
 openpyxl

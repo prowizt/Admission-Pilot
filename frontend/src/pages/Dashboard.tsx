@@ -1,12 +1,32 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import axios from 'axios';
-import { Plus, Database, FileText, Lock, Globe, Search, Eye, X, ShieldHalf, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Plus, Database, FileText, Lock, Globe, Search, Eye, X, ShieldHalf, ChevronLeft, ChevronRight, ListChecks, Calculator, BookOpen, MessageCircleQuestionMark } from 'lucide-react';
 import KnowledgeModal from '@/components/modals/KnowledgeModal';
+import ValueDictionaryPanel from '@/components/ValueDictionaryPanel';
+import MetricCatalogPanel from '@/components/MetricCatalogPanel';
+import FaqPanel from '@/components/FaqPanel';
+import HelpDrawer from '@/components/HelpDrawer';
+import AdmissionYearSelector from '@/components/AdmissionYearSelector';
 import CustomSwal from '@/utils/CustomSwal';
+import { categoryLabel, categoryBadge, mergeCategories, KNOWLEDGE_SCOPES } from '@/utils/knowledgeCategories';
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('documents');
+  const [helpOpen, setHelpOpen] = useState(false); // [화면 설명서] 현재 탭의 도움말
+  // [토큰 수] 문서: 참고 문서로 뽑히면 AI 입력에 들어가는 토큰 / 테이블: 매 질문 들어가는 스키마 설명 토큰 (목록과 따로 불러옴)
+  const [tokenCounts, setTokenCounts] = useState<{ documents: Record<string, number>; tables: Record<string, number> } | null>(null);
+  const loadTokenCounts = async () => {
+    try {
+      const res = await axios.get('/api/catalog/token-counts');
+      setTokenCounts({ documents: res.data.documents || {}, tables: res.data.tables || {} });
+    } catch { /* 보조 정보라 실패해도 목록은 그대로 */ }
+  };
+  const tokenBadge = (n: number | undefined, large: number, note = '') => {
+    if (n === undefined) return <span className="text-[11px] text-slate-300">{tokenCounts ? '-' : '계산 중'}</span>;
+    const cls = n >= large ? 'bg-red-50 text-red-600 font-bold' : n >= large / 2 ? 'bg-amber-50 text-amber-700 font-bold' : 'text-slate-500';
+    return <span className={`text-[11px] font-mono px-1.5 py-0.5 rounded ${cls}`} title={note}>{n.toLocaleString()}</span>;
+  };
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<any>(null);
   
@@ -16,7 +36,8 @@ export default function Dashboard() {
   const [tableFilter, setTableFilter] = useState('all'); 
   const [publicFilter, setPublicFilter] = useState('all');
   const [knowledgeFilter, setKnowledgeFilter] = useState('all');
-  
+  const [scopeFilter, setScopeFilter] = useState('all_scopes'); // 사전지식 적용 대상 필터
+
   const [documents, setDocuments] = useState<any[]>([]);
   const [tables, setTables] = useState<any[]>([]);
   const [supplementalList, setSupplementalList] = useState<any[]>([]);
@@ -31,7 +52,7 @@ export default function Dashboard() {
   // 검색/필터 변경 시 페이지를 1로 리셋
   useEffect(() => { setDocPage(1); }, [searchQuery, docFilter, publicFilter]);
   useEffect(() => { setTablePage(1); }, [searchQuery, tableFilter, publicFilter]);
-  useEffect(() => { setKnowledgePage(1); }, [searchQuery, knowledgeFilter]);
+  useEffect(() => { setKnowledgePage(1); }, [searchQuery, knowledgeFilter, scopeFilter]);
 
   // 뷰어 상태 관리
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -55,13 +76,14 @@ export default function Dashboard() {
   const fetchCatalogs = async () => {
     try {
       setIsLoading(true);
+      if (activeTab === 'documents' || activeTab === 'tables') loadTokenCounts();
       if (activeTab === 'documents') {
         const res = await axios.get('/api/catalog/documents');
         if (res.data.status === 'success') setDocuments(res.data.data);
       } else if (activeTab === 'knowledge') {
         const res = await axios.get('/api/catalog/supplemental-knowledge');
         if (res.data.status === 'success') setSupplementalList(res.data.data);
-      } else {
+      } else if (activeTab === 'tables') {
         const res = await axios.get('/api/catalog/tables');
         if (res.data.status === 'success') setTables(res.data.data);
       }
@@ -95,7 +117,8 @@ export default function Dashboard() {
           category: item.category,
           content: item.content,
           author: item.author || 'staff',
-          is_active: item.is_active === 'Y' ? 'N' : 'Y'
+          is_active: item.is_active === 'Y' ? 'N' : 'Y',
+          target_scope: item.target_scope || 'staff' // 활성 토글 시 적용 대상이 교직원 전용으로 초기화되지 않도록 유지
         };
         await axios.put(`/api/catalog/supplemental-knowledge/${item.id}`, payload);
       }
@@ -103,6 +126,15 @@ export default function Dashboard() {
     } catch (error: any) {
       CustomSwal.fire({ icon: 'error', title: '변경 실패', text: error.message });
     }
+  };
+
+  // 목록 번호 (게시판식: 최신/맨 위 항목이 가장 큰 번호, 페이지가 바뀌어도 이어짐)
+  const rowNo = (total: number, page: number, idx: number) => total - ((page - 1) * ITEMS_PER_PAGE + idx);
+
+  // 사전지식 적용 대상 표시 배지 (NULL = 교직원 전용)
+  const renderScopeBadge = (item: any) => {
+    const s = KNOWLEDGE_SCOPES.find(x => x.value === (item.target_scope || 'staff')) || KNOWLEDGE_SCOPES[0];
+    return <span className={`text-[10px] px-2 py-1 rounded font-bold whitespace-nowrap ${s.badge}`}>{s.label}</span>;
   };
 
   useEffect(() => {
@@ -141,7 +173,8 @@ export default function Dashboard() {
                         safeCategory.toLowerCase().includes(searchQuery.toLowerCase()) ||
                         safeAuthor.toLowerCase().includes(searchQuery.toLowerCase());
     const matchCategory = knowledgeFilter === 'all' || item.category === knowledgeFilter;
-    return matchSearch && matchCategory;
+    const matchScope = scopeFilter === 'all_scopes' || (item.target_scope || 'staff') === scopeFilter;
+    return matchSearch && matchCategory && matchScope;
   }).sort((a, b) => b.id - a.id);
 
   // [NEW] 페이지네이션 계산
@@ -201,7 +234,18 @@ export default function Dashboard() {
               지식 카탈로그 관리
             </h1>
           </div>
+          <div className="flex items-center gap-2 shrink-0">
+          <AdmissionYearSelector />
+          <button
+            onClick={() => setHelpOpen(true)}
+            className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-white/10 border border-white/20 hover:bg-white/20 transition-colors"
+            title="현재 탭 화면의 설명서 보기"
+          >
+            <BookOpen size={14} className="text-amber-300" /> 도움말
+          </button>
+          </div>
         </div>
+        <HelpDrawer tab={activeTab} open={helpOpen} onClose={() => setHelpOpen(false)} />
 
         {/* Custom Tab Menu */}
         <div className="relative z-10 flex gap-1 overflow-x-auto min-w-0 mt-2">
@@ -241,6 +285,42 @@ export default function Dashboard() {
               <span className="hidden md:inline">사전지식 (핵심규칙 및 예외)</span>
             </span>
           </button>
+          <button
+            onClick={() => { setActiveTab('faq'); setSearchQuery(''); }}
+            className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap flex items-center gap-2 ${
+              activeTab === 'faq' ? 'bg-slate-50 text-indigo-900 font-bold' : 'bg-indigo-800/50 text-indigo-200 hover:bg-indigo-800 hover:text-white'
+            }`}
+          >
+            <MessageCircleQuestionMark size={16} className="shrink-0" />
+            <span>
+              <span className="inline md:hidden">Q&A</span>
+              <span className="hidden md:inline">입학처 Q&A</span>
+            </span>
+          </button>
+          <button
+            onClick={() => { setActiveTab('values'); setSearchQuery(''); }}
+            className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap flex items-center gap-2 ${
+              activeTab === 'values' ? 'bg-slate-50 text-indigo-900 font-bold' : 'bg-indigo-800/50 text-indigo-200 hover:bg-indigo-800 hover:text-white'
+            }`}
+          >
+            <ListChecks size={16} className="shrink-0" />
+            <span>
+              <span className="inline md:hidden">실제값</span>
+              <span className="hidden md:inline">실제 값 현황</span>
+            </span>
+          </button>
+          <button
+            onClick={() => { setActiveTab('metrics'); setSearchQuery(''); }}
+            className={`px-5 py-2.5 text-sm font-medium rounded-t-lg transition-colors whitespace-nowrap flex items-center gap-2 ${
+              activeTab === 'metrics' ? 'bg-slate-50 text-indigo-900 font-bold' : 'bg-indigo-800/50 text-indigo-200 hover:bg-indigo-800 hover:text-white'
+            }`}
+          >
+            <Calculator size={16} className="shrink-0" />
+            <span>
+              <span className="inline md:hidden">지표</span>
+              <span className="hidden md:inline">지표 사전</span>
+            </span>
+          </button>
         </div>
       </div>
 
@@ -248,7 +328,15 @@ export default function Dashboard() {
       <div className="flex-1 py-6 min-w-0">
         <div className="space-y-4 animate-in fade-in duration-300 min-w-0">
           
+          {/* TAB 4: 실제 값 현황 (자체 필터·검색 사용) */}
+          {activeTab === 'values' && <ValueDictionaryPanel />}
+          {/* TAB 5: 지표 사전 (자체 편집 화면) */}
+          {activeTab === 'metrics' && <MetricCatalogPanel />}
+          {/* TAB 6: 입학처 Q&A (자체 편집 화면) */}
+          {activeTab === 'faq' && <FaqPanel />}
+
           {/* 3. Control Bar (Filters, Search, Add Button) */}
+          <div className={activeTab === 'values' || activeTab === 'metrics' || activeTab === 'faq' ? 'hidden' : ''}>
           <div className="bg-white p-3 md:p-4 rounded-xl shadow-sm border border-gray-200 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 min-w-0">
             {/* Left: Filters */}
             <div className="flex flex-col sm:flex-row gap-3 w-full lg:w-auto min-w-0">
@@ -263,10 +351,9 @@ export default function Dashboard() {
                 ) : activeTab === 'knowledge' ? (
                   <>
                     <button onClick={() => setKnowledgeFilter('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === 'all' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>전체</button>
-                    <button onClick={() => setKnowledgeFilter('인사/조직')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === '인사/조직' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>인사/조직</button>
-                    <button onClick={() => setKnowledgeFilter('결재라인')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === '결재라인' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>결재라인</button>
-                    <button onClick={() => setKnowledgeFilter('예외규정')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === '예외규정' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>사전지식</button>
-                    <button onClick={() => setKnowledgeFilter('기타')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === '기타' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>기타</button>
+                    {mergeCategories(supplementalList.map(k => k.category)).map(cat => (
+                      <button key={cat} onClick={() => setKnowledgeFilter(cat)} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === cat ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>{categoryLabel(cat)}</button>
+                    ))}
                   </>
                 ) : (
                   <>
@@ -277,6 +364,16 @@ export default function Dashboard() {
                 )}
               </div>
               
+              {/* Scope Filter Buttons (사전지식 적용 대상) */}
+              {activeTab === 'knowledge' && (
+                <div className="flex bg-slate-100 p-1 rounded-lg shrink-0 overflow-x-auto custom-scrollbar">
+                  <button onClick={() => setScopeFilter('all_scopes')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${scopeFilter === 'all_scopes' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>모든 대상</button>
+                  {KNOWLEDGE_SCOPES.map(s => (
+                    <button key={s.value} onClick={() => setScopeFilter(s.value)} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${scopeFilter === s.value ? `bg-white shadow-sm ${s.text}` : 'text-slate-500 hover:text-slate-700'}`}>{s.label}</button>
+                  ))}
+                </div>
+              )}
+
               {/* Public/Private Filter Buttons */}
               {activeTab !== 'knowledge' && (
                 <div className="flex bg-slate-100 p-1 rounded-lg shrink-0 overflow-x-auto custom-scrollbar">
@@ -316,6 +413,7 @@ export default function Dashboard() {
               </button>
             </div>
           </div>
+          </div>
 
           {/* TAB 1: Documents List */}
           {activeTab === 'documents' && (
@@ -326,50 +424,62 @@ export default function Dashboard() {
                   <table className="w-full text-left border-collapse min-w-[600px]">
                     <thead>
                       <tr className="bg-slate-100 border-b border-slate-300">
+                        <th className="px-3 py-3 text-[12px] font-extrabold text-slate-700 w-14 text-center">No.</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">권한</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-20 text-center">유형</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-20 text-center">연도</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700">문서 제목</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">등록일</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-20 text-center">활성</th>
+                        <th className="px-4 py-2 text-[12px] font-extrabold text-slate-700 w-20 text-center">연도</th>
+                        <th className="px-4 py-2 text-[12px] font-extrabold text-slate-700">문서 제목</th>
+                        <th className="px-4 py-2 text-[12px] font-extrabold text-slate-700 w-24 text-center" title="참고 문서로 뽑히면 AI 입력에 들어가는 토큰 수 (Claude 기준)">토큰</th>
+                        <th className="px-4 py-2 text-[12px] font-extrabold text-slate-700 w-28 text-center">등록일</th>
+                        <th className="px-4 py-2 text-[12px] font-extrabold text-slate-700 w-20 text-center">활성</th>
                       </tr>
                     </thead>
                     <tbody>
                       {paginatedDocuments.length === 0 ? (
-                        <tr><td colSpan={5} className="py-12 text-center text-slate-400 font-medium">조건에 맞는 문서가 없습니다.</td></tr>
+                        <tr><td colSpan={8} className="py-12 text-center text-slate-400 font-medium">조건에 맞는 문서가 없습니다.</td></tr>
                       ) : (
-                        paginatedDocuments.map(doc => (
+                        paginatedDocuments.map((doc, idx) => (
                           <tr key={doc.doc_id} onClick={() => { setSelectedDoc(doc); setIsModalOpen(true); }} className="border-b border-gray-100 hover:bg-indigo-50/30 transition-colors cursor-pointer group">
-                            <td className="px-4 py-4 text-center whitespace-nowrap">
+                            <td className="px-3 py-2 text-center text-[12px] font-mono font-bold text-slate-500 whitespace-nowrap">
+                              {rowNo(filteredDocuments.length, docPage, idx)}
+                            </td>
+                            <td className="px-4 py-2 text-center whitespace-nowrap">
                               {doc.is_public === 'Y' ? (
                                 <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded whitespace-nowrap"><Globe size={12}/> 대외공개</span>
                               ) : (
                                 <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded whitespace-nowrap"><Lock size={12}/> 직원전용</span>
                               )}
                             </td>
-                            <td className="px-4 py-4 min-w-0 text-center whitespace-nowrap">
+                            <td className="px-4 py-2 min-w-0 text-center whitespace-nowrap">
                               <span className={`text-[10px] px-2 py-1 rounded font-bold inline-block ${(doc.doc_type || '').toLowerCase() === 'rule' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
                                 {(doc.doc_type || 'UNKNOWN').toUpperCase()}
                               </span>
                             </td>
-                            <td className="px-4 py-4 min-w-0 text-center whitespace-nowrap">
+                            <td className="px-4 py-2 min-w-0 text-center whitespace-nowrap">
                               <span className="text-xs font-bold text-gray-500">{doc.year}</span>
                             </td>
-                            <td className="px-4 py-4 min-w-0">
+                            <td className="px-4 py-2 min-w-0 w-full max-w-0">
                               <div className="flex flex-col gap-1">
                                 <div className="flex items-center gap-2">
-                                  <span className="font-bold text-gray-800 truncate" title={doc.title}>{doc.title || '제목 없음'}</span>
+                                  <span className="font-bold text-sm text-gray-800 truncate" title={doc.title}>{doc.title || '제목 없음'}</span>
                                   <button onClick={(e) => { e.stopPropagation(); handlePreview(doc.doc_type, doc.doc_id, doc.title); }} className="px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded text-[10px] font-bold hover:bg-indigo-100 flex items-center gap-1 whitespace-nowrap shrink-0">
                                     <Eye size={10} /> 본문
                                   </button>
                                 </div>
-                                <span className="text-xs text-gray-400 truncate" title={doc.filename}>{doc.filename}</span>
+                                {/* 제목 밑 한 줄: AI 힌트 설명 (없으면 파일명). 전체 내용은 마우스를 올리면 보임 */}
+                                <span className={`text-xs truncate ${doc.description ? 'text-gray-500' : 'text-gray-400'}`}
+                                      title={[doc.description, doc.filename].filter(Boolean).join('\n\n파일: ')}>
+                                  {doc.description || doc.filename}
+                                </span>
                               </div>
                             </td>
-                            <td className="px-4 py-4 min-w-0 text-center whitespace-nowrap">
+                            <td className="px-4 py-2 text-center whitespace-nowrap">
+                              {tokenBadge(tokenCounts?.documents[doc.filename], 20000, '참고 문서로 뽑히면 AI 입력에 들어가는 토큰 수')}
+                            </td>
+                            <td className="px-4 py-2 min-w-0 text-center whitespace-nowrap">
                               <span className="text-[11px] font-medium text-gray-500">{doc.uploaded_at?.substring(0, 10)}</span>
                             </td>
-                            <td className="px-4 py-4 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                            <td className="px-4 py-2 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                               <button 
                                 onClick={(e) => handleToggleActive(e, doc, 'documents')}
                                 className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${doc.is_active === 'Y' ? 'bg-indigo-600' : 'bg-gray-300'}`}
@@ -384,7 +494,7 @@ export default function Dashboard() {
                     {filteredDocuments.length > 0 && (
                       <tfoot className="bg-slate-100 border-t border-slate-300">
                         <tr>
-                          <td colSpan={5} className="py-1 px-4">
+                          <td colSpan={8} className="py-1 px-4">
                             {renderPagination(docPage, docTotalPages, setDocPage, filteredDocuments.length)}
                           </td>
                         </tr>
@@ -399,14 +509,15 @@ export default function Dashboard() {
                 {filteredDocuments.length === 0 ? (
                   <div className="py-8 text-center text-slate-400 font-medium text-sm">조건에 맞는 문서가 없습니다.</div>
                 ) : (
-                  filteredDocuments.map(doc => (
-                    <div key={doc.doc_id} onClick={() => { setSelectedDoc(doc); setIsModalOpen(true); }} className="p-3 hover:bg-indigo-50/50 active:bg-indigo-50 transition-colors cursor-pointer flex flex-col gap-1.5 min-w-0">
+                  filteredDocuments.map((doc, idx) => (
+                    <div key={doc.doc_id} onClick={() => { setSelectedDoc(doc); setIsModalOpen(true); }} className="px-3 py-2 hover:bg-indigo-50/50 active:bg-indigo-50 transition-colors cursor-pointer flex flex-col gap-1.5 min-w-0">
                       <div className="flex justify-between items-start min-w-0">
                         <div className="flex items-center gap-1.5 min-w-0 pr-2">
+                          <span className="text-[11px] font-mono font-bold text-slate-500 shrink-0">{filteredDocuments.length - idx}</span>
                           <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold shrink-0 ${(doc.doc_type || '').toLowerCase() === 'rule' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
                             {(doc.doc_type || 'UNKNOWN').toUpperCase()}
                           </span>
-                          <span className={`font-bold text-sm truncate ${doc.is_public === 'Y' ? 'text-emerald-700' : 'text-gray-800'}`}>{doc.title}</span>
+                          <span className={`font-bold text-[13px] truncate ${doc.is_public === 'Y' ? 'text-emerald-700' : 'text-gray-800'}`}>{doc.title}</span>
                         </div>
                       </div>
                       <div className="text-[11px] text-gray-500 truncate mt-0.5">{doc.description}</div>
@@ -416,6 +527,7 @@ export default function Dashboard() {
                           <span className="truncate">{doc.filename}</span>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
+                          {tokenCounts?.documents[doc.filename] !== undefined && <span className="font-mono">{tokenCounts.documents[doc.filename].toLocaleString()}토큰</span>}
                           <span>{doc.uploaded_at?.substring(0, 10)}</span>
                           <span className="font-bold">{doc.is_public === 'Y' ? '🟢 공개' : '🔴 보안'}</span>
                         </div>
@@ -439,41 +551,51 @@ export default function Dashboard() {
                   <table className="w-full text-left border-collapse min-w-[600px]">
                     <thead>
                       <tr className="bg-slate-100 border-b border-slate-300">
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">권한</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-24">출처</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-1/3">데이터명 (View/Table 명)</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700">AI 참조 설명 (Hint)</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">연동일</th>
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-20 text-center">활성</th>
+                        <th className="px-3 py-2 text-[12px] font-extrabold text-slate-700 w-14 text-center">No.</th>
+                        <th className="px-4 py-2 text-[12px] font-extrabold text-slate-700 w-28 text-center">권한</th>
+                        <th className="px-4 py-2 text-[12px] font-extrabold text-slate-700 w-24">출처</th>
+                        <th className="px-4 py-2 text-[12px] font-extrabold text-slate-700 w-1/3">데이터명 (View/Table 명)</th>
+                        <th className="px-4 py-2 text-[12px] font-extrabold text-slate-700">AI 참조 설명 (Hint)</th>
+                        <th className="px-4 py-2 text-[12px] font-extrabold text-slate-700 w-24 text-center" title="매 질문 AI 에게 주는 스키마 설명(열·힌트·실제 값 목록) 토큰 수. 비활성 테이블은 0">토큰</th>
+                        <th className="px-4 py-2 text-[12px] font-extrabold text-slate-700 w-28 text-center">연동일</th>
+                        <th className="px-4 py-2 text-[12px] font-extrabold text-slate-700 w-20 text-center">활성</th>
                       </tr>
                     </thead>
                     <tbody>
                       {paginatedTables.length === 0 ? (
-                        <tr><td colSpan={6} className="py-12 text-center text-slate-400 font-medium">조건에 맞는 데이터 뷰가 없습니다.</td></tr>
+                        <tr><td colSpan={8} className="py-12 text-center text-slate-400 font-medium">조건에 맞는 데이터 뷰가 없습니다.</td></tr>
                       ) : (
-                        paginatedTables.map(table => (
+                        paginatedTables.map((table, idx) => (
                           <tr key={table.table_name} onClick={() => { setSelectedDoc(table); setIsModalOpen(true); }} className="border-b border-gray-100 hover:bg-indigo-50/30 transition-colors cursor-pointer group">
-                            <td className="px-4 py-3 text-center whitespace-nowrap">
+                            <td className="px-3 py-2 text-center text-[12px] font-mono font-bold text-slate-500 whitespace-nowrap">
+                              {rowNo(filteredTables.length, tablePage, idx)}
+                            </td>
+                            <td className="px-4 py-2 text-center whitespace-nowrap">
                               {table.is_public === 'Y' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded whitespace-nowrap"><Globe size={12}/> 전체공개</span>}
                               {table.is_public === 'P' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded whitespace-nowrap"><ShieldHalf size={12}/> 부분공개</span>}
                               {table.is_public === 'N' && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded whitespace-nowrap"><Lock size={12}/> 직원전용</span>}
                             </td>
-                            <td className="px-4 py-3 min-w-0 text-center">
-                              <span className={`text-[10px] px-2 py-1 rounded font-bold block ${table.db_source === 'INTERNAL' ? 'bg-orange-50 text-orange-600' : 'bg-teal-50 text-teal-600'}`}>
+                            <td className="px-4 py-2 min-w-0 text-center">
+                              <span className={`text-[10px] px-2 py-1 rounded font-bold inline-block whitespace-nowrap ${table.db_source === 'INTERNAL' ? 'bg-orange-50 text-orange-600' : 'bg-teal-50 text-teal-600'}`}>
                                 {table.db_source === 'INTERNAL' ? '내부(엑셀)' : '종합학사'}
                               </span>
                             </td>
-                            <td className="px-4 py-3 min-w-0">
-                              <div className={`font-bold text-sm truncate ${table.is_public === 'Y' ? 'text-emerald-700' : 'text-gray-800'}`}>{table.table_name_kr}</div>
+                            <td className="px-4 py-2 min-w-0">
+                              <div className={`font-bold text-[13px] truncate ${table.is_public === 'Y' ? 'text-emerald-700' : 'text-gray-800'}`}>{table.table_name_kr}</div>
                               <div className="text-[11px] text-gray-400 truncate mt-0.5">{table.table_name}</div>
                             </td>
-                            <td className="px-4 py-3 min-w-0">
+                            <td className="px-4 py-2 min-w-0">
                               <p className="text-[11px] text-gray-500 truncate max-w-sm" title={table.description}>{table.description}</p>
                             </td>
-                            <td className="px-4 py-3 text-center text-[11px] text-gray-500 font-mono whitespace-nowrap">
+                            <td className="px-4 py-2 text-center whitespace-nowrap">
+                              {table.is_active === 'N'
+                                ? <span className="text-[11px] text-slate-300" title="비활성 테이블은 AI 에게 주지 않음">0</span>
+                                : tokenBadge(tokenCounts?.tables[table.table_name], 5000, '매 질문 AI 에게 주는 스키마 설명 토큰 수')}
+                            </td>
+                            <td className="px-4 py-2 text-center text-[11px] text-gray-500 font-mono whitespace-nowrap">
                               {table.created_at}
                             </td>
-                            <td className="px-4 py-3 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                            <td className="px-4 py-2 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                               <button 
                                 onClick={(e) => handleToggleActive(e, table, 'tables')}
                                 className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${table.is_active === 'Y' ? 'bg-indigo-600' : 'bg-gray-300'}`}
@@ -488,7 +610,7 @@ export default function Dashboard() {
                     {filteredTables.length > 0 && (
                       <tfoot className="bg-slate-100 border-t border-slate-300">
                         <tr>
-                          <td colSpan={6} className="py-1 px-4">
+                          <td colSpan={8} className="py-1 px-4">
                             {renderPagination(tablePage, tableTotalPages, setTablePage, filteredTables.length)}
                           </td>
                         </tr>
@@ -503,19 +625,20 @@ export default function Dashboard() {
                 {filteredTables.length === 0 ? (
                   <div className="py-8 text-center text-slate-400 font-medium text-sm">조건에 맞는 데이터 뷰가 없습니다.</div>
                 ) : (
-                  filteredTables.map(table => (
-                    <div key={table.table_name} onClick={() => { setSelectedDoc(table); setIsModalOpen(true); }} className="p-3 hover:bg-indigo-50/50 active:bg-indigo-50 transition-colors cursor-pointer flex flex-col gap-1.5 min-w-0">
+                  filteredTables.map((table, idx) => (
+                    <div key={table.table_name} onClick={() => { setSelectedDoc(table); setIsModalOpen(true); }} className="px-3 py-2 hover:bg-indigo-50/50 active:bg-indigo-50 transition-colors cursor-pointer flex flex-col gap-1.5 min-w-0">
                       <div className="flex justify-between items-start min-w-0">
                         <div className="flex items-center gap-1.5 min-w-0 pr-2">
+                          <span className="text-[11px] font-mono font-bold text-slate-500 shrink-0">{filteredTables.length - idx}</span>
                           <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold shrink-0 ${table.db_source === 'INTERNAL' ? 'bg-orange-50 text-orange-600' : 'bg-teal-50 text-teal-600'}`}>
                             {table.db_source === 'INTERNAL' ? '엑셀' : '종합학사'}
                           </span>
-                          <span className={`font-bold text-sm truncate ${table.is_public === 'Y' ? 'text-emerald-700' : 'text-gray-800'}`}>{table.table_name_kr}</span>
+                          <span className={`font-bold text-[13px] truncate ${table.is_public === 'Y' ? 'text-emerald-700' : 'text-gray-800'}`}>{table.table_name_kr}</span>
                         </div>
                       </div>
                       <div className="text-[11px] text-gray-500 truncate mt-0.5">{table.description}</div>
                       <div className="flex items-center justify-between text-[11px] text-gray-400 min-w-0 mt-1 pt-1 border-t border-gray-50">
-                        <div className="truncate font-mono">{table.table_name}</div>
+                        <div className="truncate font-mono">{table.table_name}{table.is_active !== 'N' && tokenCounts?.tables[table.table_name] !== undefined ? ` · ${tokenCounts.tables[table.table_name].toLocaleString()}토큰` : ''}</div>
                         <span className="shrink-0 font-bold">
                           {table.is_public === 'Y' && '🟢 전체공개'}
                           {table.is_public === 'P' && '🔵 부분공개'}
@@ -541,7 +664,9 @@ export default function Dashboard() {
                   <table className="w-full text-left border-collapse min-w-[600px]">
                     <thead>
                       <tr className="bg-slate-100 border-b border-slate-300">
-                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-32 text-center">분류</th>
+                        <th className="px-3 py-3 text-[12px] font-extrabold text-slate-700 w-14 text-center">No.</th>
+                        <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">분류</th>
+                        <th className="px-3 py-3 text-[12px] font-extrabold text-slate-700 w-24 text-center">적용 대상</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700">보완 지식 내용</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">등록자</th>
                         <th className="px-4 py-3 text-[12px] font-extrabold text-slate-700 w-28 text-center">등록일</th>
@@ -550,19 +675,20 @@ export default function Dashboard() {
                     </thead>
                     <tbody>
                       {paginatedSupplemental.length === 0 ? (
-                        <tr><td colSpan={5} className="py-12 text-center text-slate-400 font-medium">등록된 사전지식이 없습니다.</td></tr>
+                        <tr><td colSpan={7} className="py-12 text-center text-slate-400 font-medium">등록된 사전지식이 없습니다.</td></tr>
                       ) : (
                         paginatedSupplemental.map(item => (
                           <tr key={item.id} onClick={() => { setSelectedDoc(item); setIsModalOpen(true); }} className="border-b border-gray-100 hover:bg-indigo-50/30 transition-colors cursor-pointer group">
+                            <td className="px-3 py-3 text-center text-[12px] font-mono font-bold text-slate-500 whitespace-nowrap">
+                              #{item.id}
+                            </td>
                             <td className="px-4 py-3 text-center whitespace-nowrap">
-                              <span className={`text-[10px] px-2 py-1 rounded font-bold ${
-                                item.category === '인사/조직' ? 'bg-blue-50 text-blue-600' :
-                                item.category === '결재라인' ? 'bg-purple-50 text-purple-600' :
-                                item.category === '예외규정' ? 'bg-amber-50 text-amber-600' :
-                                'bg-gray-50 text-gray-600'
-                              }`}>
-                                {item.category === '예외규정' ? '사전지식' : item.category}
+                              <span className={`text-[10px] px-2 py-1 rounded font-bold ${categoryBadge(item.category)}`}>
+                                {categoryLabel(item.category)}
                               </span>
+                            </td>
+                            <td className="px-3 py-3 text-center whitespace-nowrap">
+                              {renderScopeBadge(item)}
                             </td>
                             <td className="px-4 py-4 min-w-0">
                               <div className="text-sm text-gray-700 whitespace-pre-wrap">{item.content}</div>
@@ -588,7 +714,7 @@ export default function Dashboard() {
                     {filteredSupplemental.length > 0 && (
                       <tfoot className="bg-slate-100 border-t border-slate-300">
                         <tr>
-                          <td colSpan={5} className="py-1 px-4">
+                          <td colSpan={7} className="py-1 px-4">
                             {renderPagination(knowledgePage, knowledgeTotalPages, setKnowledgePage, filteredSupplemental.length)}
                           </td>
                         </tr>
@@ -606,13 +732,11 @@ export default function Dashboard() {
                   filteredSupplemental.map(item => (
                     <div key={item.id} onClick={() => { setSelectedDoc(item); setIsModalOpen(true); }} className="p-3 hover:bg-indigo-50/50 active:bg-indigo-50 transition-colors cursor-pointer flex flex-col gap-1.5 min-w-0">
                       <div className="flex justify-between items-start min-w-0">
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold shrink-0 ${
-                          item.category === '인사/조직' ? 'bg-blue-50 text-blue-600' :
-                          item.category === '결재라인' ? 'bg-purple-50 text-purple-600' :
-                          item.category === '예외규정' ? 'bg-amber-50 text-amber-600' :
-                          'bg-gray-50 text-gray-600'
-                        }`}>
-                          {item.category === '예외규정' ? '사전지식' : item.category}
+                        <span className="flex items-center gap-1.5 shrink-0">
+                          <span className="text-[11px] font-mono font-bold text-slate-500">#{item.id}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${categoryBadge(item.category)}`}>
+                            {categoryLabel(item.category)}
+                          </span>
                         </span>
                         <span className="text-[11px] text-gray-400 font-mono">
                           {item.created_at ? new Date(item.created_at).toLocaleDateString('ko-KR') : ''}
@@ -621,6 +745,7 @@ export default function Dashboard() {
                       <p className="text-xs text-gray-700 line-clamp-2 mt-0.5 leading-relaxed">{item.content}</p>
                       <div className="flex items-center justify-between text-[10px] text-gray-400 min-w-0 mt-1 pt-1 border-t border-gray-50">
                         <span>등록자: <span className="font-bold text-gray-600">{item.author || '시스템'}</span></span>
+                        {renderScopeBadge(item)}
                       </div>
                     </div>
                   ))

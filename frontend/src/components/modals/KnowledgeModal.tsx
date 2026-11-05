@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import axios from 'axios';
 import { X, Save, Database, FileText, ChevronLeft, ChevronRight, Upload, CheckCircle2, Lock, Trash2, List, RefreshCw, ShieldHalf } from 'lucide-react';
 import CustomSwal from '@/utils/CustomSwal';
+import { KNOWLEDGE_CATEGORIES } from '@/utils/knowledgeCategories';
 
 export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, onSuccess }: any) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -16,8 +17,11 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
   const [formData, setFormData] = useState({
     doc_type: 'rule', year: new Date().getFullYear().toString(), title: '',
     is_public: 'Y', db_source: 'INTERNAL', table_name: '', description: '',
-    category: '인사/조직', content: '', is_active: 'Y'
+    category: '인사/조직', content: '', is_active: 'Y',
+    target_scope: 'staff' // 사전지식 적용 대상: staff(교직원 전용) / student(학생 전용) / all(공통)
   });
+  // 기본 분류 목록 (DB에 다른 분류로 등록된 지식도 수정 시 원래 분류가 유지되도록 선택지에 추가)
+  const baseCategories = KNOWLEDGE_CATEGORIES.map(c => c.value);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   const fetchViews = async () => {
@@ -47,15 +51,20 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
           description: editData.description || '',
           category: editData.category || '인사/조직',
           content: editData.content || '',
-          is_active: editData.is_active || 'Y'
+          is_active: editData.is_active || 'Y',
+          target_scope: editData.target_scope || 'staff'
         });
         if (activeTab === 'tables') fetchColumns(editData.table_name);
       } else {
         setFormData({
           doc_type: 'rule', year: new Date().getFullYear().toString(), title: '',
           is_public: 'Y', db_source: 'INTERNAL', table_name: '', description: '',
-          category: '인사/조직', content: '', is_active: 'Y'
+          category: '인사/조직', content: '', is_active: 'Y', target_scope: 'staff'
         });
+        // 새 문서의 적용 학년도 기본값 = 대시보드 상단의 기준 입시학년도
+        axios.get('/api/settings/admission-year')
+          .then(res => { if (res.data?.year) setFormData(prev => ({ ...prev, year: res.data.year })); })
+          .catch(() => {});
         setColumns([]);
       }
       setSelectedFile(null);
@@ -210,7 +219,8 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
           category: formData.category,
           content: formData.content,
           author: 'staff',
-          is_active: formData.is_active
+          is_active: formData.is_active,
+          target_scope: formData.target_scope
         };
 
         if (isEditMode) {
@@ -390,11 +400,33 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
                         onChange={(e) => setFormData({ ...formData, category: e.target.value })} 
                         className={inputClass}
                       >
-                        <option value="인사/조직">인사/조직 (부서원 변경, 퇴사/입사 등)</option>
-                        <option value="결재라인">결재라인 (특정 결재선 규정, 부서 협조 등)</option>
-                        <option value="예외규정">사전지식 (핵심 규칙 및 행정 지침 예외 등)</option>
-                        <option value="기타">기타</option>
+                        {KNOWLEDGE_CATEGORIES.map(c => (
+                          <option key={c.value} value={c.value}>{c.desc ? `${c.label} (${c.desc})` : c.label}</option>
+                        ))}
+                        {!baseCategories.includes(formData.category) && (
+                          <option value={formData.category}>{formData.category}</option>
+                        )}
                       </select>
+                    </div>
+                    <div>
+                      <label className={labelClass}>적용 대상 *</label>
+                      <div className="flex bg-gray-100 p-1 rounded-lg">
+                        {[
+                          { value: 'staff', label: '교직원 전용' },
+                          { value: 'all', label: '공통 (교직원+학생)' },
+                          { value: 'student', label: '학생 전용' }
+                        ].map(opt => (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => setFormData({ ...formData, target_scope: opt.value })}
+                            className={`flex-1 py-2 text-xs font-bold rounded-md transition-all active:scale-95 ${formData.target_scope === opt.value ? (opt.value === 'staff' ? 'bg-red-500 text-white shadow-md' : 'bg-emerald-500 text-white shadow-md') : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200'}`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-[10px] text-gray-400 mt-1.5">인사 정보·결재 규칙 등 내부 지식은 반드시 '교직원 전용'으로 두세요. '공통'·'학생 전용'만 학생 챗봇에 전달됩니다.</p>
                     </div>
                     <div>
                       <label className={labelClass}>보완 지식 내용 (최대 1000자) *</label>

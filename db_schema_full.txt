@@ -1,31 +1,44 @@
 =========================================
-Table: EXCEL_ADMISSIONCAPACITY
+Table: EXCEL_ADMISSIONCAPACITY (학년도별 입학정원)
 =========================================
 Columns:
- - [PK] id (int(4)) IDENTITY(1,1) NOT NULL
- - 학년도 (nvarchar(510)) NULL
- - 학과 (nvarchar(510)) NULL
- - 입학정원 (nvarchar(510)) NULL
- - created_at (datetime(8)) NULL DEFAULT (getdate())
+ - [PK] id (int(4)) IDENTITY(1,1) NOT NULL -- 고유 ID
+ - 학년도 (nvarchar(510)) NULL -- 학년도
+ - 학과 (nvarchar(510)) NULL -- 학과
+ - 입학정원 (nvarchar(510)) NULL -- 입학정원
+ - created_at (datetime(8)) NULL DEFAULT (getdate()) -- 업로드일시
 
 =========================================
-Table: EXCEL_ADMISSIONQUOTA
+Table: EXCEL_ADMISSIONQUOTA (학년도별 입시모집인원)
 =========================================
 Columns:
- - [PK] id (int(4)) IDENTITY(1,1) NOT NULL
- - 학년도 (nvarchar(510)) NULL
- - 모집구분 (nvarchar(510)) NULL
- - 모집학과명 (nvarchar(510)) NULL
- - 정원내외구분 (nvarchar(510)) NULL
- - 전형명 (nvarchar(510)) NULL
- - 모집인원 (nvarchar(510)) NULL
- - created_at (datetime(8)) NULL DEFAULT (getdate())
+ - [PK] id (int(4)) IDENTITY(1,1) NOT NULL -- 고유 ID
+ - 학년도 (nvarchar(510)) NULL -- 학년도
+ - 모집구분 (nvarchar(510)) NULL -- 모집구분
+ - 모집학과명 (nvarchar(510)) NULL -- 모집학과명
+ - 정원내외구분명 (nvarchar(510)) NULL -- 정원내외구분명
+ - 전형명 (nvarchar(510)) NULL -- 전형명
+ - 모집인원 (nvarchar(510)) NULL -- 모집인원
+ - created_at (datetime(8)) NULL DEFAULT (getdate()) -- 업로드일시
+
+=========================================
+Table: EXCEL_HIGHSCHOOLTYPE (고교구분)
+=========================================
+Columns:
+ - [PK] id (int(4)) IDENTITY(1,1) NOT NULL -- 고유 ID
+ - 학교명 (nvarchar(510)) NULL -- 학교명
+ - 학교종류명 (nvarchar(510)) NULL -- 학교종류명 (고등학교,방송통신고등학교)
+ - 시도명 (nvarchar(510)) NULL -- 고교 소재 시도. 전남광주통합특별시는 (광주)/(전남)으로 나뉘어 있음. 입시마스타는 2027학년도부터 괄호 없이 '전남광주통합특별시' 하나임
+ - 고등학교구분명 (nvarchar(510)) NULL -- 고등학교구분명 (일반고,특성화고,자율고,특목고)
+ - 고등학교일반전문구분명 (nvarchar(510)) NULL -- 고등학교일반전문구분명 (일반계,전문계)
+ - 특수목적고등학교계열명 (nvarchar(510)) NULL -- 특수목적고등학교계열명 (과학계열,국제계열,산업수요 맞춤형 고등학교, 예술계열, 외국어계열, 체육계열)
+ - created_at (datetime(8)) NULL DEFAULT (getdate()) -- 업로드일시
 
 =========================================
 Table: Sys_AIAuditLog (AI 챗봇 대화 및 모니터링 로그)
 =========================================
 Columns:
- - [PK] id (int(4)) IDENTITY(1,1) NOT NULL
+ - [PK] id (int(4)) IDENTITY(1,1) NOT NULL -- 고유 ID
  - user_role (varchar(50)) NULL -- 사용자 직군(부서)
  - model_name (varchar(100)) NULL -- 사용된 AI 모델명
  - question (nvarchar) NULL -- 사용자 실제 질문 원문
@@ -47,6 +60,8 @@ Columns:
  - router_latency_ms (int(4)) NULL -- 라우터 AI 소요시간(ms)
  - db_latency_ms (int(4)) NULL -- DB 및 RAG 검색 소요시간(ms)
  - chat_latency_ms (int(4)) NULL -- 최종 AI 답변 소요시간(ms)
+ - router_mode (nvarchar(200)) NULL -- 라우터 AI 호출 설정 (추론 강도·추론 끔 여부)
+ - chat_mode (nvarchar(200)) NULL -- 최종 AI 호출 설정 (추론 강도·확인 대기 등)
 
 =========================================
 Table: Sys_ColumnCatalog (컬럼 레벨 보안(CLS) 및 AI 힌트 카탈로그)
@@ -58,6 +73,19 @@ Columns:
  - ai_description (nvarchar) NULL -- AI 설명 힌트 (예: 이 컬럼은 학번)
  - is_public (char(1)) NULL DEFAULT ('Y') -- 공개 여부 (Y: 전체 공개, N: 직원 전용)
  - created_at (datetime(8)) NULL DEFAULT (getdate()) -- 등록일시
+ - value_dict_mode (nvarchar(20)) NULL -- 값 사전 포함 여부 (NULL: 자동 판단, Y: 항상 포함, N: 항상 제외)
+
+=========================================
+Table: Sys_DimensionCatalog (구분 사전 (학과·전형 등 구분이 테이블마다 어느 열인지))
+=========================================
+Columns:
+ - [PK] dim_id (int(4)) IDENTITY(1,1) NOT NULL -- 고유 ID
+ - dim_name (nvarchar(200)) NOT NULL -- 구분명 (예: 학과)
+ - table_name (nvarchar(256)) NOT NULL -- 테이블·뷰
+ - column_name (nvarchar(256)) NOT NULL -- 그 테이블의 열 (예: 지원학과명 / 모집학과명)
+ - description (nvarchar(1000)) NULL -- 설명
+ - is_active (char(1)) NOT NULL DEFAULT ('Y') -- 사용 여부 (Y: 사용, N: 사용 중지)
+ - updated_at (datetime(8)) NOT NULL DEFAULT (getdate()) -- 수정일시
 
 =========================================
 Table: Sys_DocumentCatalog (비정형 지식(PDF) 문서 카탈로그)
@@ -72,6 +100,36 @@ Columns:
  - uploaded_at (datetime(8)) NULL DEFAULT (getdate()) -- 업로드 일시
  - description (nvarchar) NULL -- 문서 설명 및 AI/관리자 힌트
  - is_active (char(1)) NOT NULL DEFAULT ('Y') -- 활성 여부 (Y: 활성, N: 비활성)
+ - token_count (int(4)) NULL -- 본문 토큰 수 (Claude 기준, 업로드 시 계산 · 참고 문서로 뽑히면 AI 입력에 들어가는 양)
+
+=========================================
+Table: Sys_MetricCatalog (지표 사전 (AI는 지표만 고르고 SQL은 서버가 조립))
+=========================================
+Columns:
+ - [PK] metric_id (int(4)) IDENTITY(1,1) NOT NULL -- 고유 ID
+ - metric_name (nvarchar(200)) NOT NULL -- 지표명 (예: 지원인원)
+ - synonyms (nvarchar(1000)) NULL -- 비슷한 말, 쉼표 구분 (예: 지원자수,지원자)
+ - table_name (nvarchar(256)) NOT NULL -- 계산할 테이블·뷰
+ - expression (nvarchar(4000)) NOT NULL -- 계산식 (예: COUNT(*), SUM(CASE WHEN …))
+ - base_condition (nvarchar(2000)) NULL -- 기본 조건 (WHERE 절, 예: 신입편입구분='신입')
+ - value_kind (nvarchar(40)) NOT NULL DEFAULT ('count') -- 값 종류 (count: 건수, number: 숫자, mixed: 글자 섞임(제한없음 등))
+ - description (nvarchar(2000)) NULL -- 설명 (AI가 지표를 고를 때 참고)
+ - is_active (char(1)) NOT NULL DEFAULT ('Y') -- 사용 여부 (Y: 사용, N: 사용 중지)
+ - updated_at (datetime(8)) NOT NULL DEFAULT (getdate()) -- 수정일시
+
+=========================================
+Table: Sys_StudentFAQ (입학처 Q&A: 학생·교직원 챗봇이 참고하는 입학처 공식 질문별 답변 (대시보드 Q&A 탭·감사 로그 [답변 등록]으로 관리))
+=========================================
+Columns:
+ - [PK] faq_id (int(4)) IDENTITY(1,1) NOT NULL -- Q&A 번호 (자동 증가)
+ - topic (nvarchar(400)) NOT NULL -- 질문 주제(제목). 예: 고교명 변경
+ - answer (nvarchar) NOT NULL -- 입학처 공식 답변 내용
+ - sample_question (nvarchar(1000)) NULL -- 실제 학생 질문 예 (감사 로그에서 등록 시 자동 기록)
+ - is_active (char(1)) NOT NULL DEFAULT ('Y') -- 사용 여부 (Y=챗봇에 반영, N=사용 안 함)
+ - source_log_id (int(4)) NULL -- 등록 계기가 된 감사 로그 번호 (Sys_AIAuditLog.id)
+ - created_at (datetime(8)) NOT NULL DEFAULT (getdate()) -- 등록 일시
+ - updated_at (datetime(8)) NULL -- 마지막 수정 일시
+ - apply_year (nvarchar(20)) NOT NULL DEFAULT ('ALL') -- 적용 입시학년도. 'ALL'=공통(매년 같은 답변), '2027' 등=그 학년도 질문에만 참고
 
 =========================================
 Table: Sys_SupplementalKnowledge (실시간 보완 지식 및 인사/결재 예외 장부 테이블)
@@ -83,6 +141,16 @@ Columns:
  - is_active (char(1)) NOT NULL DEFAULT ('Y') -- 활성 여부 (Y: 활성, N: 비활성)
  - created_at (datetime(8)) NOT NULL DEFAULT (getdate()) -- 등록/수정 일시
  - author (nvarchar(200)) NULL -- 등록한 교직원명 또는 ID
+ - target_scope (nvarchar(40)) NULL -- 사전지식 적용 대상 (staff: 교직원, student: 학생, all: 전체, NULL: 교직원)
+
+=========================================
+Table: Sys_SystemSetting (시스템 설정 (대시보드에서 바꾸는 운영 설정값. 예: 기준 입시학년도))
+=========================================
+Columns:
+ - [PK] setting_key (nvarchar(100)) NOT NULL -- 설정 이름 (예: admission_year)
+ - setting_value (nvarchar(400)) NOT NULL -- 설정 값 (예: 2027)
+ - description (nvarchar(1000)) NULL -- 설정 설명
+ - updated_at (datetime(8)) NOT NULL DEFAULT (getdate()) -- 마지막 변경 일시
 
 =========================================
 Table: Sys_TableCatalog (테이블 관리 카탈로그 (외부/내부 DB 출처 관리))
@@ -94,4 +162,16 @@ Columns:
  - created_at (datetime(8)) NULL DEFAULT (getdate()) -- 등록일시
  - table_name_kr (nvarchar(200)) NULL -- 한글 테이블명
  - is_active (char(1)) NOT NULL DEFAULT ('Y') -- 활성 여부 (Y: 활성, N: 비활성)
+
+=========================================
+Table: Sys_ValueDictionary (값 사전 (구분 열의 학년도별 실제 값 목록, AI 이름 보정·현황 화면용))
+=========================================
+Columns:
+ - [PK] id (int(4)) IDENTITY(1,1) NOT NULL -- 고유 ID
+ - table_name (nvarchar(256)) NOT NULL -- 테이블명
+ - column_name (nvarchar(256)) NOT NULL -- 컬럼명
+ - year_value (nvarchar(40)) NOT NULL -- 학년도 (학년도 열이 없는 테이블은 '전체')
+ - value (nvarchar(800)) NOT NULL -- 실제 값
+ - row_count (int(4)) NOT NULL -- 해당 값의 행 수
+ - refreshed_at (datetime(8)) NOT NULL DEFAULT (getdate()) -- 갱신일시
 

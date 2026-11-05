@@ -8,10 +8,13 @@ import os
 # ==========================================
 # [설정] DB 접속 정보 (main.py와 동일하게 세팅)
 # ==========================================
-SERVER = '10.10.1.11'   
-USER = 'admission_ai'   # AI 접속용 계정
-PASSWORD = 'fjk12#$' 
-DATABASE = 'DDU_ADMISSION' # 입시처 전용 DB
+# 접속 정보는 backend/.env 에서 읽음 (코드·git 에 비밀번호를 남기지 않음)
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'backend', '.env'))
+SERVER = os.getenv('DB_SERVER', '10.10.1.11,1433').split(',')[0]
+USER = os.getenv('DB_USER', '')   # AI 접속용 계정
+PASSWORD = os.getenv('DB_PWD', '')
+DATABASE = os.getenv('DB_NAME', 'DDU_ADMISSION') # 입시처 전용 DB
 OUTPUT_FILE = 'db_schema_full.txt'
 # ==========================================
 

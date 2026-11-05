@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useLocation, Outlet } from 'react-router-dom';
-import { LayoutDashboard, MessageSquare, Database, Settings, Menu, LogOut, UserCircle } from 'lucide-react';
+import { LayoutDashboard, Database, Settings, Menu, LogOut, UserCircle } from 'lucide-react';
 import { Sheet, SheetContent, SheetTrigger, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 
@@ -20,7 +20,6 @@ const SidebarItem = ({ icon: Icon, label, to, active, onClick }: any) => (
 const SidebarContent = ({ pathname, onItemClick }: { pathname: string, onItemClick?: () => void }) => {
   const menuItems = [
     { icon: LayoutDashboard, label: '지식 카탈로그', to: '/' },
-    { icon: MessageSquare, label: 'AI 챗봇 테스트', to: '/chat' },
     { icon: Database, label: '시스템 로그', to: '/logs' },
     { icon: Settings, label: '환경 설정', to: '/settings' },
   ];
