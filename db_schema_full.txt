@@ -9,7 +9,7 @@ Columns:
  - created_at (datetime(8)) NULL DEFAULT (getdate()) -- 업로드일시
 
 =========================================
-Table: EXCEL_ADMISSIONQUOTA (학년도별 입시모집인원)
+Table: EXCEL_ADMISSIONQUOTA (학년도별 입시모집인원 - 학년도·모집구분·모집학과·정원내외·전형별 모집인원(모집요강상 선발 계획 인원) 테이블 (입시모집요강에서 추출함). '모집인원' 질문·엑셀 요청은 이 테이블의 [모집인원] 값을 그대로 사용할 것. 지원자 수·등록자 수(입시마스타 UI_IPSI_M_V 의 COUNT/집계)와는 다른 값이므로 모집인원 대신 쓰지 말 것. [모집인원]은 숫자 외에 '제한없음'(무한정 지원 가능)이 있으며, 채우기·조회 시 '제한없음' 글자를 그대로 표기함 (숫자 집계가 필요할 때만 ISNUMERIC 으로 걸러 계산).)
 =========================================
 Columns:
  - [PK] id (int(4)) IDENTITY(1,1) NOT NULL -- 고유 ID
@@ -62,6 +62,10 @@ Columns:
  - chat_latency_ms (int(4)) NULL -- 최종 AI 답변 소요시간(ms)
  - router_mode (nvarchar(200)) NULL -- 라우터 AI 호출 설정 (추론 강도·추론 끔 여부)
  - chat_mode (nvarchar(200)) NULL -- 최종 AI 호출 설정 (추론 강도·확인 대기 등)
+ - process_log (nvarchar) NULL -- 처리 과정 기록: 이 요청을 처리하는 동안 서버 콘솔에 출력된 단계별 기록 (라우터 판단, 지정 문서, DB 실행, 문서 선발, 토큰·비용 등). 최대 2만 자
+ - reviewed_at (datetime(8)) NULL -- 점검 일시: 관리자 또는 Claude(개발 지원 AI)가 이 로그를 점검한 시각. NULL 이면 아직 점검 안 함
+ - reviewed_by (nvarchar(40)) NULL -- 점검한 주체 (claude: Claude 점검, admin: 관리자 직접 확인)
+ - review_note (nvarchar(1000)) NULL -- 점검 결과 한 줄 요약 (정상/문제 + 핵심 내용, 관리자 메모)
 
 =========================================
 Table: Sys_ColumnCatalog (컬럼 레벨 보안(CLS) 및 AI 힌트 카탈로그)

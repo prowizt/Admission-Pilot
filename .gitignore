@@ -63,3 +63,6 @@ nginx/ssl/*
 
 # Google Drive Sync
 .tmp.driveupload/
+
+# Claude Code 개인 설정 (작업기록 알림 hook)
+.claude/settings.local.json

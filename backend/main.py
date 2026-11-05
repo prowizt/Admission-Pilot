@@ -20,6 +20,10 @@ if sys.stdout.encoding.lower() != 'utf-8':
 else:
     sys.stdout.reconfigure(line_buffering=True)
 
+# [처리 과정 기록] 요청별 콘솔 출력을 모아 감사 로그 process_log 칸에 저장 (화면 출력은 그대로)
+import process_log
+process_log.install()
+
 # [로그 필터 설정] /health 엔드포인트의 접근 로그(200 OK)를 필터링하여 콘솔 도배를 방지합니다.
 class HealthCheckFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
@@ -47,6 +51,7 @@ import llm_client
 import metric_query
 import db_access
 import app_config
+import doc_db_overlap
 
 # 서버 초기화: 입시처 통합 AI 지식 관리 시스템 중앙 통제소
 app = FastAPI(
@@ -175,6 +180,9 @@ def insert_interim_audit_log(conn, *, user_role, question, scraped_context, sql_
         ))
         row = cur.fetchone()
         conn.commit()
+        if row:
+            # [처리 과정 기록] 확인 대기로 끝나는 요청도 그때까지의 콘솔 기록을 남김
+            process_log.save(row[0], None, get_mssql_connection, cp949_safe)
         return row[0] if row else None
     except Exception as e:
         print(f"[확인 대기 로그] 기록 오류: {e}")
@@ -207,6 +215,7 @@ ROUTER_SCHEMA = {
 
 # [RAG 검색어 제한] 검색어가 수천 개로 쪼개지면 ChromaDB 가 'too many SQL variables' 로 실패하고 임베딩에 수십 초가 걸림
 RAG_QUERY_MAX_COUNT = 10
+STUDENT_FALLBACK_DOCS = 3  # 학생 질문에서 이름 매칭 문서가 없을 때 의미 검색으로 넣는 최대 문서 수
 RAG_QUERY_MAX_LEN = 80
 
 def fallback_rag_query(question: str) -> str:
@@ -1787,6 +1796,7 @@ def mask_pii(text: str) -> str:
 @app.post("/chat")
 def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
     start_time = time.time()
+    plog_buf = process_log.start()
     # [테스트] 시험 질문은 앞에 '[테스트]' 를 붙여 보냄 → AI 에는 떼고 보내고, 감사 로그에만 표시 (비용 기록은 그대로 남김)
     is_test_request = (request.question or "").lstrip().startswith("[테스트]")
     if is_test_request:
@@ -2054,9 +2064,13 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
            - 사용자가 제시한 `[질문]`과 하단의 스크랩/첨부 문서를 종합적으로 분석하여 사용자의 명확한 의도를 파악하십시오.
            - 사용자의 질의가 특정 데이터의 대조, 검증, 비교를 명시적으로 요구하거나 문서 내용상 데이터 교차 검토가 필요한 경우에 한하여, 원본 문서에 기재된 실제 데이터 구조(표 레이아웃, 그룹핑 기준 등)와 1:1 교차 검토가 가능하도록 T-SQL 쿼리를 영리하게 빌드하십시오.
            - 만약 사용자의 질의나 스크랩 문서가 특정 데이터 대조를 요하지 않는 일반 서류이거나, 대조할 대상 데이터가 문서 내에 명시적으로 존재하지 않는다면, 불필요한 쿼리를 작성하지 말고 `sql_query`를 무조건 "NONE"으로 설정하십시오.
+           - 다만 검토할 문서에 인원·건수 같은 숫자가 나오고 그 숫자를 위 테이블에서 셀 수 있으며(지원자·합격자·등록자 수 등), 문서가 그 숫자를 근거로 무언가를 정한다면(배정·산출 기준 등), 질문이 '수정할 곳 알려줘' 같은 일반 검토 요청이어도 데이터 교차 검토가 필요한 경우로 보고, 문서 표가 묶은 기준(예: 학과별)대로 집계하는 대조 쿼리를 만드십시오. 명단이 아니라 묶음별 건수로 집계하십시오.
         9. **[검토 대상 문서의 쟁점별 규정 포함]**:
            - 스크랩/첨부 문서(기안문·공문 등)를 검토하는 경우, 그 문서가 무엇을 하려는 문서인지와 검토할 쟁점(예: 돈을 쓰는지, 누가 결재하는지, 기간·대상 요건이 있는지)을 먼저 파악하십시오.
-           - 질문이나 문서에 규정 이름이 직접 나오지 않더라도, 파악한 쟁점을 다루는 규정을 위 비정형 문서 목록에서 찾아 `rag_search_query`에 공식 문서명 그대로 빠짐없이 넣으십시오.
+           - 질문이나 문서에 규정 이름이 직접 나오지 않더라도, 파악한 쟁점을 다루는 규정을 위 비정형 문서 목록에서 찾아 `rag_search_query`에 공식 문서명 그대로 넣으십시오.
+           - 단, 파악한 쟁점을 판단하는 데 **직접 필요한 문서만** 넣고, **가장 중요한 문서부터 순서대로** 적으십시오. 시스템은 앞에서부터 최대 {app_config.get("STAFF_DOC_LIMIT")}개만 씁니다.
+           - 이름이 비슷하거나 혹시 관련 있을 것 같다는 이유만으로 넣지 마십시오. (예: 문서가 카드 결제를 하지 않는데 카드 사용 규정, 출장이 없는데 여비 규정)
+           - 과거 결과·통계 자료(지난 학년도 성적·등록 결과 등)는 검토 문서가 그 수치를 직접 인용하거나 견주어야 할 때만 넣으십시오. 현재 수치 대조는 DB 조회가 담당합니다.
         10. **[숫자형 컬럼 비교 절대 규칙]**: 학점, 평점, 점수, 인원수, 금액 등 숫자형(Numeric/Float/Int) 데이터를 담고 있는 컬럼의 값이 존재하는지 검사할 때는 절대 빈 문자열(`''`)과 비교하지 마십시오. (예: `[대졸평균평점] <> ''` 불가) 반드시 `IS NOT NULL AND [컬럼명] > 0` 형태로만 작성하십시오.
         11. **[계산·판단 근거 문서 포함]**: 질문에 답하려면 계산이나 기준표 적용이 필요하면(예: 점수를 다른 기준으로 바꾸기), 그 계산 방법·기준표가 실린 문서도 위 비정형 문서 목록에서 찾아 `rag_search_query`에 함께 넣으십시오. 질문이 "가능할까?", "어느 정도야?"처럼 어떤 값을 기준과 견주어 판단해 달라는 것이면, 견줄 기준이 되는 자료(이전 결과·기준 수치 등)가 실린 문서도 함께 넣으십시오.
         12. **[데이터 추가·수정 쿼리 초안 요청]**: 사용자가 어떤 테이블에 행을 넣거나 고치는 SQL(INSERT·UPDATE 등)을 써 달라고 하면, 그 쿼리를 직접 만들지 말고 `sql_query`에는 참고용 SELECT 를 만드십시오. 목적은 두 가지입니다. (가) 넣을 행의 나머지 열에 들어갈 실제 값 표기를 기존 행에서 그대로 따르기, (나) 같은 행이 이미 있는지 확인하기. 그래서 조건은 같은 학년도에서 넣을 행의 이름 값(예: 전형명)이 같은 행으로 잡고, 시기·차수 같은 구분 열(예: 모집구분)로는 거르지 마십시오. 그러면 다른 시기의 같은 이름 행에서 표기를 따르고, 같은 시기 행이 있으면 중복도 보입니다. 결과가 수십 건을 넘지 않게 하십시오. 이런 쿼리 초안 요청은 DB 값만으로 쓸 수 있으므로, 사용자가 문서 내용을 근거로 요구하지 않았다면 `need_rag`는 false, `rag_search_query`는 비워 두고 비정형 문서를 넣지 마십시오.
@@ -2146,8 +2160,23 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 router_schema = json.loads(json.dumps(router_schema))
                 router_schema["properties"]["faq_topics"] = {"type": "array", "items": {"type": "string"}}
                 router_schema["required"].append("faq_topics")
+            # [검토 문서 ↔ DB 구분 값 겹침] 교직원 문서 검토에서 문서의 숫자 줄에 DB 구분 값(학과 등)이 여러 개 나오면 대조 쿼리를 권함
+            if request.user_role != "student" and not is_query_request and (request.scraped_context or "").strip() and conn:
+                try:
+                    overlap_hint = doc_db_overlap.router_hint(request.scraped_context, get_value_dictionary(conn), metric_query.load_catalog(conn)["metrics"])
+                    if overlap_hint:
+                        sql_router_prompt += overlap_hint
+                        print(f" ├─ [문서·DB 값 겹침] 라우터에 대조 쿼리 힌트 추가")
+                except Exception as ov_err:
+                    print(f" ├─ [문서·DB 값 겹침] 검사 생략 ({ov_err})")
             router_effort = app_config.get("QUERY_ROUTER_EFFORT") if is_query_request else "low"
             router_thinking_off = False if is_query_request else llm_client.ROUTER_THINKING_OFF
+            # [공문 검토 라우터 추론] 교직원이 스크랩·첨부 문서를 검토할 때는 라우터 추론을 켜서 쟁점에 맞는 문서만 고르게 함
+            is_review_request = (not is_query_request and request.user_role != "student" and bool((request.scraped_context or "").strip()))
+            if is_review_request and app_config.get("REVIEW_ROUTER_THINKING") == "on":
+                router_thinking_off = False
+                router_effort = app_config.get("REVIEW_ROUTER_EFFORT")
+                print(f" ├─ [공문 검토] 라우터 추론 켬 (effort={router_effort}, 환경 설정 '공문 검토 라우터 추론')")
             router_model_to_use = request.router_model_name or request.model_name
             print(f"\n[Step 2] 🧠 라우터 AI 분석 중... (사용 모델: {router_model_to_use}{', 쿼리 요청 모드 effort=' + router_effort if is_query_request else ''})")
             max_retries = 3
@@ -2191,6 +2220,26 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 rag_query = parsed_json.get("rag_search_query", request.question)
                 rag_year_filter = parsed_json.get("rag_year_filter", "ALL")
                 target_documents = parsed_json.get("target_documents", [])
+                # [지정 문서 검증] 등록된 문서(제목·파일명)와 맞지 않는 이름은 버림
+                # (예: 라우터가 검토 대상 공문의 제목을 지정 문서로 넣으면 규정 문서가 전부 걸러지는 문제 방지)
+                if isinstance(target_documents, str):
+                    target_documents = [t for t in target_documents.split(",") if t.strip()]
+                if target_documents and conn:
+                    try:
+                        _clean = lambda s: re.sub(r'[^a-zA-Z0-9가-힣]', '', re.sub(r'\.[a-zA-Z0-9]+$', '', str(s))).lower()
+                        td_cur = conn.cursor()
+                        td_cur.execute("SELECT filename, ISNULL(title, '') FROM Sys_DocumentCatalog WHERE is_active = 'Y'")
+                        catalog_names = [n for row in td_cur.fetchall() for n in (_clean(row[0]), _clean(row[1])) if n]
+                        kept_targets = []
+                        for t in target_documents:
+                            tc = _clean(t)
+                            if tc and any(tc in n or (len(n) >= 4 and n in tc) for n in catalog_names):
+                                kept_targets.append(t)
+                            else:
+                                print(f" ├─ [지정 문서 무시] '{t}' — 등록 문서 아님")
+                        target_documents = kept_targets
+                    except Exception as td_err:
+                        print(f" ├─ [지정 문서 검증] 생략 ({td_err})")
                 if faq_by_router:
                     faq_topics = parsed_json.get("faq_topics") or []
 
@@ -2883,6 +2932,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 # 매칭이 하나도 없으면 한글 2글자 겹침 점수(0.6 이상, 최대 3건)로 보완합니다.
                 # =======================================================
                 title_matched_docs = []  # 공문 제목 기반 보완 선발 문서 (선발 개수 제한과 무관하게 포함)
+                student_fallback_limit = None  # 학생: 이름 매칭 문서가 없어 의미 검색으로 채울 때의 개수 상한
                 if request.user_role != "student":
                     filtered_per_query = {q_idx: {} for q_idx in range(len(queries))}
                     for q_idx in range(len(queries)):
@@ -2938,6 +2988,26 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     if explicit_docs and explicit_doc_only:
                         docs_per_query = {q_idx: {} for q_idx in range(len(queries))}
                         print(f" ├─ [사용자 지정] 지정 문서만 사용 → 검색 후보 전체 제외")
+                else:
+                    # [관련성 필터 - 학생] 라우터가 이름으로 짚은 문서만 넣고 빈자리는 의미 검색으로 채우지 않음
+                    # (영어 임베딩의 한글 유사도가 부정확해 장학금안내·학과소개 같은 관계없는 문서가 자주 채워졌음)
+                    # 이름이 맞는 문서가 하나도 없을 때만 의미 검색 결과를 최대 STUDENT_FALLBACK_DOCS 건 사용
+                    filtered_per_query = {q_idx: {} for q_idx in range(len(queries))}
+                    for q_idx in range(len(queries)):
+                        q_norm = norm_doc_name(queries[q_idx])
+                        for fname, doc in docs_per_query[q_idx].items():
+                            t_norm = norm_doc_name(doc["meta"].get("title", ""))
+                            title_hit = len(t_norm) >= 2 and (t_norm in q_norm or (len(q_norm) >= 4 and q_norm in t_norm))
+                            if doc["distance"] <= 0.1 or title_hit:
+                                doc["distance"] = min(doc["distance"], 0.1)
+                                filtered_per_query[q_idx][fname] = doc
+                    if any(filtered_per_query.values()):
+                        dropped = {f for q in docs_per_query.values() for f in q} - {f for q in filtered_per_query.values() for f in q}
+                        print(f" ├─ [관련성 필터 - 학생] 이름 매칭 문서만 사용, 의미 검색 후보 {len(dropped)}건 제외")
+                        docs_per_query = filtered_per_query
+                    else:
+                        student_fallback_limit = STUDENT_FALLBACK_DOCS
+                        print(f" ├─ [관련성 필터 - 학생] 이름 매칭 없음 → 의미 검색 결과 최대 {STUDENT_FALLBACK_DOCS}건 사용")
 
                 # [NEW] 조회된 문서들의 관리자 힌트(description)와 공개여부(is_public)를 DB에서 가져와 맵핑
                 # docs_per_query 에 모인 모든 파일명을 추출합니다.
@@ -2975,7 +3045,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     print("[보안 통제] 학생 권한 필터링 - 비공개 문서를 RAG 컨텍스트에서 제외합니다.")
 
                 # [개선] 라운드 로빈(Round-Robin) 방식으로 각 쿼리별 1등 문서를 공평하게 선발
-                chunk_limit = 5 if request.user_role == "student" else 7
+                chunk_limit = (student_fallback_limit or 5) if request.user_role == "student" else app_config.get("STAFF_DOC_LIMIT")
                 # 라우터가 문서명을 정확히 댄 문서(거리 0.1 이하)는 더 넉넉히 포함 (작은 표 문서가 개수 제한에 밀려 빠지지 않도록).
                 # 이름이 맞지 않는 의미 검색 문서는 기존 개수(chunk_limit)까지만. 학생은 아래 문서 예산(토큰)으로 다시 한 번 제한됨
                 named_limit = app_config.get("STUDENT_NAMED_DOC_LIMIT") if request.user_role == "student" else chunk_limit
@@ -3267,6 +3337,17 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
     - 동일한 숫자(예: 28, 28 등)가 여러 번 반복 등장할 경우, 수식에 포함된 항의 개수가 실제 과목 수와 일치하는지 자체 대조(Cross-Check)하여 토큰 누락을 원천 차단해.
 """
         else:
+            # [DB 미조회 사유 구분] 조회하지 않은 것과 조회했는데 못 쓴 것을 답변 AI 가 '데이터 없음'으로 뭉뚱그리지 않게 함
+            if sql_context:
+                db_fact_block = sql_context
+            elif 'failed_sql' in locals():
+                db_fact_block = ("DB 조회 실패 (조회를 시도했으나 오류 등으로 결과를 쓰지 못함). "
+                                 "문서의 숫자를 DB와 대조하지 못했다면 '관련 데이터가 없다'고 하지 말고 'DB 조회가 실패해 대조하지 못했다'고 쓰십시오. "
+                                 "뜻이 다른 다른 수치(예: 합격자 수 자리에 모집인원·정원)로 대신 대조해 일치·불일치를 판정하지 마십시오.")
+            else:
+                db_fact_block = ("DB 조회 안 함 (이번 요청은 DB 대조가 필요 없는 것으로 보고 조회하지 않음. DB에 데이터가 없다는 뜻이 아님). "
+                                 "문서의 숫자를 DB와 대조하지 않았다면 '관련 데이터가 없어 대조할 수 없었다'고 하지 말고, "
+                                 "'이번에는 DB 조회를 하지 않았다. DB와 대조가 필요하면 그렇게 요청해 달라'고 쓰십시오.")
             prompt = f"""
 너는 대동대학교 입시처 행정 검토 전문 AI 아키텍트야.
 {today_line()}
@@ -3279,7 +3360,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 
 <판단 기준 1: 시스템 DB 최신 팩트>
 (질문에 답변하기 위해 시스템에서 1순위로 추출한 실시간 DB 데이터입니다.)
-{sql_context if sql_context else "관련 DB 데이터 없음"}
+{db_fact_block}
 </판단 기준 1: 시스템 DB 최신 팩트>
 
 <판단 기준 2: 사내 규정 및 과거 문서 (RAG)>
@@ -3502,6 +3583,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     total_seconds = latency_ms / 1000.0
                     time_str = f"{int(total_seconds // 60)}분 {total_seconds % 60:.1f}초" if total_seconds >= 60 else f"{total_seconds:.1f}초"
                     print_pipeline_summary(time_str, router_lat, db_lat, chat_lat, t_data, log_id)
+                    process_log.save(log_id, plog_buf, get_mssql_connection, cp949_safe)
                     
                 except Exception as e:
                     yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
@@ -3513,7 +3595,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                         except Exception:
                             pass
                             
-            return StreamingResponse(generate_stream(), media_type="text/event-stream")
+            return StreamingResponse(process_log.bind_generator(generate_stream(), plog_buf), media_type="text/event-stream")
             
         else:
             # [기존 교직원용 분기] - 전체 문장이 한 번에 나올 때까지 기다렸다가 JSON 리턴
@@ -3593,6 +3675,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             else:
                 time_str = f"{total_seconds:.1f}초"
             print_pipeline_summary(time_str, router_lat, db_lat, chat_lat, t_data, log_id)
+            process_log.save(log_id, plog_buf, get_mssql_connection, cp949_safe)
 
             return {
                 "status": "success",
@@ -3663,10 +3746,11 @@ LOG_SPEED_RANGES = {"fast": (0, 10000), "mid": (10000, 30000), "slow": (30000, 6
 
 @app.get("/logs/audit")
 async def get_audit_logs(q: str = "", month: str = "", role: str = "", model: str = "", speed: str = "",
-                         exclude_test: bool = False, page: int = 1, size: int = 10):
+                         exclude_test: bool = False, review: str = "", page: int = 1, size: int = 10):
     """대화 모니터링 로그 조회 (서버에서 거르고 페이지 단위로 돌려줌)
     - q: 질문·답변 내용 검색 / month: 'YYYY-MM' / role: student|staff / model: 최종 모델명
-    - speed: fast(<10초)|mid(10~30초)|slow(30~60초)|vslow(60초 이상) / exclude_test: [테스트] 로그 제외"""
+    - speed: fast(<10초)|mid(10~30초)|slow(30~60초)|vslow(60초 이상) / exclude_test: [테스트] 로그 제외
+    - review: none(미점검)|claude(Claude 점검)|admin(관리자 확인)|done(점검함 전체)"""
     page = max(1, page)
     size = min(max(1, size), 100)
     where, params = [], []
@@ -3693,6 +3777,13 @@ async def get_audit_logs(q: str = "", month: str = "", role: str = "", model: st
         params += [lo] + ([hi] if hi else [])
     if exclude_test:
         where.append("CHARINDEX(N'[테스트]', ISNULL(question, '')) = 0")
+    if review == "none":
+        where.append("reviewed_at IS NULL")
+    elif review == "done":
+        where.append("reviewed_at IS NOT NULL")
+    elif review in ("claude", "admin"):
+        where.append("reviewed_at IS NOT NULL AND reviewed_by = ?")
+        params.append(review)
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
     conn = get_mssql_connection()
@@ -3709,6 +3800,7 @@ async def get_audit_logs(q: str = "", month: str = "", role: str = "", model: st
                    chat_in_tokens, chat_out_tokens, total_tokens, estimated_cost,
                    rag_documents, router_latency_ms, db_latency_ms, chat_latency_ms,
                    router_mode, chat_mode,
+                   CONVERT(VARCHAR(16), reviewed_at, 120) AS reviewed_at, reviewed_by, review_note,
                    CONVERT(VARCHAR(19), created_at, 120) AS created_at
             FROM Sys_AIAuditLog
             {where_sql}
@@ -3724,6 +3816,54 @@ async def get_audit_logs(q: str = "", month: str = "", role: str = "", model: st
     finally:
         if conn:
             conn.close()
+
+class AuditReviewRequest(BaseModel):
+    action: str                 # "mark": 관리자 확인 표시 / "clear": 점검 표시 지우기
+    note: Optional[str] = ""
+
+
+@app.put("/logs/audit/{log_id}/review")
+def set_audit_review(log_id: int, req: AuditReviewRequest):
+    """[점검 표시] 대시보드에서 관리자가 직접 확인 표시하거나 지움 (Claude 점검 표시는 backend/tools/review_mark.py 로 기록)"""
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        cur = conn.cursor()
+        if req.action == "mark":
+            # 메모 없이 누르면 기존 결과 한 줄(Claude 점검 내용)은 그대로 둠
+            cur.execute("UPDATE Sys_AIAuditLog SET reviewed_at = GETDATE(), reviewed_by = 'admin', review_note = COALESCE(?, review_note) WHERE id = ?",
+                        (cp949_safe((req.note or "").strip())[:500] or None, log_id))
+        elif req.action == "clear":
+            cur.execute("UPDATE Sys_AIAuditLog SET reviewed_at = NULL, reviewed_by = NULL, review_note = NULL WHERE id = ?", (log_id,))
+        else:
+            raise HTTPException(status_code=400, detail="action 은 mark 또는 clear")
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="로그 없음")
+        conn.commit()
+        cur.execute("SELECT CONVERT(VARCHAR(16), reviewed_at, 120), reviewed_by, review_note FROM Sys_AIAuditLog WHERE id = ?", (log_id,))
+        r = cur.fetchone()
+        return {"status": "success", "reviewed_at": r[0], "reviewed_by": r[1], "review_note": r[2]}
+    finally:
+        conn.close()
+
+
+@app.get("/logs/audit/{log_id}/process")
+def get_audit_process_log(log_id: int):
+    """[처리 과정] 감사 로그 1건의 서버 콘솔 기록 (대시보드 로그 상세에서 펼칠 때 불러옴)"""
+    conn = get_mssql_connection()
+    if not conn:
+        raise HTTPException(status_code=500, detail="MS-SQL DB 연결 실패")
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT process_log FROM Sys_AIAuditLog WHERE id = ?", (log_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="로그 없음")
+        return {"id": log_id, "process_log": row[0] or ""}
+    finally:
+        conn.close()
+
 
 @app.get("/logs/audit/facets")
 async def get_audit_log_facets():

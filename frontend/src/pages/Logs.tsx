@@ -6,6 +6,12 @@ import { FaqRegisterModal, type Faq } from '@/components/FaqPanel';
 import ClaudeStatsPanel from '@/components/ClaudeStatsPanel';
 import { Activity, BrainCircuit, MessageSquare, Database, Sparkles, Search, Clock, RefreshCw, ChevronRight, X, TerminalSquare, BookOpen, ChevronLeft, ThumbsUp, ThumbsDown, Copy, Check, Download, ChevronDown, ChevronUp } from 'lucide-react';
 
+// [관리자 평가] 쓰지 않아 숨김 (다시 쓰려면 true)
+const SHOW_FEEDBACK = false;
+
+// [AI 모델 칸] 모델명을 목록에 맞게 짧게 (예: 'claude-haiku-5-5' → 'haiku-5-5')
+const shortModel = (m?: string) => (!m || m === 'NONE' ? '' : m.replace(/^claude-/, ''));
+
 const formatLatency = (ms: number | undefined) => {
   if (!ms) return '-';
   const totalSeconds = ms / 1000;
@@ -27,6 +33,26 @@ export default function Logs() {
   const [copiedSql, setCopiedSql] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
   const [copiedId, setCopiedId] = useState<number | null>(null); // [ID 복사] 방금 복사한 로그 ID
+  // [처리 과정] 서버 콘솔 기록 (모달에서 펼칠 때 불러옴)
+  const [processOpen, setProcessOpen] = useState(false);
+  const [processLog, setProcessLog] = useState<{ id: number; text: string } | null>(null);
+  const [processLoading, setProcessLoading] = useState(false);
+  const [copiedProcess, setCopiedProcess] = useState(false);
+  useEffect(() => { setProcessOpen(false); setCopiedProcess(false); }, [selectedLog?.id]);
+  const toggleProcess = async () => {
+    const next = !processOpen;
+    setProcessOpen(next);
+    if (!next || !selectedLog || processLog?.id === selectedLog.id) return;
+    setProcessLoading(true);
+    try {
+      const res = await axios.get(`/api/logs/audit/${selectedLog.id}/process`);
+      setProcessLog({ id: selectedLog.id, text: res.data?.process_log || '' });
+    } catch {
+      setProcessLog({ id: selectedLog.id, text: '(불러오기 실패)' });
+    } finally {
+      setProcessLoading(false);
+    }
+  };
 
   // [ID 복사] '#525' 형태로 복사 → Claude 에 그대로 붙여 넣어 분석 요청
   // http(IP 접속)에서는 clipboard API 가 막혀 있어 예전 방식으로 대신 복사
@@ -53,6 +79,38 @@ export default function Logs() {
       #{id}{copiedId === id && <span className="font-sans">복사됨</span>}
     </button>
   );
+  // [점검 표시] 🤖 Claude 점검(정상 녹색·문제 주황) / 👤 관리자 확인. 마우스를 올리면 일시·결과 한 줄
+  const reviewBadge = (log: any) => {
+    if (!log?.reviewed_at) return null;
+    const isClaude = log.reviewed_by === 'claude';
+    const note = log.review_note || '';
+    const color = !isClaude ? 'bg-sky-50 text-sky-700 border-sky-200'
+      : note.startsWith('문제') ? 'bg-amber-50 text-amber-700 border-amber-300'
+      : note.startsWith('정상') ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+      : 'bg-slate-50 text-slate-600 border-slate-200';
+    return (
+      <span className={`inline-flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded border whitespace-nowrap ${color}`}
+            title={`${isClaude ? 'Claude 점검' : '관리자 확인'} · ${log.reviewed_at}${note ? `
+${note}` : ''}`}>
+        {isClaude ? '🤖 점검' : '👤 확인'}
+      </span>
+    );
+  };
+  const [reviewSaving, setReviewSaving] = useState(false);
+  const saveReview = async (action: 'mark' | 'clear') => {
+    if (!selectedLog) return;
+    setReviewSaving(true);
+    try {
+      const res = await axios.put(`/api/logs/audit/${selectedLog.id}/review`, { action });
+      const upd = { reviewed_at: res.data.reviewed_at, reviewed_by: res.data.reviewed_by, review_note: res.data.review_note };
+      setSelectedLog((prev: any) => ({ ...prev, ...upd }));
+      setLogs(prev => prev.map(l => l.id === selectedLog.id ? { ...l, ...upd } : l));
+    } catch {
+      alert('점검 표시 저장에 실패했습니다.');
+    } finally {
+      setReviewSaving(false);
+    }
+  };
   const [isExpandedScrap, setIsExpandedScrap] = useState(false);
 
   // Pagination states
@@ -61,7 +119,7 @@ export default function Logs() {
   // [대화 로그 필터] 내용 검색·월·직군·모델·반응 속도 — 서버에서 거르고 페이지 단위로 받음
   const [showFilters, setShowFilters] = useState(false); // 검색·필터 줄 펼침
   const [qInput, setQInput] = useState('');
-  const [filters, setFilters] = useState({ q: '', month: '', role: '', model: '', speed: '' });
+  const [filters, setFilters] = useState({ q: '', month: '', role: '', model: '', speed: '', review: '' });
   const [facets, setFacets] = useState<{ months: string[]; models: { name: string; count: number }[] }>({ months: [], models: [] });
   const [total, setTotal] = useState(0);
   const ITEMS_PER_PAGE = 10;
@@ -78,7 +136,7 @@ export default function Logs() {
     setCurrentPage(1);
   };
   const resetFilters = () => {
-    setQInput(''); setFilters({ q: '', month: '', role: '', model: '', speed: '' }); setCurrentPage(1);
+    setQInput(''); setFilters({ q: '', month: '', role: '', model: '', speed: '', review: '' }); setCurrentPage(1);
   };
   const filterCount = Object.values(filters).filter(v => v !== '').length;
   const filterActive = filterCount > 0;
@@ -120,6 +178,43 @@ export default function Logs() {
   // Pagination Logic
   // [테스트] 시험 질문(질문에 '[테스트]' 표시)은 실제 비용이라 지우지 않고 표시·숨기기만 함
   const isTestLog = (l: any) => (l.question || '').includes('[테스트]');
+
+  // [추론 설정 배지] 'effort=medium · 추론 켬' → [medium] [● 추론 ON]  (목록·로그 상세 공용)
+  // 추론 켬/끔은 ON(녹색 점)·OFF(붉은 점) 배지, 강도(low·medium·high)는 너비 고정 회색 배지 (줄이 달라도 같은 자리)
+  const modeBadges = (mode: string, big = false) => {
+    if (!mode) return null;
+    const effort = (mode.match(/effort=(\w+)/) || [])[1];
+    const on = /추론\s*켬/.test(mode);
+    const off = /추론\s*끔/.test(mode);
+    const rest = mode.replace(/effort=\w+/, '').replace(/추론\s*(켬|끔)/, '').replace(/[·\s]+/g, ' ').trim();
+    const t = big ? 'text-xs py-0.5' : 'text-[10px]';
+    const dot = big ? 'w-2.5 h-2.5' : 'w-2 h-2';
+    return (
+      <span className="flex items-center gap-1 shrink-0">
+        {(effort || !big) && <span className={`${big ? 'w-[60px]' : 'w-[46px]'} text-center rounded font-semibold ${t} ${effort ? 'bg-slate-100 text-slate-600' : ''}`}>{effort || ''}</span>}
+        {on && <span className={`${big ? 'w-[80px]' : 'w-[62px]'} flex items-center justify-center gap-1 rounded bg-emerald-50 border border-emerald-300 text-emerald-700 font-bold ${t}`} title="추론 켬"><span className={`${dot} rounded-full bg-emerald-500`} />추론 ON</span>}
+        {off && <span className={`${big ? 'w-[80px]' : 'w-[62px]'} flex items-center justify-center gap-1 rounded bg-rose-50 border border-rose-200 text-rose-600 font-bold ${t}`} title="추론 끔"><span className={`${dot} rounded-full bg-rose-500`} />추론 OFF</span>}
+        {!effort && !on && !off && rest && <span className={`text-slate-500 ${t} ${big ? '' : 'truncate max-w-[90px]'}`}>{rest}</span>}
+      </span>
+    );
+  };
+
+  // [AI 모델 칸] 라우터 AI · 챗봇 AI 를 줄을 나눠 모델과 추론 설정을 함께 표시
+  const aiModelCell = (log: any) => {
+    const row = (label: string, model: string, mode: string, color: string) => (
+      <div className="flex items-center gap-1.5 min-w-0 text-[11px] leading-tight" title={`${label}: ${model || '사용 안 함'}${mode ? ` · ${mode}` : ''}`}>
+        <span className={`font-bold shrink-0 w-[34px] ${color}`}>{label}</span>
+        <span className="text-slate-700 font-mono truncate max-w-[110px]">{shortModel(model) || '-'}</span>
+        {modeBadges(mode)}
+      </div>
+    );
+    return (
+      <div className="flex flex-col gap-1 min-w-0 max-w-[260px]">
+        {row('라우터', log.router_model_name, log.router_mode, 'text-blue-600')}
+        {row('챗봇', log.model_name, log.chat_mode, 'text-indigo-600')}
+      </div>
+    );
+  };
   // 서버가 조건에 맞는 한 페이지만 보내줌 (총 건수는 total)
   const totalPages = Math.ceil(total / ITEMS_PER_PAGE) || 1;
   const paginatedLogs = logs;
@@ -289,6 +384,13 @@ export default function Logs() {
                   <option value="slow">30~60초</option>
                   <option value="vslow">60초 이상</option>
                 </select>
+                <select value={filters.review} onChange={e => setFilter('review', e.target.value)} className="border border-slate-300 rounded-md px-2 py-1.5 text-xs bg-white text-slate-700 outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-500">
+                  <option value="">전체 점검 상태</option>
+                  <option value="none">미점검</option>
+                  <option value="claude">🤖 Claude 점검</option>
+                  <option value="admin">👤 관리자 확인</option>
+                  <option value="done">점검함 (전체)</option>
+                </select>
                 {filterActive && (
                   <button onClick={resetFilters} className="px-2 py-1.5 text-xs font-bold rounded-md border border-slate-300 text-slate-600 hover:bg-slate-50 whitespace-nowrap">
                     <X size={12} className="inline" /> 필터 초기화
@@ -302,16 +404,17 @@ export default function Logs() {
                   <thead>
                     <tr className="bg-white border-b border-slate-100">
                       <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider w-[140px]">ID · 일시</th>
-                      <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider w-[120px]">직군 / 모델</th>
+                      <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider w-[70px]">직군</th>
                       <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider">질문 요약</th>
+                      <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider w-[250px]">AI 모델 · 추론 설정</th>
                       <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-center w-[120px]">반응 속도</th>
-                      <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-center w-[100px]">관리자 평가</th>
+                      {SHOW_FEEDBACK && <th className="px-4 py-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-center w-[100px]">관리자 평가</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {paginatedLogs.length === 0 ? (
                       <tr>
-                        <td colSpan={5} className="py-16 text-center text-slate-400 font-medium text-sm bg-slate-50/50">
+                        <td colSpan={SHOW_FEEDBACK ? 6 : 5} className="py-16 text-center text-slate-400 font-medium text-sm bg-slate-50/50">
                           {filterActive ? '조건에 맞는 대화 로그가 없습니다.' : '아직 수집된 대화 로그가 없습니다.'}
                         </td>
                       </tr>
@@ -320,21 +423,16 @@ export default function Logs() {
                         <tr key={log.id} onClick={() => setSelectedLog(log)} className="hover:bg-indigo-50/40 transition-colors group cursor-pointer">
                           <td className="px-4 py-3 align-middle text-xs text-slate-500 font-medium whitespace-nowrap">
                             <div className="flex flex-col items-start gap-1">
-                              {idBadge(log.id)}
+                              <span className="flex items-center gap-1">{idBadge(log.id)}{reviewBadge(log)}</span>
                               {log.created_at}
                             </div>
                           </td>
                           <td className="px-4 py-3 align-middle">
-                            <div className="flex flex-col gap-1">
-                              <span className={`text-[11px] font-bold w-fit px-1.5 py-0.5 rounded border ${
-                                log.user_role === 'staff' ? 'text-indigo-700 bg-indigo-50 border-indigo-200' : 'text-emerald-700 bg-emerald-50 border-emerald-200'
-                              }`}>
-                                {log.user_role === 'staff' ? '교직원' : '수험생'}
-                              </span>
-                              <span className="text-[10px] text-slate-400 truncate max-w-[100px]" title={log.model_name}>
-                                {log.model_name}
-                              </span>
-                            </div>
+                            <span className={`text-[11px] font-bold w-fit px-1.5 py-0.5 rounded border whitespace-nowrap ${
+                              log.user_role === 'staff' ? 'text-indigo-700 bg-indigo-50 border-indigo-200' : 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                            }`}>
+                              {log.user_role === 'staff' ? '교직원' : '수험생'}
+                            </span>
                           </td>
                           <td className="px-4 py-3 align-middle max-w-[300px] lg:max-w-[500px]">
                             <div className="flex flex-col gap-1">
@@ -344,12 +442,15 @@ export default function Logs() {
                               <div className="text-xs text-slate-500 truncate" title={log.answer}>
                                 <span className="text-slate-400 font-bold mr-1">A.</span> {log.answer}
                               </div>
-                              {log.total_tokens != null && (
-                                <div className="text-[10px] text-slate-400 font-bold mt-0.5">
-                                  🪙 총 {log.total_tokens.toLocaleString()} 토큰 (약 {Number(log.estimated_cost).toFixed(1)}원)
-                                </div>
-                              )}
                             </div>
+                          </td>
+                          <td className="px-4 py-3 align-middle">
+                            {aiModelCell(log)}
+                            {log.total_tokens != null && (
+                              <div className="text-[10px] text-slate-500 font-bold mt-1">
+                                🪙 총 {log.total_tokens.toLocaleString()} 토큰 · 약 {Number(log.estimated_cost).toFixed(1)}원
+                              </div>
+                            )}
                           </td>
                           <td className="px-4 py-3 align-middle text-center">
                             <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border whitespace-nowrap ${
@@ -359,7 +460,7 @@ export default function Logs() {
                               {formatLatency(log.latency_ms)}
                             </span>
                           </td>
-                          <td className="px-4 py-3 align-middle text-center" onClick={(e) => e.stopPropagation()}>
+                          {SHOW_FEEDBACK && <td className="px-4 py-3 align-middle text-center" onClick={(e) => e.stopPropagation()}>
                             <div className="flex justify-center gap-1">
                               <button 
                                 onClick={() => toggleFeedback(log.id, log.user_feedback, 'UP')}
@@ -376,7 +477,7 @@ export default function Logs() {
                                 <ThumbsDown size={16} className={log.user_feedback === 'DOWN' ? 'fill-current' : ''} />
                               </button>
                             </div>
-                          </td>
+                          </td>}
                         </tr>
                       ))
                     )}
@@ -384,7 +485,7 @@ export default function Logs() {
                   {logs.length > 0 && (
                     <tfoot className="bg-slate-100 border-t border-slate-300">
                       <tr>
-                        <td colSpan={5} className="py-1 px-4">
+                        <td colSpan={SHOW_FEEDBACK ? 6 : 5} className="py-1 px-4">
                           {renderPagination()}
                         </td>
                       </tr>
@@ -409,7 +510,7 @@ export default function Logs() {
                           }`}>
                             {log.user_role === 'staff' ? '교직원' : '수험생'}
                           </span>
-                          {idBadge(log.id)}
+                          {idBadge(log.id)}{reviewBadge(log)}
                           <span className="text-[11px] text-slate-500 font-medium">{log.created_at}</span>
                         </div>
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border whitespace-nowrap ${
@@ -423,17 +524,17 @@ export default function Logs() {
                       <div className="font-semibold text-slate-800 text-sm line-clamp-2 mt-1 leading-snug" title={log.question}>
                         <span className="text-indigo-400 font-bold mr-1">Q.</span>{isTestLog(log) && <span className="text-[10px] font-bold bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded mr-1">테스트</span>} {log.question}
                       </div>
-                      {log.total_tokens != null && (
-                        <div className="text-[10px] text-slate-500 font-bold">
-                          🪙 총 {log.total_tokens.toLocaleString()} 토큰 (약 {Number(log.estimated_cost).toFixed(1)}원)
-                        </div>
-                      )}
                       
                       <div className="flex justify-between items-center mt-2 pt-2 border-t border-slate-100/80 border-dashed">
-                         <span className="text-[9px] text-slate-400 truncate font-mono bg-slate-50 px-1.5 py-0.5 rounded border border-slate-100 max-w-[150px]" title={log.model_name}>
-                           {log.model_name}
-                         </span>
-                         <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+                         <div className="min-w-0">
+                           {aiModelCell(log)}
+                           {log.total_tokens != null && (
+                             <div className="text-[10px] text-slate-500 font-bold mt-1">
+                               🪙 총 {log.total_tokens.toLocaleString()} 토큰 · 약 {Number(log.estimated_cost).toFixed(1)}원
+                             </div>
+                           )}
+                         </div>
+                         {SHOW_FEEDBACK && <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
                            <button 
                              onClick={() => toggleFeedback(log.id, log.user_feedback, 'UP')}
                              className={`p-1.5 rounded-md transition-colors ${log.user_feedback === 'UP' ? 'bg-indigo-100 text-indigo-600' : 'text-slate-300'}`}
@@ -446,7 +547,7 @@ export default function Logs() {
                            >
                              <ThumbsDown size={14} className={log.user_feedback === 'DOWN' ? 'fill-current' : ''} />
                            </button>
-                         </div>
+                         </div>}
                       </div>
                     </div>
                   ))
@@ -478,9 +579,22 @@ export default function Logs() {
             <div className="px-6 py-4 border-b border-indigo-800 flex justify-between items-center bg-indigo-900 text-white shrink-0">
               <h3 className="font-bold flex items-center gap-2">
                 <TerminalSquare size={18} className="text-indigo-400" />
-                로그 상세 {idBadge(selectedLog.id, true)}
+                로그 상세 {idBadge(selectedLog.id, true)} {reviewBadge(selectedLog)}
               </h3>
               <div className="flex items-center gap-3">
+                {/* [관리자 확인] 한 번 누르면 표시, 다시 누르면 해제 (Claude 점검 결과 한 줄은 그대로 남김) */}
+                <button
+                  disabled={reviewSaving}
+                  onClick={() => saveReview(selectedLog.reviewed_by === 'admin' ? 'clear' : 'mark')}
+                  title={selectedLog.reviewed_by === 'admin' ? '누르면 관리자 확인 해제' : '누르면 관리자 확인 표시'}
+                  className={`px-3 py-1.5 rounded-md text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm border disabled:opacity-50 ${
+                    selectedLog.reviewed_by === 'admin'
+                      ? 'bg-sky-500 hover:bg-sky-400 border-sky-400 text-white'
+                      : 'bg-indigo-800 hover:bg-indigo-700 border-indigo-600 text-indigo-100'}`}
+                >
+                  {selectedLog.reviewed_by === 'admin' ? <Check size={14} /> : <span className="w-3.5 h-3.5 rounded-sm border border-indigo-300 inline-block" />}
+                  {selectedLog.reviewed_by === 'admin' ? '확인함' : '확인'}
+                </button>
                 <button
                   onClick={() => setFaqDraft({
                     topic: '',  // 주제는 직접 짧게 (질문 원문은 '실제 질문 예'에 들어감)
@@ -546,6 +660,17 @@ ${selectedLog.scraped_context || 'NONE'}`;
             </div>
             
             <div className="p-4 sm:p-6 overflow-y-auto space-y-6 flex-1 min-h-0 bg-slate-50 custom-scrollbar">
+              {/* [점검 결과] 점검한 로그면 맨 위에 한 줄로 */}
+              {selectedLog.reviewed_at && (
+                <div className={`-mb-2 px-4 py-2 rounded-lg border text-xs flex items-start gap-2 ${
+                  selectedLog.reviewed_by === 'admin' ? 'bg-sky-50 border-sky-200 text-sky-800'
+                    : (selectedLog.review_note || '').startsWith('문제') ? 'bg-amber-50 border-amber-300 text-amber-800'
+                    : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
+                  {reviewBadge(selectedLog)}
+                  <span className="flex-1 whitespace-pre-wrap">{selectedLog.review_note || (selectedLog.reviewed_by === 'admin' ? '관리자가 확인함' : '')}</span>
+                  <span className="text-[10px] opacity-70 whitespace-nowrap">{selectedLog.reviewed_at}</span>
+                </div>
+              )}
               
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {/* 1. 일시 및 전체 소요시간 (Left, 1 column) */}
@@ -611,8 +736,8 @@ ${selectedLog.scraped_context || 'NONE'}`;
                     </div>
                     {selectedLog.router_mode && (
                       <div className="flex justify-between items-center text-sm mt-1">
-                        <span className="text-slate-500">호출 설정:</span>
-                        <span className="font-bold text-blue-700 text-xs">{selectedLog.router_mode}</span>
+                        <span className="text-slate-500">추론 설정:</span>
+                        {modeBadges(selectedLog.router_mode, true)}
                       </div>
                     )}
                   </div>
@@ -633,8 +758,8 @@ ${selectedLog.scraped_context || 'NONE'}`;
                     </div>
                     {selectedLog.chat_mode && (
                       <div className="flex justify-between items-center text-sm mt-1">
-                        <span className="text-slate-500">호출 설정:</span>
-                        <span className="font-bold text-indigo-700 text-xs">{selectedLog.chat_mode}</span>
+                        <span className="text-slate-500">추론 설정:</span>
+                        {modeBadges(selectedLog.chat_mode, true)}
                       </div>
                     )}
                   </div>
@@ -811,7 +936,7 @@ ${selectedLog.scraped_context || 'NONE'}`;
                   {selectedLog.answer ? selectedLog.answer.replace(/\$\\rightarrow\$/g, '→').replace(/\\rightarrow/g, '→') : ''}
                 </div>
                 
-                <div className="mt-4 flex items-center justify-end gap-2 pt-4 border-t border-slate-100">
+                {SHOW_FEEDBACK && <div className="mt-4 flex items-center justify-end gap-2 pt-4 border-t border-slate-100">
                   <span className="text-xs font-bold text-slate-400 mr-2">관리자 평가:</span>
                   <button 
                     onClick={() => toggleFeedback(selectedLog.id, selectedLog.user_feedback, 'UP')}
@@ -827,7 +952,39 @@ ${selectedLog.scraped_context || 'NONE'}`;
                     <ThumbsDown size={16} className={selectedLog.user_feedback === 'DOWN' ? 'fill-current' : ''} />
                     분석 포함 (싫어요)
                   </button>
-                </div>
+                </div>}
+              </div>
+
+              {/* [처리 과정] 이 요청을 처리할 때 서버 콘솔에 출력된 기록 (라우터 판단·지정 문서·DB·문서 선발 등) */}
+              <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <button onClick={toggleProcess} className="w-full flex items-center justify-between px-5 py-3 text-left hover:bg-slate-50">
+                  <span className="font-bold text-slate-800 flex items-center gap-2 text-sm">
+                    <TerminalSquare size={16} className="text-slate-600" /> 처리 과정 (서버 기록)
+                  </span>
+                  {processOpen ? <ChevronUp size={16} className="text-slate-500" /> : <ChevronDown size={16} className="text-slate-500" />}
+                </button>
+                {processOpen && (
+                  <div className="px-5 pb-5">
+                    {processLoading ? (
+                      <div className="text-xs text-slate-500">불러오는 중...</div>
+                    ) : processLog?.id === selectedLog.id && (processLog?.text ?? '') ? (
+                      <>
+                        <div className="flex justify-end mb-1.5">
+                          <button
+                            onClick={() => { navigator.clipboard?.writeText((processLog?.text ?? '')); setCopiedProcess(true); setTimeout(() => setCopiedProcess(false), 2000); }}
+                            className="text-slate-600 hover:text-indigo-600 px-2 py-1 bg-white rounded shadow-sm border border-slate-200 flex items-center gap-1 text-[10px] font-bold"
+                          >
+                            {copiedProcess ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+                            <span>{copiedProcess ? '복사됨' : '복사'}</span>
+                          </button>
+                        </div>
+                        <pre className="bg-[#1e1e2e] text-slate-200 text-[11px] leading-relaxed font-mono p-3 rounded-lg max-h-[28rem] overflow-auto whitespace-pre-wrap break-all">{(processLog?.text ?? '')}</pre>
+                      </>
+                    ) : (
+                      <div className="text-xs text-slate-500">기록 없음 (처리 과정 저장 기능을 넣기 전의 로그이거나, 엑셀 채우기 등 다른 경로의 요청입니다)</div>
+                    )}
+                  </div>
+                )}
               </div>
 
             </div>

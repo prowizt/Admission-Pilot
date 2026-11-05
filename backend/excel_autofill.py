@@ -563,6 +563,9 @@ async def chat_excel_autofill(
                       find_explicit_docs, detect_db_only_intent, norm_doc_name)
 
     start_time = time.time()
+    # [처리 과정 기록] 이 요청의 콘솔 출력을 모아 감사 로그 process_log 에 저장 (확인 대기 로그는 insert_interim_audit_log 가 저장)
+    import process_log
+    process_log.start()
     print(f"\n[EXCEL-AUTOFILL] 🚀 하이브리드 채팅 엑셀 자동 채우기 요청 수신 (질문: {question})")
     
     if question:
@@ -1653,7 +1656,10 @@ async def chat_excel_autofill(
         print(f"[EXCEL-AUTOFILL] ⏱️ 엑셀 채우기 총 소요 시간: {time_final_end - start_time:.2f}초")
         print(f"[EXCEL-AUTOFILL] 🎉 하이브리드 엑셀 채우기 성공! ({latency_ms}ms)")
         print("[EXCEL-AUTOFILL] ==================================================\n")
-        
+        if audit_log_id:
+            from main import cp949_safe
+            process_log.save(audit_log_id, None, get_mssql_connection, cp949_safe)
+
         result = {
             "status": "success",
             "answer": answer_text,
