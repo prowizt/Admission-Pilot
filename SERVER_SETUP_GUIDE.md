@@ -2,6 +2,8 @@
 
 본 문서는 텅 빈 Windows Server 2022 (IP: `210.93.0.229`, 도메인: `ipw.daedong.ac.kr`)에서 Admission-Pilot 서비스를 완벽하게 구동하기 위해 거쳐간 **모든 설치 및 세팅 과정**을 시행착오 없이 순서대로 따라 할 수 있도록 정리한 완성본 매뉴얼입니다.
 
+> **마지막 점검: 2026-11-05** (Claude Code 와 코드 대조). 시스템 구조는 `SYSTEM_ARCHITECTURE.md`, 작업 규칙은 `CLAUDE.md` 참고.
+
 ---
 
 ## 1. 필수 프로그램 설치
@@ -43,14 +45,31 @@
 깃허브(GitHub) 공간은 퍼블릭일 수 있으며 코드가 외부로 노출될 위험이 있으므로, 중요 API Key는 서버 내 안전한 곳에 격리합니다.
 
 - **경로**: `C:\actions-runner\.env` 파일 생성
-- **내용**:
+- **내용** (값은 실제 키·비밀번호로 채움 — 이 문서나 채팅에는 절대 적지 말 것):
   ```env
-  GEMINI_API_KEY="AI API 키 입력"
-  STUDENT_API_KEY="학생용 챗봇 인증 키"
-  STUDENT_MODEL="gemini-2.5-flash"
-  # DB 접속 정보 및 기타 보안 정보
+  # AI 키
+  ANTHROPIC_API_KEY=        # Claude (학생 챗봇 Haiku, 확장에 키를 넣지 않은 교직원 Claude 호출)
+  STUDENT_API_KEY=          # Gemini (학생 챗봇 모델을 Gemini 로 쓸 때)
+
+  # DB 접속 (서버·DB 이름은 기본값이 있어 보통 생략 가능)
+  DB_SERVER=10.10.1.11,1433
+  DB_NAME=DDU_ADMISSION
+  DB_USER=admission_ai              # 대시보드·카탈로그·로그 기록 (DB 오너)
+  DB_PWD=
+  DB_RO_USER=admission_ai_ro        # 교직원 챗봇 조회 (읽기 전용)
+  DB_RO_PWD=
+  DB_STUDENT_USER=admission_ai_student   # 학생 챗봇 조회 (공개 테이블·열만)
+  DB_STUDENT_PWD=
   ```
-- **작동 원리**: 배포 로봇이 실행될 때 이 파일을 프로젝트 백엔드 폴더 내부로 덮어쓰기하여 서버에 주입합니다.
+- **항목별로 없을 때**:
+  | 항목 | 없으면 |
+  |---|---|
+  | `ANTHROPIC_API_KEY` | 학생 챗봇(Claude 모델)과 키 없는 교직원 Claude 호출이 응답하지 못함 |
+  | `DB_RO_*` | 교직원 조회가 오너 계정으로 실행됨 (보안 약화) |
+  | `DB_STUDENT_*` | 학생 DB 조회를 실행하지 않고 문서로만 답함 |
+  | `DB_PWD` | 백엔드가 DB 에 연결하지 못함 (비밀번호를 바꾸면 이 파일도 같이 바꿀 것) |
+- **예전 항목**: `GEMINI_API_KEY`, `STUDENT_MODEL` 은 지금 코드에서 쓰지 않음. 학생 모델·추론 강도·비용 한도 같은 운영 값은 대시보드 **환경 설정**에서 바꿈 (`.env` 에 같은 이름으로 적어도 화면 값이 우선).
+- **작동 원리**: 배포 로봇이 실행될 때 이 파일을 프로젝트 백엔드 폴더 내부로 덮어쓰기하여 서버에 주입합니다. 개발 PC 의 `backend\.env` 에 항목을 추가했다면 이 파일에도 같이 추가해야 합니다.
 
 ---
 
@@ -61,7 +80,9 @@
 1. **설치 경로**: `C:\actions-runner` 폴더 생성
 2. **연결**: GitHub 레포지토리 `Settings` > `Actions` > `Runners` 메뉴에서 제공하는 Windows 다운로드 및 설정 스크립트를 PowerShell에 복사/붙여넣기하여 실행.
 3. **서비스 등록**: 서버 재부팅 시에도 로봇이 항상 돌아가게 하기 위해 러너를 서비스로 등록합니다.
-   - `C:\actions-runner` 폴더에서 `.\svc.sh install` 및 `.\svc.sh start` 실행.
+   - ⚠️ 예전 문서에는 `.\svc.sh install` / `.\svc.sh start` 로 적혀 있었으나, `svc.sh` 는 리눅스·맥용 명령입니다. **229 서버에서 실제로 어떻게 등록했는지는 확인되지 않음** (2026-11-05 점검).
+   - Windows 러너는 보통 설정 단계(`.\config.cmd`)에서 "서비스로 실행할지" 질문에 `Y` 로 답해 등록합니다 (`.\config.cmd --runasservice` 도 같은 뜻).
+   - 확인 방법: 서버에서 `Get-Service actions.runner.*` 를 실행해 `Running` 이면 서비스로 등록된 상태입니다. 확인되면 이 항목을 실제 방법으로 고쳐 주세요.
 
 ---
 
@@ -125,7 +146,72 @@
    cd C:\tools\nginx-1.31.2
    nginx -s stop
    ```
-3. **성공 확인**:
+3. **새 버전 압축 풀기**: 받은 zip 을 `C:\tools\` 아래에 풉니다 (예: `C:\tools\nginx-1.32.0`).
+4. **설정·인증서 옮기기**: 기존 폴더의 아래 두 가지를 새 폴더의 같은 위치로 복사합니다.
+   - `conf\nginx.conf`
+   - `conf\ssl\` 폴더 전체 (`fullchain.crt`, `private.key`)
+5. **경로 처리 (둘 중 하나)**: 배포 스크립트(`.github/workflows/deploy.yml`)와 이 문서가 `C:\tools\nginx-1.31.2` 경로를 씁니다.
+   - **간단한 방법**: 기존 폴더 이름을 `nginx-1.31.2_old` 로 바꾸고, 새 폴더 이름을 `nginx-1.31.2` 로 바꿉니다. (스크립트 수정 불필요)
+   - 또는 새 폴더 이름을 그대로 쓰려면 `deploy.yml` 의 `$nginxDir` 경로를 고치고 커밋·배포합니다.
+6. **새 Nginx 시작**:
+   ```cmd
+   cd C:\tools\nginx-1.31.2
+   nginx -t
+   start nginx
+   ```
+   (`nginx -t` 는 설정 문법 검사 — `successful` 이 나와야 함)
+7. **성공 확인**:
    - 브라우저를 열고 `https://ipw.daedong.ac.kr` 에 정상적으로 접속되는지 확인한 뒤, 문제없이 챗봇이 열리면 구버전 폴더는 삭제하셔도 됩니다.
 
 위 과정을 통해 Nginx 코어 엔진 업그레이드가 완료되며, 기존의 모든 라우팅 설정은 그대로 유지됩니다.
+
+---
+
+## 부록 A. DB 계정 만들기 (읽기 전용·학생용)
+
+2026-11-04 에 만든 계정입니다. 새 서버나 새 DB 로 옮길 때 다시 만들 때 씁니다.
+
+- **SSMS 에서 sa 같은 서버 관리자 계정으로 실행**합니다. (`admission_ai` 는 DB 안에서만 오너라 로그인을 만들 수 없음)
+- 비밀번호 칸은 실제 강한 비밀번호로 바꿉니다. 서버 비밀번호 정책 때문에 **14자 이상, 대문자·소문자·숫자·특수문자 중 3가지 이상, 계정 이름(admission 등) 미포함**이어야 합니다 (오류 15118 이 나면 이 조건 확인).
+- 만든 뒤 비밀번호는 개발 PC `backend\.env` 와 서버 `C:\actions-runner\.env` 에만 넣습니다.
+
+```sql
+-- ① 서버 로그인 생성 (sa 등 서버 관리자로 실행)
+USE master;
+GO
+CREATE LOGIN admission_ai_ro      WITH PASSWORD = N'여기에_강한비밀번호1', CHECK_POLICY = ON, DEFAULT_DATABASE = DDU_ADMISSION;
+CREATE LOGIN admission_ai_student WITH PASSWORD = N'여기에_강한비밀번호2', CHECK_POLICY = ON, DEFAULT_DATABASE = DDU_ADMISSION;
+GO
+
+-- ② DB 사용자 연결과 권한
+USE DDU_ADMISSION;
+GO
+-- 교직원 조회용: 전체 읽기만, 쓰기·실행은 명시적으로 금지
+CREATE USER admission_ai_ro FOR LOGIN admission_ai_ro;
+ALTER ROLE db_datareader ADD MEMBER admission_ai_ro;
+DENY INSERT, UPDATE, DELETE, EXECUTE, ALTER ON SCHEMA::dbo TO admission_ai_ro;
+
+-- 학생 조회용: 공개 테이블의 공개 열만 (만들 당시는 고교구분 6개 열)
+CREATE USER admission_ai_student FOR LOGIN admission_ai_student;
+GRANT SELECT ON dbo.EXCEL_HIGHSCHOOLTYPE
+    (학교명, 학교종류명, 시도명, 고등학교구분명, 고등학교일반전문구분명, 특수목적고등학교계열명)
+    TO admission_ai_student;
+DENY INSERT, UPDATE, DELETE, EXECUTE, ALTER ON SCHEMA::dbo TO admission_ai_student;
+GO
+
+-- ③ 확인: 권한 오류가 나야 정상
+EXECUTE AS USER = 'admission_ai_student';
+SELECT TOP 1 * FROM dbo.UI_IPSI_M_V;          -- 비공개 테이블이므로 거부되어야 함
+REVERT;
+```
+
+- **학생 공개 테이블·열은** 대시보드에서 공개로 바꾸면 프로그램이 학생 계정의 SELECT 권한을 자동으로 맞춥니다. 위 ②의 GRANT 는 처음 만들 때의 상태입니다.
+- **학사 DB(DC_DAEDONG_C / DC_DAEDONG_U) 권한은 주지 않습니다.** 입시마스타 뷰(`UI_IPSI_M_V`)는 학사 DB 함수를 써서 읽기 계정으로는 열리지 않으므로, 프로그램이 사전 검사를 통과한 교직원 조회만 오너 계정으로 다시 실행합니다.
+
+### 기존 계정 비밀번호 바꾸기
+
+```sql
+-- sa 로 실행
+ALTER LOGIN admission_ai WITH PASSWORD = N'새_강한비밀번호';
+```
+바꾼 뒤 개발 PC `backend\.env` 와 서버 `C:\actions-runner\.env` 의 `DB_PWD` 를 함께 바꾸고, 백엔드를 재시작(서버는 재배포)합니다.
