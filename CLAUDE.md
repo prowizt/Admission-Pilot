@@ -51,7 +51,7 @@ FastAPI 백엔드(`backend/main.py`) + MS-SQL(DDU_ADMISSION, **운영 DB 공유*
 ## 환경 메모
 
 - 서버: `python run_servers.py` (백엔드 127.0.0.1:8000 + 대시보드 vite + 학생 웹 vite). 백엔드는 파일 저장 시 **자동 재시작(WatchFiles)** 된다.
-  - **서버는 Claude 가 새 콘솔 창으로 띄운다** (사용자는 그 창을 보고, Claude 와는 대화 창에서): PowerShell `Start-Process -FilePath python -ArgumentList "run_servers.py" -WorkingDirectory "D:\Admission-Pilot"`.
+  - **서버는 Claude 가 새 콘솔 창으로 띄운다** (사용자는 그 창을 보고, Claude 와는 대화 창에서): PowerShell `Start-Process -FilePath python -ArgumentList "run_servers.py" -WorkingDirectory "D:\Projects\Admission-Pilot"`.
   - 창 내용은 `logs/run_servers.log` 에 똑같이 남는다 (직전 실행은 `run_servers.prev.log`) → 시작 오류·콘솔 출력은 이 파일로 확인.
   - 재시작 요청 시: Admission-Pilot 프로세스만 골라 끈다 (`Get-CimInstance Win32_Process` 명령줄에 `Admission-Pilot`·`run_servers.py`·포트 8000 소유 프로세스). **다른 프로젝트(StudentInfo, LizLab-Agent 등) 서버도 같은 PC 에서 돌고 있으니 python/node 를 통째로 끄지 않는다.** 그다음 위 명령으로 다시 띄우고 `/health` 200 확인.
 - 콘솔이 cp949 → 스크립트는 `PYTHONIOENCODING=utf-8` 로 실행. DB 에 넣는 문자열도 cp949 로 표현 못 하는 글자(₩·이모지)는 `cp949_safe` 로.
@@ -62,7 +62,8 @@ FastAPI 백엔드(`backend/main.py`) + MS-SQL(DDU_ADMISSION, **운영 DB 공유*
 ## 작업기록 (매일)
 
 - 하루 작업은 `docs/작업기록_YYYY-MM-DD.md` 에 남긴다 (요청 → 원인/판단 → 바꾼 것(파일) → 결정 사항 → DB 변경 → 점검한 로그 ID → 남은 일). 형식은 `docs/작업기록_2026-11-05.md` 참고.
-- 세션 시작 hook(`.claude/hooks/worklog_reminder.py`)이 **작업기록이 없는 지난 작업일**을 알려 주면, 사용자 요청과 함께 그날 기록을 먼저 작성한다. 근거는 대화 기록(`~/.claude/projects/D--Admission-Pilot/*.jsonl`)에서 그날 timestamp 부분만 읽어 정리.
+- 세션 시작 hook(`.claude/hooks/worklog_reminder.py`)이 **작업기록이 없는 지난 작업일**을 알려 주면, 사용자 요청과 함께 그날 기록을 먼저 작성한다. 근거는 대화 기록(`~/.claude/projects/D--Projects-Admission-Pilot/*.jsonl`)에서 그날 timestamp 부분만 읽어 정리.
+- 프로젝트 위치: **`D:\Projects\Admission-Pilot`** (2026-11-06 `D:\Admission-Pilot` 에서 옮김). 옮기기 전 대화 기록은 새 위치 폴더에 복사해 두었고, 원본 `~/.claude/projects/D--Admission-Pilot/` 도 남아 있다. 작업기록에 적힌 옛 jsonl 경로는 같은 파일 이름으로 새 폴더에서 찾으면 된다.
 - 사용자가 "예전에 ○○ 얘기한 것 찾아줘" 하면 작업기록 → 대화 기록(jsonl) 순으로 검색한다. 대화 기록 보관 기간은 3650일로 설정됨.
 
 ## 로그 분석·점검
