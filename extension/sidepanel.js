@@ -99,6 +99,14 @@ let defaultModels = [];
 let customModels = []; // 사용자가 추가한 모델 세트
 let currentActiveModel = null; // 현재 선택된 모델 객체 추적
 
+// Claude 모델은 API Key 를 비워 두면 서버(backend/.env)의 ANTHROPIC_API_KEY 를 사용
+function isClaudeModel(name) {
+  return !!name && name.toLowerCase().startsWith("claude-");
+}
+function modelUsesServerKey(m) {
+  return !!m && isClaudeModel(m.modelName) && (!m.routerModelName || isClaudeModel(m.routerModelName));
+}
+
 // 설정창 토글
 btnToggleSettings.addEventListener('click', () => {
   const isHidden = settingsBody.classList.contains('hidden');
@@ -146,7 +154,7 @@ function renderModelSelect(activeId) {
   allModels.forEach(m => {
     const opt = document.createElement('option');
     opt.value = m.id;
-    const keyStatus = m.apiKey.length > 5 ? "🔑" : "⚠️키 없음";
+    const keyStatus = (m.apiKey || "").length > 5 ? "🔑" : (modelUsesServerKey(m) ? "서버 키" : "⚠️키 없음");
     opt.innerText = `${m.alias} [${keyStatus}]`;
     if (m.id === activeId) {
       opt.selected = true;
@@ -222,7 +230,7 @@ btnEditModel.addEventListener('click', () => {
   newModelAlias.value = currentActiveModel.alias;
   newRouterModelId.value = currentActiveModel.routerModelName || "";
   newModelId.value = currentActiveModel.modelName;
-  newModelApiKey.value = currentActiveModel.apiKey;
+  newModelApiKey.value = currentActiveModel.apiKey || "";
   editModelId.value = currentActiveModel.id;
 
   formTitle.innerText = "✏️ AI 모델 세트 수정";
@@ -245,7 +253,6 @@ function resetForm() {
   newRouterModelId.value = "";
   newModelId.value = "";
   newModelApiKey.value = "";
-  newModelEffort.value = "";
   editModelId.value = "";
   formTitle.innerText = "➕ 나만의 AI 모델 세트 추가";
   btnAddModel.innerText = "저장";
@@ -260,8 +267,12 @@ btnAddModel.addEventListener('click', () => {
   const apiKey = newModelApiKey.value.trim();
   const editingId = editModelId.value;
 
-  if (!alias || !modelId || !apiKey) {
-    alert("구분용 이름, 실제 모델명, API Key를 모두 입력해주세요.");
+  if (!alias || !modelId) {
+    alert("구분용 이름과 실제 모델명을 입력해주세요.");
+    return;
+  }
+  if (!apiKey && !modelUsesServerKey({ modelName: modelId, routerModelName: routerModelIdStr })) {
+    alert("Gemini 모델은 API Key를 입력해주세요.\n(Claude 모델(claude-…)은 비워 두면 서버 키를 사용합니다.)");
     return;
   }
 
@@ -517,7 +528,7 @@ async function sendMessage() {
   const text = chatInput.value.trim();
 
   if (!text) return;
-  if (!currentActiveModel || !currentActiveModel.apiKey) {
+  if (!currentActiveModel || (!currentActiveModel.apiKey && !modelUsesServerKey(currentActiveModel))) {
     alert("선택된 모델에 연결된 API Key가 없습니다.\n⚙️ 내 AI 모델 관리 패널에서 키가 포함된 모델을 추가하고 선택해주세요.");
     settingsBody.classList.remove('hidden');
     settingsArrow.innerText = "▲";
@@ -531,7 +542,7 @@ async function sendMessage() {
   let endpoint = `${BASE_URL}/chat`;
   let bodyData;
   let headers = {
-    'x-gemini-key': currentActiveModel.apiKey
+    'x-gemini-key': currentActiveModel.apiKey || ""
   };
 
   // 엑셀 파일이 첨부되었더라도, 사용자가 '채우기' 동작을 명시적으로 요구했을 때만 Autofill 모드로 동작

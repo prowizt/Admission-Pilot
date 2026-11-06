@@ -88,9 +88,9 @@
           class="w-full text-[11px] font-mono px-2 py-1.5 bg-white border border-gray-300 rounded outline-none focus:border-indigo-400" />
         <input type="text" id="new-model-id" placeholder="최종 매핑 모델명 (예: gemini-2.5-flash)"
           class="w-full text-[11px] font-mono px-2 py-1.5 bg-white border border-gray-300 rounded outline-none focus:border-indigo-400" />
-        <p class="text-[9px] text-gray-400 -mt-1">※ Claude 모델에만 적용 (Gemini는 무시)</p>
+        <p class="text-[9px] text-gray-400 -mt-1">※ Claude 모델(claude-…)은 API Key를 비워 두면 서버 키를 사용</p>
         <div class="flex gap-1.5">
-          <input type="password" id="new-model-apikey" placeholder="해당 모델용 API Key"
+          <input type="password" id="new-model-apikey" placeholder="API Key (Claude는 비워 두기)"
             class="flex-1 text-xs px-2 py-1.5 bg-white border border-gray-300 rounded outline-none focus:border-indigo-400" />
           <button type="button" id="btn-add-model"
             class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded shadow-sm whitespace-nowrap active:scale-95">저장</button>

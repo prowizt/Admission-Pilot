@@ -56,7 +56,12 @@ try:
     os.makedirs(_log_dir, exist_ok=True)
     _log_path = os.path.join(_log_dir, "run_servers.log")
     if os.path.exists(_log_path):
-        os.replace(_log_path, os.path.join(_log_dir, "run_servers.prev.log"))
+        for _try in range(10):  # watch_servers.py 가 잠깐 읽는 중이면 조금 기다렸다 다시
+            try:
+                os.replace(_log_path, os.path.join(_log_dir, "run_servers.prev.log"))
+                break
+            except PermissionError:
+                time.sleep(0.2)
     _log_fh = open(_log_path, "w", encoding="utf-8")
     sys.stdout = _TeeToFile(sys.stdout, _log_fh)
     sys.stderr = _TeeToFile(sys.stderr, _log_fh)

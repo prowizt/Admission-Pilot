@@ -1,0 +1,25 @@
+{
+    // VS Code 작업: 폴더를 열면 아래쪽 터미널에 서버 화면(logs/run_servers.log)을 자동으로 보여 줌.
+    // 서버 자체는 Claude 가 별도 창(작업 표시줄)으로 띄우고 끄고 켬 — 이 작업은 읽기만 함 (watch_servers.py).
+    // 다시 열려면: Terminal → Run Task… → "서버 화면 보기"
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "서버 화면 보기",
+            "type": "process",
+            "command": "python",
+            "args": ["${workspaceFolder}/watch_servers.py"],
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "focus": false,
+                "clear": true
+            },
+            "runOptions": {
+                "runOn": "folderOpen"
+            }
+        }
+    ]
+}

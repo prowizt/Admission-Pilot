@@ -51,8 +51,10 @@ FastAPI 백엔드(`backend/main.py`) + MS-SQL(DDU_ADMISSION, **운영 DB 공유*
 ## 환경 메모
 
 - 서버: `python run_servers.py` (백엔드 127.0.0.1:8000 + 대시보드 vite + 학생 웹 vite). 백엔드는 파일 저장 시 **자동 재시작(WatchFiles)** 된다.
-  - **서버는 Claude 가 새 콘솔 창으로 띄운다** (사용자는 그 창을 보고, Claude 와는 대화 창에서): PowerShell `Start-Process -FilePath python -ArgumentList "run_servers.py" -WorkingDirectory "D:\Projects\Admission-Pilot"`.
+  - **서버는 Claude 가 Windows(WMI)에 맡겨 띄운다** — VS Code 안에서 `Start-Process` 로 띄우면 VS Code 를 끌 때 서버도 같이 꺼짐(2026-11-06, 종료 코드 3221225786 = Ctrl+C). PowerShell:
+    `$py=(Get-Command python).Source; $si=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]7}; Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine="`"$py`" run_servers.py"; CurrentDirectory='D:\Projects\Admission-Pilot'; ProcessStartupInformation=$si}` (python 은 전체 경로 필수 — 이름만 쓰면 반환값 9). 부모가 `WmiPrvSE` 면 정상.
   - 창 내용은 `logs/run_servers.log` 에 똑같이 남는다 (직전 실행은 `run_servers.prev.log`) → 시작 오류·콘솔 출력은 이 파일로 확인.
+  - **사용자는 VS Code 아래 터미널의 "서버 화면 보기"로 본다**: `watch_servers.py` 가 로그 파일을 색상 그대로 실시간 표시(읽기만 함, 재시작도 자동으로 따라감). `.vscode/tasks.json` 이 폴더를 열 때 자동 실행 — 꺼졌으면 Terminal → Run Task… → "서버 화면 보기".
   - 재시작 요청 시: Admission-Pilot 프로세스만 골라 끈다 (`Get-CimInstance Win32_Process` 명령줄에 `Admission-Pilot`·`run_servers.py`·포트 8000 소유 프로세스). **다른 프로젝트(StudentInfo, LizLab-Agent 등) 서버도 같은 PC 에서 돌고 있으니 python/node 를 통째로 끄지 않는다.** 그다음 위 명령으로 다시 띄우고 `/health` 200 확인.
 - 콘솔이 cp949 → 스크립트는 `PYTHONIOENCODING=utf-8` 로 실행. DB 에 넣는 문자열도 cp949 로 표현 못 하는 글자(₩·이모지)는 `cp949_safe` 로.
 - DB 스크립트: `backend/tools/_db.py` 의 `connect()` 를 쓰거나, `load_dotenv(backend/.env)` 후 `app_config._owner_conn()`.
