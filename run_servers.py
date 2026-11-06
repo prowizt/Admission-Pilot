@@ -32,6 +32,37 @@ if sys.platform == "win32":
     except Exception as e:
         print(f"[경고] Windows 가상 터미널 프로세싱 활성화 실패: {e}")
 
+# 화면 출력을 logs/run_servers.log 에도 똑같이 남김 (Claude 가 서버 창 내용을 읽을 수 있게)
+#  - 실행할 때마다 새로 쓰고, 직전 실행 기록은 run_servers.prev.log 로 보관 / 색상 코드는 파일에서 뺌
+import re as _re
+class _TeeToFile:
+    _ansi = _re.compile(r"\x1b\[[0-9;]*m")
+    def __init__(self, stream, fh):
+        self._stream, self._fh = stream, fh
+    def write(self, s):
+        self._stream.write(s)
+        try:
+            self._fh.write(self._ansi.sub("", s))
+            self._fh.flush()
+        except Exception:
+            pass
+    def flush(self):
+        self._stream.flush()
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+try:
+    _log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+    os.makedirs(_log_dir, exist_ok=True)
+    _log_path = os.path.join(_log_dir, "run_servers.log")
+    if os.path.exists(_log_path):
+        os.replace(_log_path, os.path.join(_log_dir, "run_servers.prev.log"))
+    _log_fh = open(_log_path, "w", encoding="utf-8")
+    sys.stdout = _TeeToFile(sys.stdout, _log_fh)
+    sys.stderr = _TeeToFile(sys.stderr, _log_fh)
+except Exception as e:
+    print(f"[경고] 로그 파일 기록 준비 실패: {e}")
+
 
 def read_output(pipe, prefix):
     global last_log_time

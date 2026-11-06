@@ -20,6 +20,7 @@ FastAPI 백엔드(`backend/main.py`) + MS-SQL(DDU_ADMISSION, **운영 DB 공유*
 - **학생 챗봇은 내부 정보(교직원 데이터·토큰·문서 내부 정보)를 내보내지 않는다.**
 - **API 키·DB 비밀번호는 `backend/.env` 에만.** 출력·커밋하지 않고, 사용자가 채팅에 키를 붙여 넣지 않게 안내.
 - **사전지식(Sys_SupplementalKnowledge)은 사용자가 직접 정리한다.** Claude 가 임의로 추가하지 않는다.
+- **API 비용이 드는 시험은 먼저 원화 예상액을 보고하고, 사용자가 "시작해" 한 뒤에 실행한다** (사용자 지시 2026-11-06). 챗봇 질문·엑셀 채우기·문서 등록 임베딩 등 Claude/Gemini API 를 부르는 모든 시험이 대상. 예: "질문 2건, 건당 약 15원 → 약 30원". 서버 재시작·health 확인·DB 조회처럼 API 를 안 부르는 일은 바로 해도 된다. 실행 후에는 실제 비용(로그 금액)도 함께 보고.
 - **챗봇 시험 질문은 앞에 `[테스트]`** 를 붙이고, 시험 로그는 **지우지 않는다** (Claude 크레딧 통계·예상 잔액이 로그 비용 기준).
 
 ## 코딩 표준 (예전 AI_GUIDELINES.md 에서 지금도 맞는 것만 옮김)
@@ -49,7 +50,10 @@ FastAPI 백엔드(`backend/main.py`) + MS-SQL(DDU_ADMISSION, **운영 DB 공유*
 
 ## 환경 메모
 
-- 서버: `python run_servers.py` (백엔드 127.0.0.1:8000 + 대시보드 vite + 학생 웹 vite). 백엔드는 파일 저장 시 **자동 재시작(WatchFiles)** 되지만, 안 될 때는 사용자에게 재시작을 부탁.
+- 서버: `python run_servers.py` (백엔드 127.0.0.1:8000 + 대시보드 vite + 학생 웹 vite). 백엔드는 파일 저장 시 **자동 재시작(WatchFiles)** 된다.
+  - **서버는 Claude 가 새 콘솔 창으로 띄운다** (사용자는 그 창을 보고, Claude 와는 대화 창에서): PowerShell `Start-Process -FilePath python -ArgumentList "run_servers.py" -WorkingDirectory "D:\Admission-Pilot"`.
+  - 창 내용은 `logs/run_servers.log` 에 똑같이 남는다 (직전 실행은 `run_servers.prev.log`) → 시작 오류·콘솔 출력은 이 파일로 확인.
+  - 재시작 요청 시: Admission-Pilot 프로세스만 골라 끈다 (`Get-CimInstance Win32_Process` 명령줄에 `Admission-Pilot`·`run_servers.py`·포트 8000 소유 프로세스). **다른 프로젝트(StudentInfo, LizLab-Agent 등) 서버도 같은 PC 에서 돌고 있으니 python/node 를 통째로 끄지 않는다.** 그다음 위 명령으로 다시 띄우고 `/health` 200 확인.
 - 콘솔이 cp949 → 스크립트는 `PYTHONIOENCODING=utf-8` 로 실행. DB 에 넣는 문자열도 cp949 로 표현 못 하는 글자(₩·이모지)는 `cp949_safe` 로.
 - DB 스크립트: `backend/tools/_db.py` 의 `connect()` 를 쓰거나, `load_dotenv(backend/.env)` 후 `app_config._owner_conn()`.
 - 설정값은 `backend/app_config.py` SPEC(기본값) + 대시보드 환경 설정(Sys_SystemSetting). 코드에 상수를 박지 말고 설정으로.
