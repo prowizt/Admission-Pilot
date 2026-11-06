@@ -2,7 +2,7 @@
 
 본 문서는 텅 빈 Windows Server 2022 (IP: `210.93.0.229`, 도메인: `ipw.daedong.ac.kr`)에서 Admission-Pilot 서비스를 완벽하게 구동하기 위해 거쳐간 **모든 설치 및 세팅 과정**을 시행착오 없이 순서대로 따라 할 수 있도록 정리한 완성본 매뉴얼입니다.
 
-> **마지막 점검: 2026-11-05** (Claude Code 와 코드 대조). 시스템 구조는 `SYSTEM_ARCHITECTURE.md`, 작업 규칙은 `CLAUDE.md` 참고.
+> **마지막 점검: 2026-11-06** (Claude Code 와 코드 대조). 시스템 구조는 `SYSTEM_ARCHITECTURE.md`, 작업 규칙은 `CLAUDE.md` 참고.
 
 ---
 
@@ -49,7 +49,7 @@
   ```env
   # AI 키
   ANTHROPIC_API_KEY=        # Claude (학생 챗봇 Haiku, 확장에 키를 넣지 않은 교직원 Claude 호출)
-  STUDENT_API_KEY=          # Gemini (학생 챗봇 모델을 Gemini 로 쓸 때)
+  STUDENT_API_KEY=          # Gemini (학생 챗봇 모델을 Gemini 로 쓸 때만 — Claude 모델이면 없어도 됨)
 
   # DB 접속 (서버·DB 이름은 기본값이 있어 보통 생략 가능)
   DB_SERVER=10.10.1.11,1433
@@ -167,6 +167,42 @@
 
 ---
 
+## 9. 운영 중 재시작·점검 명령 (서버 PowerShell)
+
+### 9.1. 서버 `.env` 를 고쳤을 때 (키·비밀번호 교체 등)
+- **가장 쉬운 방법: 배포를 다시 돌린다.** GitHub 저장소 → **Actions** → "Deploy Admission Pilot" → **Re-run all jobs** (또는 개발 PC 에서 push). 배포가 `.env` 복사 → 백엔드 재시작까지 모두 함.
+- **배포 없이 직접 할 때는 두 줄을 순서대로.** 백엔드는 `C:\actions-runner\.env` 를 직접 읽지 않고, 배포가 복사해 둔 작업 폴더의 `.env` 를 읽는다 → **복사 없이 `pm2 restart` 만 하면 옛 값으로 다시 켜짐.**
+  ```powershell
+  Copy-Item C:\actions-runner\.env C:\actions-runner\_work\Admission-Pilot\Admission-Pilot\backend\.env -Force
+  pm2 restart admission-backend
+  ```
+- **Nginx 는 재시작할 필요 없음** (`.env` 는 백엔드만 씀).
+- 확인: `pm2 list` 에서 `admission-backend` 가 **online**, `pm2 logs admission-backend` 에 `[DB 권한] 교직원 읽기 계정: 연결 확인` · `학생 조회 계정: 연결 확인` 이 나오면 정상 (로그 화면은 Ctrl+C 로 나와도 백엔드는 안 꺼짐).
+
+### 9.2. 자주 쓰는 명령
+| 하고 싶은 것 | 명령 |
+|---|---|
+| 백엔드 상태 보기 | `pm2 list` (online 이면 정상) |
+| 백엔드 로그 보기 | `pm2 logs admission-backend` (Ctrl+C 로 나옴 — 백엔드는 계속 돎) |
+| 백엔드만 재시작 (코드·`.env` 그대로) | `pm2 restart admission-backend` |
+| Nginx 설정(`nginx.conf`)을 고쳤을 때 | `cd C:\tools\nginx-1.31.2` → `.\nginx -s reload` |
+| Nginx 가 먹통일 때 (최후 수단) | `taskkill /f /im nginx.exe` → `start C:\tools\nginx-1.31.2\nginx.exe` |
+| 배포가 `EBUSY`(폴더 잠김)로 실패할 때 | `pm2 delete admission-backend` → (필요하면) `taskkill /f /im python.exe` → Actions 에서 Re-run |
+
+- ⚠️ `taskkill /f /im python.exe` 는 서버의 **모든** 파이썬 프로그램을 끈다. 서버에 다른 파이썬 프로그램이 없을 때만 쓴다.
+- `pm2 save` 는 지금 켜진 목록을 저장해 PM2 가 다시 켜질 때 같은 서버를 띄우게 하는 명령 (배포가 처음 등록할 때 자동으로 함).
+
+### 9.3. 서버(윈도우)를 재부팅한 뒤
+1. Nginx 켜기: `cd C:\tools\nginx-1.31.2` → `start nginx.exe` (서비스로 등록돼 있지 않아 자동으로 안 켜짐)
+2. 백엔드 확인: `pm2 list` — `admission-backend` 가 online 이 아니거나 목록이 비어 있으면 Actions 에서 배포 **Re-run** (`.env` 복사·재시작까지 함)
+3. 브라우저로 `https://ipw.daedong.ac.kr`, `https://ipw.daedong.ac.kr:8443` 접속 확인
+
+### 9.4. Claude API 키 만료
+- 지금 키 만료일: **2027-02-28** (구글 캘린더 2027-02-15 알림). 만료되면 교직원 화면에 "🔑 Claude API 키가 만료되었거나 비활성화된 키입니다" 가 뜬다.
+- 교체: Anthropic 콘솔 → API Keys → Create Key (**기본 워크스페이스**) → 개발 PC `backend\.env` 와 서버 `C:\actions-runner\.env` 의 `ANTHROPIC_API_KEY` 교체 → 9.1 로 재시작 → 정상 확인 후 옛 키 삭제. 크레딧 잔액·대시보드 예상 잔액은 키와 무관 (그대로).
+
+---
+
 ## 부록 A. DB 계정 만들기 (읽기 전용·학생용)
 
 2026-11-04 에 만든 계정입니다. 새 서버나 새 DB 로 옮길 때 다시 만들 때 씁니다.
@@ -211,7 +247,15 @@ REVERT;
 ### 기존 계정 비밀번호 바꾸기
 
 ```sql
--- sa 로 실행
-ALTER LOGIN admission_ai WITH PASSWORD = N'새_강한비밀번호';
+-- sa 로 실행 (필요한 계정만)
+ALTER LOGIN admission_ai         WITH PASSWORD = N'새_비밀번호_1';  -- DB_PWD
+ALTER LOGIN admission_ai_ro      WITH PASSWORD = N'새_비밀번호_2';  -- DB_RO_PWD
+ALTER LOGIN admission_ai_student WITH PASSWORD = N'새_비밀번호_3';  -- DB_STUDENT_PWD
+
+-- 확인: 비밀번호 변경 시각
+SELECT name, LOGINPROPERTY(name, 'PasswordLastSetTime') AS 비밀번호_변경시각
+FROM sys.sql_logins WHERE name LIKE N'admission_ai%';
 ```
-바꾼 뒤 개발 PC `backend\.env` 와 서버 `C:\actions-runner\.env` 의 `DB_PWD` 를 함께 바꾸고, 백엔드를 재시작(서버는 재배포)합니다.
+- 비밀번호는 계정마다 다르게, 12자 이상. 연결 문자열에서 문제가 될 수 있는 `;` `{` `}` `'` `"` 는 피한다.
+- 바꾼 뒤 개발 PC `backend\.env` 와 서버 `C:\actions-runner\.env` 의 해당 항목을 함께 바꾸고 재시작합니다 (서버는 **9.1** 참고). 두 `.env` 를 고치기 전까지는 챗봇이 DB 에 연결하지 못합니다.
+- 마지막 교체: 2026-11-06 (세 계정 모두).
