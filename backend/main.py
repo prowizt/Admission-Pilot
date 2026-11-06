@@ -216,6 +216,9 @@ ROUTER_SCHEMA = {
 # [RAG 검색어 제한] 검색어가 수천 개로 쪼개지면 ChromaDB 가 'too many SQL variables' 로 실패하고 임베딩에 수십 초가 걸림
 RAG_QUERY_MAX_COUNT = 10
 STUDENT_FALLBACK_DOCS = 3  # 학생 질문에서 이름 매칭 문서가 없을 때 의미 검색으로 넣는 최대 문서 수
+# 학생에게 보여 주는 오류 안내 (키·모델·서버 오류 내용은 학생에게 보이지 않고 서버 로그에만 남김)
+STUDENT_ERROR_MESSAGE = "죄송합니다. 지금은 상담 챗봇을 이용할 수 없습니다. 잠시 후 다시 시도하시거나 입학처로 문의해 주세요."
+STUDENT_BUSY_MESSAGE = "죄송합니다. 지금 질문이 많아 답변이 늦어지고 있습니다. 1분쯤 뒤에 다시 질문해 주세요. ⏳"
 RAG_QUERY_MAX_LEN = 80
 
 def fallback_rag_query(question: str) -> str:
@@ -1833,7 +1836,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             # Gemini 모델일 때만 학생 전용 키(STUDENT_API_KEY) 필수
             x_gemini_key = os.getenv("STUDENT_API_KEY", "")
             if not x_gemini_key:
-                raise HTTPException(status_code=401, detail="학생 전용 API 키(STUDENT_API_KEY)가 서버에 설정되어 있지 않습니다.")
+                print("[학생] ❌ 학생 모델이 Gemini 인데 STUDENT_API_KEY 가 서버 .env 에 없음 → 환경 설정에서 학생 모델을 Claude 로 바꾸거나 키를 넣을 것")
+                raise HTTPException(status_code=503, detail=STUDENT_ERROR_MESSAGE)
 
     # [Gemini ↔ Claude 전환] 헤더 키는 공급자 공통 키로 사용 (Claude 모델 + 헤더 키 없음 → 서버 ANTHROPIC_API_KEY)
     router_model_for_key = request.router_model_name or request.model_name
@@ -3586,7 +3590,11 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                     process_log.save(log_id, plog_buf, get_mssql_connection, cp949_safe)
                     
                 except Exception as e:
-                    yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+                    # 학생 스트리밍 중 오류: 자세한 내용은 서버 로그에만, 학생에게는 일반 안내
+                    import traceback
+                    print(f"[학생] ❌ 스트리밍 중 오류: {type(e).__name__}: {e}")
+                    traceback.print_exc()
+                    yield f"data: {json.dumps({'error': STUDENT_ERROR_MESSAGE}, ensure_ascii=False)}\n\n"
                 finally:
                     # 발전된 스트리밍 완료 후 커넥션 닫기
                     if conn_for_stream:
@@ -3721,12 +3729,17 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         print("==================================================\n")
         
         error_msg = str(e)
+        is_busy_error = ("429" in error_msg or "Quota exceeded" in error_msg or "503" in error_msg or "ResourceExhausted" in error_msg
+                         or "529" in error_msg or "overloaded" in error_msg.lower())
+        if request.user_role == "student":
+            # [학생] 키·모델·서버 오류 내용은 보여 주지 않음 (위 서버 로그에만 남김)
+            if is_busy_error:
+                raise HTTPException(status_code=429, detail=STUDENT_BUSY_MESSAGE)
+            raise HTTPException(status_code=503, detail=STUDENT_ERROR_MESSAGE)
         if isinstance(e, llm_client.ApiKeyError):
-            # [API 키 만료·비활성] 관리자에게는 원인·조치를, 학생에게는 내부 정보 없이 일반 안내만
-            if request.user_role == "student":
-                raise HTTPException(status_code=503, detail="죄송합니다. 지금은 상담 챗봇을 이용할 수 없습니다. 잠시 후 다시 시도하시거나 입학처로 문의해 주세요.")
+            # [API 키 만료·비활성] 관리자에게는 원인·조치 안내
             raise HTTPException(status_code=500, detail=f"🔑 {error_msg}")
-        if "429" in error_msg or "Quota exceeded" in error_msg or "503" in error_msg or "ResourceExhausted" in error_msg or "529" in error_msg or "overloaded" in error_msg.lower():
+        if is_busy_error:
             raise HTTPException(
                 status_code=429,
                 detail=f"현재 AI 서버({request.model_name}) 사용량이 많아 요청 한도를 초과했습니다. 약 1분 뒤에 다시 시도하거나 다른 모델로 전환해 주세요! ⏳"
