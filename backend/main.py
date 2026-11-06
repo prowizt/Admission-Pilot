@@ -1824,16 +1824,16 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         
     # [NEW] 학생용 웹 챗봇은 서버 환경변수(STUDENT_API_KEY)를 전용으로 사용하며 누락 시 오류를 발생시킵니다.
     if request.user_role == "student":
-        if not x_gemini_key:
+        student_model = app_config.get("STUDENT_MODEL")
+        request.model_name = student_model
+        # 학생용 모델이 Claude 면 서버 ANTHROPIC_API_KEY 사용 (Gemini 용 STUDENT_API_KEY 는 없어도 됨)
+        if llm_client.is_claude(student_model):
+            x_gemini_key = os.getenv("ANTHROPIC_API_KEY", "")
+        elif not x_gemini_key:
+            # Gemini 모델일 때만 학생 전용 키(STUDENT_API_KEY) 필수
             x_gemini_key = os.getenv("STUDENT_API_KEY", "")
             if not x_gemini_key:
                 raise HTTPException(status_code=401, detail="학생 전용 API 키(STUDENT_API_KEY)가 서버에 설정되어 있지 않습니다.")
-        
-        student_model = app_config.get("STUDENT_MODEL")
-        request.model_name = student_model
-        # 학생용 모델을 Claude 로 전환한 경우 Gemini 용 STUDENT_API_KEY 대신 서버 ANTHROPIC_API_KEY 사용
-        if llm_client.is_claude(student_model):
-            x_gemini_key = os.getenv("ANTHROPIC_API_KEY", "")
 
     # [Gemini ↔ Claude 전환] 헤더 키는 공급자 공통 키로 사용 (Claude 모델 + 헤더 키 없음 → 서버 ANTHROPIC_API_KEY)
     router_model_for_key = request.router_model_name or request.model_name
@@ -3721,6 +3721,11 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         print("==================================================\n")
         
         error_msg = str(e)
+        if isinstance(e, llm_client.ApiKeyError):
+            # [API 키 만료·비활성] 관리자에게는 원인·조치를, 학생에게는 내부 정보 없이 일반 안내만
+            if request.user_role == "student":
+                raise HTTPException(status_code=503, detail="죄송합니다. 지금은 상담 챗봇을 이용할 수 없습니다. 잠시 후 다시 시도하시거나 입학처로 문의해 주세요.")
+            raise HTTPException(status_code=500, detail=f"🔑 {error_msg}")
         if "429" in error_msg or "Quota exceeded" in error_msg or "503" in error_msg or "ResourceExhausted" in error_msg or "529" in error_msg or "overloaded" in error_msg.lower():
             raise HTTPException(
                 status_code=429,

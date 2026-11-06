@@ -55,6 +55,7 @@ FastAPI 백엔드(`backend/main.py`) + MS-SQL(DDU_ADMISSION, **운영 DB 공유*
     `$py=(Get-Command python).Source; $si=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ShowWindow=[uint16]7}; Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine="`"$py`" run_servers.py"; CurrentDirectory='D:\Projects\Admission-Pilot'; ProcessStartupInformation=$si}` (python 은 전체 경로 필수 — 이름만 쓰면 반환값 9). 부모가 `WmiPrvSE` 면 정상.
   - 창 내용은 `logs/run_servers.log` 에 똑같이 남는다 (직전 실행은 `run_servers.prev.log`) → 시작 오류·콘솔 출력은 이 파일로 확인.
   - **사용자는 VS Code 아래 터미널의 "서버 화면 보기"로 본다**: `watch_servers.py` 가 로그 파일을 색상 그대로 실시간 표시(읽기만 함, 재시작도 자동으로 따라감). `.vscode/tasks.json` 이 폴더를 열 때 자동 실행 — 꺼졌으면 Terminal → Run Task… → "서버 화면 보기".
+  - **백엔드 파일(`backend/*.py`)을 고친 뒤에는 반드시 15초쯤 뒤 `/health`·5175·5176 을 확인하고, 꺼졌으면 바로 위 명령으로 다시 띄운다** (사용자 지시 2026-11-06). Windows 에서 WatchFiles 자동 재시작의 Ctrl+C 신호가 같은 콘솔의 run_servers·vite 까지 꺼 버림 (`logs/run_servers.log` 에 `WatchFiles detected changes` → `종료 신호(Ctrl+C)`). 코드로 막지 않고 이렇게 처리하기로 함.
   - 재시작 요청 시: Admission-Pilot 프로세스만 골라 끈다 (`Get-CimInstance Win32_Process` 명령줄에 `Admission-Pilot`·`run_servers.py`·포트 8000 소유 프로세스). **다른 프로젝트(StudentInfo, LizLab-Agent 등) 서버도 같은 PC 에서 돌고 있으니 python/node 를 통째로 끄지 않는다.** 그다음 위 명령으로 다시 띄우고 `/health` 200 확인.
 - 콘솔이 cp949 → 스크립트는 `PYTHONIOENCODING=utf-8` 로 실행. DB 에 넣는 문자열도 cp949 로 표현 못 하는 글자(₩·이모지)는 `cp949_safe` 로.
 - DB 스크립트: `backend/tools/_db.py` 의 `connect()` 를 쓰거나, `load_dotenv(backend/.env)` 후 `app_config._owner_conn()`.

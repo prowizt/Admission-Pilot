@@ -54,6 +54,21 @@ class TokenLimitExceeded(Exception):
         super().__init__("입력 토큰 한도 초과로 AI 호출을 취소했습니다.")
 
 
+class ApiKeyError(Exception):
+    """Claude API 키가 만료·비활성·잘못되어 인증이 거부된 경우 (401/403). 메시지는 관리자용 안내 (학생에게는 보여 주지 않음)"""
+
+
+API_KEY_ERROR_MESSAGE = ("Claude API 키가 만료되었거나 비활성화된 키입니다(또는 권한 없음). "
+                         "backend/.env 의 ANTHROPIC_API_KEY 를 확인해 주세요. "
+                         "운영 서버는 C:\\actions-runner\\.env 도 함께 바꾸고 다시 배포해야 합니다. "
+                         "(크롬 확장 모델 설정에 키를 직접 넣었다면 그 키도 확인)")
+
+
+def _raise_key_error(e):
+    print(f"[LLM] 🔑 Claude API 키 인증 실패 ({type(e).__name__}): {getattr(e, 'message', e)}")
+    raise ApiKeyError(API_KEY_ERROR_MESSAGE) from e
+
+
 REFUSAL_MESSAGE ="⚠️ Claude가 안전 정책에 따라 이 요청에 대한 답변을 거절했습니다. 질문을 바꾸거나 Gemini 모델로 다시 시도해 주세요."
 
 
@@ -161,7 +176,10 @@ def _claude_check_tokens(client, kwargs):
     count_kwargs = {"model": kwargs["model"], "messages": kwargs["messages"]}
     if "system" in kwargs:
         count_kwargs["system"] = kwargs["system"]
-    tokens = client.messages.count_tokens(**count_kwargs).input_tokens
+    try:
+        tokens = client.messages.count_tokens(**count_kwargs).input_tokens
+    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as e:
+        _raise_key_error(e)  # 키 만료·비활성은 보통 여기(첫 호출)에서 걸림
     limit = app_config.get("MAX_PROMPT_TOKENS")
     if tokens > limit:
         print(f"[LLM] 🛑 Claude({kwargs['model']}) 입력 {tokens:,} 토큰 > 한도 {limit:,} → 호출 취소 (과금 없음)")
@@ -195,6 +213,8 @@ def _claude_generate(model, api_key, prompt, system, json_schema, effort, timeou
         # 긴 출력에서도 HTTP 타임아웃이 나지 않도록 내부적으로 스트리밍으로 받은 뒤 최종 메시지를 조립합니다.
         with client.messages.stream(**kwargs) as s:
             message = s.get_final_message()
+    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as e:
+        _raise_key_error(e)
     except anthropic.BadRequestError as e:
         if not json_schema:
             raise
@@ -292,10 +312,13 @@ class LLMStream:
 
     def __iter__(self):
         if is_claude(self.model):
-            with self._client.messages.stream(**self._kwargs) as s:
-                for text in s.text_stream:
-                    yield text
-                final = _claude_result(s.get_final_message())
+            try:
+                with self._client.messages.stream(**self._kwargs) as s:
+                    for text in s.text_stream:
+                        yield text
+                    final = _claude_result(s.get_final_message())
+            except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as e:
+                _raise_key_error(e)
             if final.text == REFUSAL_MESSAGE:
                 yield "\n\n" + REFUSAL_MESSAGE
             self.result = final
