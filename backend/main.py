@@ -3009,6 +3009,41 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                         dropped = {f for q in docs_per_query.values() for f in q} - {f for q in filtered_per_query.values() for f in q}
                         print(f" ├─ [관련성 필터 - 학생] 이름 매칭 문서만 사용, 의미 검색 후보 {len(dropped)}건 제외")
                         docs_per_query = filtered_per_query
+
+                        # [짝 문서 보완 - 학생] 고른 문서 제목이 '…(A)' 처럼 괄호로 끝나면, 괄호 안만 다른 공개 문서 '…(B)' 도 함께 넣음
+                        # (Log #551: 라우터가 '전형별 세부사항(정원외)' 만 골라 정원내 전형을 "자료 없음"으로 답함)
+                        # 문서 이름을 하드코딩하지 않고 문서 목록에서 이름이 짝을 이루는 것을 찾는 범용 규칙. 학생 문서 예산·개수 상한은 아래에서 그대로 적용
+                        try:
+                            if conn:
+                                def paren_base(name):
+                                    m = re.match(r'^(.*?)\s*\([^()]*\)\s*$', re.sub(r'\.[a-zA-Z0-9]+$', '', name or ""))
+                                    base = norm_doc_name(m.group(1)) if m else ""
+                                    return base if len(base) >= 4 else ""
+                                chosen_base_q = {}
+                                for q_idx, q_docs in docs_per_query.items():
+                                    for fname, doc in q_docs.items():
+                                        b = paren_base(doc["meta"].get("title") or fname)
+                                        if b:
+                                            chosen_base_q.setdefault(b, q_idx)
+                                if chosen_base_q:
+                                    chosen_files = {f for q in docs_per_query.values() for f in q}
+                                    s_cursor = conn.cursor()
+                                    s_cursor.execute("SELECT filename, doc_type, title FROM Sys_DocumentCatalog WHERE is_active = 'Y' AND is_public = 'Y'")
+                                    for fname, d_type, d_title in s_cursor.fetchall():
+                                        if fname in chosen_files:
+                                            continue
+                                        b = paren_base(d_title or fname)
+                                        if not b or b not in chosen_base_q:
+                                            continue
+                                        is_rule = d_type == "rule"
+                                        got = (rule_db if is_rule else reference_db).get(where={"filename": fname}, include=["documents", "metadatas"])
+                                        if got and got.get("documents"):
+                                            docs_per_query[chosen_base_q[b]][fname] = {"doc_text": "\n".join(d or "" for d in got["documents"]),
+                                                                                       "meta": got["metadatas"][0], "distance": 0.1,
+                                                                                       "source": "rule" if is_rule else "ref"}
+                                            print(f" ├─ [짝 문서 보완 - 학생] {fname} (괄호 안만 다른 같은 이름 문서) → 포함")
+                        except Exception as s_err:
+                            print(f"짝 문서 보완 오류: {s_err}")
                     else:
                         student_fallback_limit = STUDENT_FALLBACK_DOCS
                         print(f" ├─ [관련성 필터 - 학생] 이름 매칭 없음 → 의미 검색 결과 최대 {STUDENT_FALLBACK_DOCS}건 사용")
