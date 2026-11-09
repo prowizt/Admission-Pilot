@@ -9,7 +9,7 @@ import FaqPanel from '@/components/FaqPanel';
 import HelpDrawer from '@/components/HelpDrawer';
 import AdmissionYearSelector from '@/components/AdmissionYearSelector';
 import CustomSwal from '@/utils/CustomSwal';
-import { categoryLabel, categoryBadge, mergeCategories, KNOWLEDGE_SCOPES } from '@/utils/knowledgeCategories';
+import { categoryLabel, categoryBadge, isBaseCategory, KNOWLEDGE_CATEGORIES, OTHER_CATEGORY_FILTER, KNOWLEDGE_SCOPES } from '@/utils/knowledgeCategories';
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('documents');
@@ -172,7 +172,8 @@ export default function Dashboard() {
     const matchSearch = safeContent.toLowerCase().includes(searchQuery.toLowerCase()) ||
                         safeCategory.toLowerCase().includes(searchQuery.toLowerCase()) ||
                         safeAuthor.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchCategory = knowledgeFilter === 'all' || item.category === knowledgeFilter;
+    const matchCategory = knowledgeFilter === 'all'
+      || (knowledgeFilter === OTHER_CATEGORY_FILTER ? !isBaseCategory(item.category) : item.category === knowledgeFilter);
     const matchScope = scopeFilter === 'all_scopes' || (item.target_scope || 'staff') === scopeFilter;
     return matchSearch && matchCategory && matchScope;
   }).sort((a, b) => b.id - a.id);
@@ -351,9 +352,13 @@ export default function Dashboard() {
                 ) : activeTab === 'knowledge' ? (
                   <>
                     <button onClick={() => setKnowledgeFilter('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === 'all' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>전체</button>
-                    {mergeCategories(supplementalList.map(k => k.category)).map(cat => (
+                    {KNOWLEDGE_CATEGORIES.map(c => c.value).map(cat => (
                       <button key={cat} onClick={() => setKnowledgeFilter(cat)} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === cat ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>{categoryLabel(cat)}</button>
                     ))}
+                    {/* 목록에 없는 분류(예전 분류·채팅 등록)는 버튼을 늘리지 않고 '그 외' 하나로 모음 */}
+                    {supplementalList.some(k => !isBaseCategory(k.category)) && (
+                      <button onClick={() => setKnowledgeFilter(OTHER_CATEGORY_FILTER)} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all whitespace-nowrap ${knowledgeFilter === OTHER_CATEGORY_FILTER ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>그 외</button>
+                    )}
                   </>
                 ) : (
                   <>

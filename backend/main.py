@@ -74,6 +74,62 @@ app.mount("/extension", StaticFiles(directory="../extension"), name="extension")
 # ==========================================
 # [0] AI 페르소나 및 시스템 프롬프트
 # ==========================================
+# [추론 올리기 요청] 교직원이 질문에 쓴 "추론 한단계 올려줘 / 최대한으로" 를 읽어 이번 질문만 추론 단계를 올림
+#   단계: 추론 끔 → low → medium → high (최대 = high). "한단계" 는 꺼져 있으면 켜고 한 단계, "최대한" 은 켜고 high.
+#   대상: 대상을 안 쓰면 최종 답변만 / "라우터" 를 쓰면 라우터+최종 답변 ("라우터만" 이면 라우터만) / 대상별로 따로 쓰면 따로.
+_BOOST_MAX_RE = r"최대|최고|하이|high|max"
+_BOOST_STEP_RE = r"한\s*단계|1\s*단계|올려|올리|높여|높게|높이"
+_BOOST_ROUTER_RE = r"라우터|router"
+_BOOST_FINAL_RE = r"최종|답변\s*ai|챗봇"
+
+def _boost_level(text):
+    if re.search(_BOOST_MAX_RE, text, re.I):
+        return "max"
+    if re.search(_BOOST_STEP_RE, text, re.I):
+        return "step"
+    return None
+
+def parse_effort_boost(question):
+    """질문에서 추론 올리기 요청을 읽어 (라우터 요청, 최종 답변 요청) 반환. 각 값은 None / 'step' / 'max'."""
+    for line in reversed((question or "").splitlines()):   # 요청 문구는 보통 붙여 넣은 표 뒤 마지막 줄들에 있음
+        has_reason = bool(re.search(r"추론|effort", line, re.I))
+        marks = [(m.start(), "router") for m in re.finditer(_BOOST_ROUTER_RE, line, re.I)]
+        if has_reason or marks:
+            marks += [(m.start(), "final") for m in re.finditer(_BOOST_FINAL_RE, line, re.I)]
+        marks.sort()
+        if not marks:
+            m = re.search(r"추론[^\n]{0,20}", line)
+            lv = _boost_level(m.group(0)) if (m and has_reason) else None
+            if lv:
+                return None, lv
+            continue
+        line_level = _boost_level(line[marks[0][0]:]) if (has_reason or any(t == "router" for _, t in marks)) else None
+        if not line_level:
+            continue
+        found = {}
+        for i, (pos, target) in enumerate(marks):
+            end = marks[i + 1][0] if i + 1 < len(marks) else len(line)
+            found[target] = _boost_level(line[pos:end]) or found.get(target) or line_level
+        router_req = found.get("router")
+        final_req = found.get("final")
+        if router_req and not final_req and not re.search(r"라우터\s*만|router\s*only", line, re.I):
+            final_req = router_req   # "라우터 포함/까지" → 최종 답변도 같은 만큼
+        return router_req, final_req
+    return None, None
+
+def apply_effort_boost(effort, thinking_off, req):
+    """추론 단계 올리기. 반환 (effort, thinking_off). 이미 더 높으면 그대로 (낮추지 않음)."""
+    if not req:
+        return effort, thinking_off
+    ladder = ["low", "medium", "high"]
+    if req == "max":
+        return (effort if effort in ("high", "max") else "high"), False
+    if effort in ("high", "max"):
+        return effort, False
+    idx = ladder.index(effort) if effort in ladder else 0
+    return ladder[min(idx + 1, 2)], False
+
+
 def get_system_prompt(user_role: str = "staff"):
     """권한(role)에 따라 AI의 보안 수준과 페르소나를 통제합니다."""
     if user_role == "student":
@@ -92,11 +148,12 @@ def get_system_prompt(user_role: str = "staff"):
         당신은 **대동대학교 입시처의 핵심 AI 업무 헬퍼(Sub-Assistant)**입니다.
         주 사용자는 교직원입니다.
         [🚨 핵심 보안 및 답변 규칙]
-        1. [시스템 DB 추출 데이터]와 [PDF 규정 문서]의 수치가 충돌할 경우, 무조건 [시스템 DB 추출 데이터]가 최신 정답입니다.
-        2. DB에서 수치를 가져왔다면 반드시 "최신 시스템 DB 확인 결과..." 라고 명시하십시오.
+        1. [시스템 DB 추출 데이터]와 [PDF 규정 문서]의 수치가 충돌할 경우, 지원자·합격자·등록자 같은 실적 수치는 [시스템 DB 추출 데이터]가 최신 정답입니다. 단, 사용자가 특정 문서를 기준으로 맞는지 확인해 달라고 하면 그 문서가 기준이며, DB 값은 참고로만 함께 적으십시오.
+        2. 실적 수치를 DB에서 가져왔다면 반드시 "최신 시스템 DB 확인 결과..." 라고 명시하십시오.
         3. 절대 추측하지 마십시오. 데이터가 없으면 없다고 하세요.
         4. 문서 검토 시 항상 제공된 '사전지식(실무 지침)'을 최우선 기준으로 적용하십시오.
         5. '공식 규정(구매 규정, 예산·회계 규정 등)'과 '사전지식'이 상충될 경우 무조건 '사전지식'을 우선시하십시오.
+        6. 사용자가 여러 열(항목)로 된 표를 붙여 문서와 맞는지 확인해 달라고 하면, 열마다 유형(전형 등)별로 나눠 문서 기준과 대조하고 "모두 일치"처럼 묶어 넘기지 마십시오. 불일치로 판정하기 전에 문서의 비고·주석(※)에 그 경우를 허용하는 예외가 있는지 먼저 확인하고, 해당하면 불일치가 아니라 "예외 해당 여부 확인 필요"로 적으십시오. 답변 맨 끝에 [확인한 열]과 [문서에서 근거를 찾지 못한 열]을 짧게 적으십시오.
         """
 
 
@@ -1807,6 +1864,9 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
     # [쿼리 요청] 교직원이 SQL 문 자체를 요청하면 라우터 추론을 켜고(effort high), 실행 오류는 1회 자동 수정, 답변에 실행한 SQL 을 보여 줌
     is_query_request = request.user_role != "student" and bool(re.search(r"쿼리|SQL", request.question or "", re.I))
     router_effort, router_thinking_off = "low", llm_client.ROUTER_THINKING_OFF
+    # [추론 올리기 요청] 이번 질문만 라우터/최종 답변 추론 단계를 올림 (규칙은 parse_effort_boost 위 주석, 다음 질문부터는 환경 설정 값)
+    router_boost_req, final_boost_req = parse_effort_boost(request.question) if request.user_role != "student" else (None, None)
+    wants_router_boost = bool(router_boost_req)
 
     # [NEW] 터미널에 요청 수신 헤더 및 사용자 질문 로깅
     role_str = "학생용 (student)" if request.user_role == "student" else "교직원용 (staff)"
@@ -2033,8 +2093,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
         - 사용자의 [질문]이 "인사 정보 변경사항, 구성원 퇴사/입사 사실, 특정 결재라인 규정, 대학 행정 예외 정책" 등 AI가 향후 검토 시 상시 참고해야 할 새로운 규칙/정보를 **등록(저장/추가/기억) 또는 삭제(지우기/제거)**하려는 의도인 경우, 이를 감지하여 `knowledge_action`을 빌드하십시오.
         - 단순 질문(예: "~를 확인해줘", "~가 누구야?", "다른점이 있을까?")은 조회 목적이므로 `knowledge_action`의 `action`은 `"NONE"`입니다.
         - **[사전지식 등록 예외 엄격 적용]**: 학생 또는 사용자가 "내 전화번호 외워둬", "내 이름 기억해" 등과 같이 행정 정책과 무관한 **개인정보나 사담**을 기억하라고 지시할 경우, 이는 사전지식 등록 대상이 아니므로 무조건 무시하고 `action`을 `"NONE"`으로 설정하십시오.
-        - 등록 예시: "사전지식 등록해줘: 4월에 ooo 과장 퇴사했고, 5월에 ooo 주임 신규 입사" -> action: "INSERT", category: "인사/조직", content: "4월에 ooo 과장 퇴사했고, 5월에 ooo 주임 신규 입사"
-        - 삭제 예시: "ooo 과장 이력 삭제해줘" -> action: "DELETE", category: "인사/조직", content: "ooo 과장" (삭제하려는 대상을 특정하는 키워드 또는 요약)
+        - 등록 예시: "사전지식 등록해줘: 4월에 ooo 과장 퇴사했고, 5월에 ooo 주임 신규 입사" -> action: "INSERT", category: "01_공문검토", content: "4월에 ooo 과장 퇴사했고, 5월에 ooo 주임 신규 입사"
+        - 삭제 예시: "ooo 과장 이력 삭제해줘" -> action: "DELETE", category: "01_공문검토", content: "ooo 과장" (삭제하려는 대상을 특정하는 키워드 또는 요약)
 
         [관리자 등록 최상위 사전지식]
         {pre_supplemental_text if pre_supplemental_text else "등록된 사전지식 없음"}
@@ -2098,7 +2158,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             "target_documents": "질문자가 특정 문서를 명시적으로 지정하여 검토를 요구한 경우(예: '2027학년도 모집요강만 보고 말해줘'), [현재 데이터베이스 및 문서 카탈로그 현황]을 참고하여 일치하는 공식 파일명들을 리스트 형태로 추출하십시오. (예: ['2027학년도 모집요강.pdf', '예산ㆍ회계 규정.pdf']). 지정이 없으면 빈 배열 []을 반환하십시오.",
             "knowledge_action": {{
                 "action": "INSERT" 또는 "DELETE" 또는 "NONE",
-                "category": "인사/조직" 또는 "결재라인" 또는 "예외규정" 또는 "02_도메인룰" 또는 "03_엑셀매핑" 또는 "04_성적산출" 또는 "기타",
+                "category": "01_공문검토"(결재선·인사/조직·공문 해석·지출 공문) 또는 "02_도메인룰"(입시 용어·학년도·정원·이월·조회 기준) 또는 "03_엑셀매핑" 또는 "04_성적산출" 또는 "기타",
                 "content": "등록 시에는 저장할 사전지식 요약 팩트 문장, 삭제 시에는 삭제를 식별할 수 있는 키워드나 요약 내용 (해당사항 없으면 빈 문자열)"
             }}
         }}
@@ -2181,6 +2241,11 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 router_thinking_off = False
                 router_effort = app_config.get("REVIEW_ROUTER_EFFORT")
                 print(f" ├─ [공문 검토] 라우터 추론 켬 (effort={router_effort}, 환경 설정 '공문 검토 라우터 추론')")
+            if wants_router_boost:
+                new_effort, new_off = apply_effort_boost(router_effort, router_thinking_off, router_boost_req)
+                before = f"{router_effort}·추론 {'끔' if router_thinking_off else '켬'}"
+                print(f" ├─ [추론 올리기 요청] 이번 질문만 라우터 {'한 단계' if router_boost_req == 'step' else '최대한'}: {before} → {new_effort}·추론 켬")
+                router_effort, router_thinking_off = new_effort, new_off
             router_model_to_use = request.router_model_name or request.model_name
             print(f"\n[Step 2] 🧠 라우터 AI 분석 중... (사용 모델: {router_model_to_use}{', 쿼리 요청 모드 effort=' + router_effort if is_query_request else ''})")
             max_retries = 3
@@ -2188,7 +2253,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
             for attempt in range(max_retries):
                 try:
                     sql_response = llm_client.generate(router_model_to_use, router_api_key, sql_router_prompt, json_schema=router_schema,
-                                                       effort=router_effort, timeout=300 if is_query_request else 120, thinking_off=router_thinking_off)
+                                                       effort=router_effort, timeout=300 if (is_query_request or wants_router_boost) else 120, thinking_off=router_thinking_off)
                     break
                 except Exception as e:
                     err_msg = str(e)
@@ -3305,6 +3370,11 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 
         # [호출 설정 기록] 감사 로그에 남길 라우터/최종 답변의 effort·추론 설정
         staff_effort = llm_client.resolve_effort(request.effort)
+        # [추론 올리기 요청] 이번 질문만 최종 답변 추론 단계 올림 (설정이 더 높으면 그대로) — 판단은 요청 시작 부분 parse_effort_boost
+        if final_boost_req and request.user_role != "student":
+            new_effort, _ = apply_effort_boost(staff_effort, False, final_boost_req)
+            print(f" ├─ [추론 올리기 요청] 이번 질문만 최종 답변 {'한 단계' if final_boost_req == 'step' else '최대한'}: effort {staff_effort} → {new_effort}")
+            staff_effort = new_effort
         router_mode = llm_client.mode_label(used_router_model, router_effort, router_thinking_off)
         if request.user_role == "student":
             chat_mode = llm_client.mode_label(request.model_name, app_config.get("STUDENT_EFFORT"))
@@ -3425,7 +3495,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
 1. "검토 대상 문서가 없다"며 답변을 회피하거나 사과하지 마. 문서가 없으면 <판단 기준 1>과 <판단 기준 2>의 데이터를 바탕으로 질문에 직접적으로 대답해.
 2. <검토 대상 문서>가 존재할 경우에만 해당 문서 내 위반 사항이나 오류를 찾아내고 지적해.
 3. <판단 기준 1: SYSTEM DB 최신 팩트>에 사용자가 묻는 데이터(예: 사람, 숫자, 출신학교 등)가 포함되어 있다면 주저하지 말고 그 팩트를 기반으로 확신을 가지고 답변해.
-4. <판단 기준 1>의 데이터는 시스템이 사용자의 질문 조건을 완벽히 필터링해서 가져온 맞춤형 정답입니다. 결과값에 연도나 수험번호가 보이지 않는다고 해서 "일치하는지 확인할 수 없다"는 식의 변명을 절대 하지 마세요.
+4. <판단 기준 1>의 데이터는 시스템이 사용자의 질문 조건을 완벽히 필터링해서 가져온 맞춤형 정답입니다. 결과값에 연도나 수험번호가 보이지 않는다고 해서 "일치하는지 확인할 수 없다"는 식의 변명을 절대 하지 마세요. 단, 이는 지원자·합격자·등록자 같은 실적 수치에 해당하며, 사용자가 특정 문서를 기준으로 맞는지 확인해 달라고 하면 그 문서가 기준이고 <판단 기준 1>의 값은 참고로만 함께 적으십시오.
 5. **[데이터 크로스체크 및 결합 금지]:** <판단 기준 1: 시스템 DB>에서 추출된 데이터의 학년도(연도)와 <판단 기준 2: 사내 규정>에서 추출된 문서의 적용년도(학년도)를 반드시 대조하세요. 만약 두 데이터의 기준 연도(학년도)가 다를 경우, 절대 데이터를 결합하여 경쟁률 등을 산출하지 마세요.
 6. 💡 **[통계 표 데이터 대조 시 양방향 정밀 검증]**: <검토 대상 문서>에 입학 통계 등 긴 표(Markdown)가 포함되어 있어 통계 대조를 수행할 경우, 절대 중간에 읽기를 멈추지 말고 끝까지 확인하십시오. 엑셀 데이터가 원본 문서에 있는지만 확인하지 말고, 반대로 원본 문서에 명시된 모든 전형이 엑셀 표에 누락되지 않았는지 양방향으로 샅샅이 대조하십시오.
 7. 💡 **[표 병합 패턴 기반 누락 탐지]**: 통계 표 대조 시, 엑셀 문서 내 인접한 모집단위(학과)들 간의 전형 패턴을 비교하여 통째로 누락된 '이빨 빠진 패턴'이 식별된다면 병합 특성으로 인한 명백한 누락으로 지적하십시오.
@@ -3444,7 +3514,7 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
     - <판단 기준 3>에 등재된 예외 정책에 의하여 참작된 건에 대해서만 구구절절한 변호 문구를 서술하지 말고 생략하십시오.
     - 사용자가 "상세히", "빠짐없이" 분석해 달라고 요청한 경우에만 문서를 처음부터 끝까지 생략 없이 구체적으로 리포트하십시오.
 15. **[실시간 지식 업데이트 성공 시 피드백 알림 강제]**: <지식 업데이트 반영 내역>에 저장/삭제 완료 알림 메시지가 있다면 답변 최상단에 마크다운 인용구 형태로 100% 원문 그대로 노출하십시오.
-16. 💡 **[PDF 표 병합(빈칸) 추론 절대 지침]**: <판단 기준 2: 사내 규정(RAG)> 내 문서의 표에 특정 칸이 비어있다면, 무조건 '해당 없음'이나 '모집 안함'으로 단정짓지 마십시오. PDF 변환 특성상 **윗칸의 텍스트가 병합되어 생략(빈칸) 처리된 것일 확률이 99%**입니다. 따라서 <검토 대상 문서(스크랩)>에는 글자가 채워져 있고 PDF 기준 문서에는 빈칸일 경우, "스크랩이 틀렸다"고 절대 오진하지 말고 윗칸 문맥을 이어붙여 정상 병합된 팩트로 인정하십시오.
+16. 💡 **[PDF 표 병합(빈칸) 추론 절대 지침]**: <판단 기준 2: 사내 규정(RAG)> 내 문서의 표에 특정 칸이 비어있다면, 무조건 '해당 없음'이나 '모집 안함'으로 단정짓지 마십시오. PDF 변환 특성상 **윗칸의 텍스트가 병합되어 생략(빈칸) 처리된 것일 확률이 99%**입니다. 따라서 <검토 대상 문서(스크랩)>에는 글자가 채워져 있고 PDF 기준 문서에는 빈칸일 경우, "스크랩이 틀렸다"고 절대 오진하지 말고 윗칸 문맥을 이어붙여 정상 병합된 팩트로 인정하십시오. 단, 하이픈(-)이 적힌 칸이나 그 전형 줄 전체가 비어 있는 경우는 병합이 아니라 '모집하지 않음'이며, 병합 상속의 예외(다른 모집시기 값을 끌어오지 않음 등)와 이월 인원은 <판단 기준 3>의 사전지식을 따르십시오.
 17. 🚨 **[특수문자 및 수식 규정(LaTeX 절대 금지)]**: 어떠한 경우에도 LaTeX 수학 기호나 수식 블록(예: `$`, `$$`, `\text{{}}`, `\times`, `\rightarrow`)을 절대로 사용하지 마십시오. (❌ 잘못된 예: `$12,600\text{{원}} \times 12\text{{부}} = 151,200\text{{원}}$` ➡️ 🟢 올바른 예: `12,600원 x 12부 = 151,200원`). 화살표는 반드시 유니코드(→)를 사용하십시오.
 18. 🧮 **[정밀 수치 연산 및 누적 덧셈 절대 규칙 (CoT 강제)]**:
     - 학생부 성적, 이수단위, 환산값, 예산안 등 다항목의 곱셈 및 누적 덧셈을 수행할 때, 절대 중간 과정 없이 최종 합계 수치만 단답형으로 작성하지 마십시오.
@@ -3651,7 +3721,8 @@ def chat_with_ai(request: ChatRequest, x_gemini_key: str = Header(None)):
                 max_retries = 3
                 for attempt in range(max_retries):
                     try:
-                        response = llm_client.generate(request.model_name, chat_api_key, prompt, system=final_system_prompt, effort=staff_effort, timeout=timeout_sec)
+                        # 출력 한도 64,000: 큰 표 검증은 생각+답변이 32,000을 넘을 수 있음 (#554 잘림). 비용은 실제 쓴 만큼만.
+                        response = llm_client.generate(request.model_name, chat_api_key, prompt, system=final_system_prompt, effort=staff_effort, timeout=timeout_sec, max_tokens=64000)
                         chat_usage = response
                         break
                     except Exception as e:

@@ -17,7 +17,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
   const [formData, setFormData] = useState({
     doc_type: 'rule', year: new Date().getFullYear().toString(), title: '',
     is_public: 'Y', db_source: 'INTERNAL', table_name: '', description: '',
-    category: '인사/조직', content: '', is_active: 'Y',
+    category: '01_공문검토', content: '', is_active: 'Y',
     target_scope: 'staff' // 사전지식 적용 대상: staff(교직원 전용) / student(학생 전용) / all(공통)
   });
   // 기본 분류 목록 (DB에 다른 분류로 등록된 지식도 수정 시 원래 분류가 유지되도록 선택지에 추가)
@@ -49,7 +49,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
           db_source: editData.db_source || 'INTERNAL',
           table_name: editData.table_name || '',
           description: editData.description || '',
-          category: editData.category || '인사/조직',
+          category: editData.category || '01_공문검토',
           content: editData.content || '',
           is_active: editData.is_active || 'Y',
           target_scope: editData.target_scope || 'staff'
@@ -59,7 +59,7 @@ export default function KnowledgeModal({ isOpen, onClose, activeTab, editData, o
         setFormData({
           doc_type: 'rule', year: new Date().getFullYear().toString(), title: '',
           is_public: 'Y', db_source: 'INTERNAL', table_name: '', description: '',
-          category: '인사/조직', content: '', is_active: 'Y', target_scope: 'staff'
+          category: '01_공문검토', content: '', is_active: 'Y', target_scope: 'staff'
         });
         // 새 문서의 적용 학년도 기본값 = 대시보드 상단의 기준 입시학년도
         axios.get('/api/settings/admission-year')
